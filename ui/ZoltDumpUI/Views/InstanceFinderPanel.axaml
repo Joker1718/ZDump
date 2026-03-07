@@ -1,0 +1,68 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.InstanceFinderPanel"
+             x:DataType="vm:InstanceFinderViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Search Bar -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <StackPanel Spacing="4">
+                <DockPanel>
+                    <Button Content="Find" DockPanel.Dock="Right" Margin="4,0,0,0"
+                            Command="{Binding FindInstancesCommand}" />
+                    <CheckBox Content="Exact" DockPanel.Dock="Right" IsChecked="{Binding ExactMatch}"
+                              Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
+                    <TextBox Text="{Binding SearchClassName}" Watermark="Class name..." />
+                </DockPanel>
+                <DockPanel>
+                    <Button Content="Lookup" DockPanel.Dock="Right" Margin="4,0,0,0"
+                            Command="{Binding FindByAddressCommand}" />
+                    <TextBox Text="{Binding AddressSearch}" Watermark="Address lookup..."
+                             FontFamily="Consolas" />
+                </DockPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Split: Instances + Fields -->
+        <Grid RowDefinitions="*,4,*">
+            <!-- Instances -->
+            <DataGrid Grid.Row="0"
+                      ItemsSource="{Binding Instances}"
+                      SelectedItem="{Binding SelectedInstance}"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      Background="#1E1E1E"
+                      Foreground="#D4D4D4"
+                      FontFamily="Consolas"
+                      FontSize="12">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="140" />
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
+                    <DataGridTextColumn Header="Class" Binding="{Binding ClassName}" Width="150" />
+                    <DataGridTextColumn Header="Slot" Binding="{Binding SlotIndex}" Width="60" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Row="1" Height="4" Background="#3F3F46" />
+
+            <!-- Selected Instance Fields -->
+            <DataGrid Grid.Row="2"
+                      ItemsSource="{Binding SelectedFields}"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      Background="#1E1E1E"
+                      Foreground="#D4D4D4"
+                      FontFamily="Consolas"
+                      FontSize="12">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
+                    <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="120" />
+                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="200" />
+                    <DataGridTextColumn Header="Hex" Binding="{Binding Hex}" Width="120" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </DockPanel>
+</UserControl>

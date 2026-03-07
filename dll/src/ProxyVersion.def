@@ -1,0 +1,25 @@
+; ProxyVersion.def — Module definition file for version.dll proxy
+; Eisen — 艾乍 (Iron Warrior — ProxyVersion)
+; Maps exported function names for version.dll forwarding.
+; Only used when building with ZOLT_PROXY_BUILD.
+
+LIBRARY "version"
+
+EXPORTS
+    GetFileVersionInfoA
+    GetFileVersionInfoByHandle
+    GetFileVersionInfoExA
+    GetFileVersionInfoExW
+    GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW
+    GetFileVersionInfoSizeW
+    GetFileVersionInfoW
+    VerFindFileA
+    VerFindFileW
+    VerInstallFileA
+    VerInstallFileW
+    VerLanguageNameA
+    VerLanguageNameW
+    VerQueryValueA
+    VerQueryValueW

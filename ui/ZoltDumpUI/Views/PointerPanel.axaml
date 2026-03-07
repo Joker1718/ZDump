@@ -1,0 +1,97 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.PointerPanel"
+             x:DataType="vm:PointerPanelViewModel">
+
+    <ScrollViewer Background="#252526" Padding="8">
+        <StackPanel Spacing="12">
+            <!-- Godot Version -->
+            <Border Background="#2D2D30" CornerRadius="4" Padding="12">
+                <StackPanel>
+                    <TextBlock Text="Godot Version" Foreground="#808080" FontSize="11" />
+                    <TextBlock Text="{Binding GodotVersion}" Foreground="#569CD6"
+                               FontSize="16" FontWeight="Bold" />
+                </StackPanel>
+            </Border>
+
+            <!-- ObjectDB -->
+            <Border Background="#2D2D30" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="ObjectDB" Foreground="#808080" FontSize="11" />
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                            <Button Content="Copy" Command="{Binding CopyAddressCommand}"
+                                    CommandParameter="{Binding ObjectDbAddr}" FontSize="11" />
+                            <Button Content="HEX" Command="{Binding NavigateHexCommand}"
+                                    CommandParameter="{Binding ObjectDbAddr}" FontSize="11" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ObjectDbAddr}" Foreground="#4EC9B0"
+                                   FontFamily="Consolas" FontSize="14" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding ObjectDbMethod, StringFormat='Method: {0}'}" Foreground="#808080" FontSize="11" />
+                        <TextBlock Text="{Binding ObjectDbPatternId}" Foreground="#808080" FontSize="11" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ClassDB -->
+            <Border Background="#2D2D30" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="ClassDB" Foreground="#808080" FontSize="11" />
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                            <Button Content="Copy" Command="{Binding CopyAddressCommand}"
+                                    CommandParameter="{Binding ClassDbAddr}" FontSize="11" />
+                            <Button Content="HEX" Command="{Binding NavigateHexCommand}"
+                                    CommandParameter="{Binding ClassDbAddr}" FontSize="11" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ClassDbAddr}" Foreground="#4EC9B0"
+                                   FontFamily="Consolas" FontSize="14" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding ClassDbMethod, StringFormat='Method: {0}'}" Foreground="#808080" FontSize="11" />
+                        <TextBlock Text="{Binding ClassDbPatternId}" Foreground="#808080" FontSize="11" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- SceneTree -->
+            <Border Background="#2D2D30" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="SceneTree" Foreground="#808080" FontSize="11" />
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                            <Button Content="Copy" Command="{Binding CopyAddressCommand}"
+                                    CommandParameter="{Binding SceneTreeAddr}" FontSize="11" />
+                            <Button Content="HEX" Command="{Binding NavigateHexCommand}"
+                                    CommandParameter="{Binding SceneTreeAddr}" FontSize="11" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding SceneTreeAddr}" Foreground="#4EC9B0"
+                                   FontFamily="Consolas" FontSize="14" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding SceneTreeMethod, StringFormat='Method: {0}'}" Foreground="#808080" FontSize="11" />
+                        <TextBlock Text="{Binding SceneTreePatternId}" Foreground="#808080" FontSize="11" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Object Count -->
+            <Border Background="#2D2D30" CornerRadius="4" Padding="12">
+                <StackPanel>
+                    <TextBlock Text="Total Objects" Foreground="#808080" FontSize="11" />
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <TextBlock Text="{Binding ObjectCount}" Foreground="#D4D4D4"
+                                   FontSize="16" FontWeight="Bold" />
+                        <TextBlock Text="{Binding SlotCount, StringFormat='Slots: {0}'}"
+                                   Foreground="#808080" VerticalAlignment="Bottom" />
+                        <TextBlock Text="{Binding SlotMax, StringFormat='Max: {0}'}"
+                                   Foreground="#808080" VerticalAlignment="Bottom" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

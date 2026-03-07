@@ -1,0 +1,566 @@
+<#
+.SYNOPSIS
+    Zolt-Dump unified build script — C++ DLL + C# Avalonia UI
+
+.DESCRIPTION
+    Builds both the C++ injected DLL and the C# Avalonia UI application.
+    Supports three build modes:
+      - Debug    : Unoptimized builds with debug symbols (fast iteration)
+      - Release  : Optimized builds (normal development)
+      - Publish  : C++ Release + C# optimized single-file exe (distribution)
+
+.PARAMETER Mode
+    Build mode: Debug, Release, or Publish (default: Release)
+
+.PARAMETER Target
+    Build target: All, DLL, ProxyDLL, UI, Test (default: All)
+
+.PARAMETER Clean
+    Remove all build artifacts before building
+
+.PARAMETER SkipRestore
+    Skip NuGet package restore (faster if already restored)
+
+.EXAMPLE
+    .\build.ps1                          # Release build, all targets
+    .\build.ps1 -Mode Debug             # Debug build
+    .\build.ps1 -Mode Publish           # Optimized single-file publish
+    .\build.ps1 -Mode Publish -Clean    # Clean + publish
+    .\build.ps1 -Target DLL             # Build only the C++ DLL
+    .\build.ps1 -Target UI -Mode Debug  # Debug build UI only
+    .\build.ps1 -Target Test            # Build + run tests
+#>
+
+[CmdletBinding()]
+param(
+    [ValidateSet("Debug", "Release", "Publish")]
+    [string]$Mode = "Release",
+
+    [ValidateSet("All", "DLL", "ProxyDLL", "UI", "Test")]
+    [string]$Target = "All",
+
+    [switch]$Clean,
+    [switch]$SkipRestore,
+
+    [string]$LogFile = ""
+)
+
+# ============================================================
+# Configuration
+# ============================================================
+
+$ErrorActionPreference = "Stop"
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+# Force UTF-8 for console output and .NET subprocess output (fixes CJK garbling)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$env:DOTNET_CLI_UI_LANGUAGE = "en"  # dotnet CLI in English to avoid codepage issues
+
+# Start log transcript if a log file path was provided (from build.cmd).
+$script:transcriptActive = $false
+if ($LogFile) {
+    try {
+        Start-Transcript -Path $LogFile -Force | Out-Null
+        $script:transcriptActive = $true
+    }
+    catch {
+        Write-Warning "Could not start transcript to $LogFile : $_"
+    }
+}
+
+$ROOT_DIR   = $PSScriptRoot
+$vsDevShellLoaded = $false
+$DLL_DIR    = Join-Path $ROOT_DIR "dll"
+$UI_DIR     = Join-Path $ROOT_DIR "ui"
+$UI_PROJ    = Join-Path $UI_DIR  "ZoltDumpUI\ZoltDumpUI.csproj"
+$TEST_PROJ  = Join-Path $UI_DIR  "ZoltDumpUI.Tests\ZoltDumpUI.Tests.csproj"
+$DIST_DIR   = Join-Path $ROOT_DIR "dist"
+$BUILD_DIR  = Join-Path $ROOT_DIR "build"
+
+# Map Mode to C++ config and C# config
+$CppConfig    = if ($Mode -eq "Debug") { "Debug" } else { "Release" }
+$CSharpConfig = if ($Mode -eq "Debug") { "Debug" } else { "Release" }
+
+# ============================================================
+# Helper functions
+# ============================================================
+
+function Write-Banner([string]$Text) {
+    $line = "=" * 60
+    Write-Host ""
+    Write-Host $line -ForegroundColor Cyan
+    Write-Host "  $Text" -ForegroundColor Cyan
+    Write-Host $line -ForegroundColor Cyan
+}
+
+function Write-Step([string]$Text) {
+    Write-Host ">> $Text" -ForegroundColor Yellow
+}
+
+function Write-Ok([string]$Text) {
+    Write-Host "   [OK] $Text" -ForegroundColor Green
+}
+
+function Write-Fail([string]$Text) {
+    Write-Host "   [FAIL] $Text" -ForegroundColor Red
+}
+
+function Write-Info([string]$Text) {
+    Write-Host "   $Text" -ForegroundColor Gray
+}
+
+function Enter-VsDevEnvironment() {
+    if ($script:vsDevShellLoaded) { return $true }
+
+    $devShellDll = Join-Path $script:vsPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+    if (-not (Test-Path $devShellDll)) {
+        Write-Fail "DevShell.dll not found: $devShellDll"
+        return $false
+    }
+
+    try {
+        Import-Module $devShellDll
+        Enter-VsDevShell -VsInstallPath $script:vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64" | Out-Null
+        $script:vsDevShellLoaded = $true
+        Write-Ok "MSVC x64 environment loaded"
+        return $true
+    }
+    catch {
+        Write-Fail "Failed to load VS DevShell: $_"
+        return $false
+    }
+}
+
+function Invoke-CmdInVsEnv([string]$Commands) {
+    if (-not (Enter-VsDevEnvironment)) { return $false }
+
+    $lines = $Commands -split "`n" | Where-Object { $_.Trim() }
+    foreach ($line in $lines) {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+
+        Write-Info "  > $line"
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { Invoke-Expression $line 2>&1 | Write-Host }
+        finally { $ErrorActionPreference = $prevEAP }
+        if ($LASTEXITCODE -ne 0) { return $false }
+    }
+    return $true
+}
+
+function Get-FileSize([string]$Path) {
+    if (Test-Path $Path) {
+        $size = (Get-Item $Path).Length
+        if ($size -gt 1MB) { return "{0:N1} MB" -f ($size / 1MB) }
+        if ($size -gt 1KB) { return "{0:N1} KB" -f ($size / 1KB) }
+        return "$size B"
+    }
+    return "N/A"
+}
+
+# ============================================================
+# Preamble
+# ============================================================
+
+Write-Banner "Zolt-Dump Build  |  Mode: $Mode  |  Target: $Target"
+
+Write-Info "Root:   $ROOT_DIR"
+Write-Info "C++:    $CppConfig"
+Write-Info "C#:     $CSharpConfig"
+Write-Info "Clean:  $Clean"
+
+# Locate vswhere.exe
+$vswhere = $null
+$vswhereCandidates = [System.Collections.Generic.List[string]]::new()
+
+$inPath = Get-Command vswhere -ErrorAction SilentlyContinue
+if ($inPath) { $vswhereCandidates.Add($inPath.Source) }
+
+$pf86 = ${env:ProgramFiles(x86)}
+if ($pf86) { $vswhereCandidates.Add((Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe")) }
+if ($env:ProgramFiles) { $vswhereCandidates.Add((Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")) }
+if ($env:ChocolateyInstall) { $vswhereCandidates.Add((Join-Path $env:ChocolateyInstall "bin\vswhere.exe")) }
+if ($env:LOCALAPPDATA) { $vswhereCandidates.Add((Join-Path $env:LOCALAPPDATA "Microsoft\VisualStudio\Installer\vswhere.exe")) }
+
+foreach ($candidate in $vswhereCandidates) {
+    if ($candidate -and (Test-Path $candidate -ErrorAction SilentlyContinue)) {
+        $vswhere = $candidate
+        break
+    }
+}
+
+if (-not $vswhere) {
+    Write-Fail "vswhere.exe not found. Install Visual Studio or run: winget install Microsoft.VisualStudio.Locator"
+    exit 1
+}
+
+Write-Info "vswhere: $vswhere"
+
+$vsPath = & $vswhere -latest -property installationPath
+if (-not $vsPath) {
+    $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+}
+if (-not $vsPath) {
+    Write-Fail "No Visual Studio installation found (need C++ Desktop workload)"
+    exit 1
+}
+Write-Info "VS:     $vsPath"
+
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    Write-Fail "dotnet SDK not found in PATH"
+    exit 1
+}
+Write-Info "dotnet: $(dotnet --version)"
+
+# ============================================================
+# Clean
+# ============================================================
+
+if ($Clean) {
+    Write-Step "Cleaning build artifacts..."
+
+    if (Test-Path $BUILD_DIR)  { Remove-Item $BUILD_DIR -Recurse -Force }
+    if (Test-Path $DIST_DIR)   { Remove-Item $DIST_DIR  -Recurse -Force }
+
+    if ($Target -in "All", "UI", "Test") {
+        if (Test-Path $UI_PROJ) {
+            & dotnet clean $UI_PROJ -c $CSharpConfig --nologo -v q 2>$null
+        }
+        if (Test-Path $TEST_PROJ) {
+            & dotnet clean $TEST_PROJ -c $CSharpConfig --nologo -v q 2>$null
+        }
+    }
+
+    Write-Ok "Clean complete"
+}
+
+# Create output directories
+New-Item -ItemType Directory -Path $DIST_DIR  -Force | Out-Null
+New-Item -ItemType Directory -Path $BUILD_DIR -Force | Out-Null
+
+# ============================================================
+# Increment build number
+# ============================================================
+$buildNumFile = Join-Path $ROOT_DIR "build_number.txt"
+if (Test-Path $buildNumFile) {
+    $buildNum = [int](Get-Content $buildNumFile -Raw).Trim()
+}
+else {
+    $buildNum = 0
+}
+$buildNum++
+[System.IO.File]::WriteAllText($buildNumFile, "$buildNum`n")
+Write-Info "Build#: $buildNum"
+
+$exitCode = 0
+
+# ============================================================
+# Build C++ DLL
+# ============================================================
+
+if ($Target -in "All", "DLL") {
+    Write-Banner "C++ DLL (ZoltDumper)  |  $CppConfig"
+
+    if (Test-Path $BUILD_DIR) {
+        Write-Step "Removing CMake cache for clean build..."
+        Remove-Item $BUILD_DIR -Recurse -Force
+        Write-Ok "Build directory cleaned"
+    }
+
+    Write-Step "Configuring CMake (Ninja + MSVC)..."
+    $configOk = Invoke-CmdInVsEnv "cmake -S `"$ROOT_DIR`" -B `"$BUILD_DIR`" -G Ninja -DCMAKE_BUILD_TYPE=$CppConfig"
+
+    if (-not $configOk) {
+        Write-Fail "CMake configure failed"
+        $exitCode = 1
+    }
+    else {
+        Write-Ok "CMake configured"
+
+        Write-Step "Building ZoltDumper.dll ($CppConfig)..."
+        $buildOk = Invoke-CmdInVsEnv "cmake --build `"$BUILD_DIR`" --config $CppConfig"
+
+        if (-not $buildOk) {
+            Write-Fail "DLL build failed"
+            $exitCode = 1
+        }
+        else {
+            $dllFile = Get-ChildItem -Path $BUILD_DIR -Filter "ZoltDumper.dll" -Recurse |
+                       Select-Object -First 1
+
+            if ($dllFile) {
+                Copy-Item $dllFile.FullName -Destination $DIST_DIR -Force
+
+                $pdbFile = Get-ChildItem -Path $BUILD_DIR -Filter "ZoltDumper.pdb" -Recurse |
+                           Select-Object -First 1
+                if ($pdbFile) {
+                    Copy-Item $pdbFile.FullName -Destination $DIST_DIR -Force
+                }
+
+                $dllSize = Get-FileSize (Join-Path $DIST_DIR "ZoltDumper.dll")
+                Write-Ok "ZoltDumper.dll ($dllSize)"
+
+                Write-Step "Verifying DLL exports..."
+                Invoke-CmdInVsEnv "dumpbin /exports `"$($dllFile.FullName)`" | findstr /C:`"Zolt_`"" | Out-Null
+            }
+            else {
+                Write-Fail "ZoltDumper.dll not found in build output"
+                $exitCode = 1
+            }
+        }
+    }
+}
+
+# ============================================================
+# Build Proxy DLL (version.dll)
+# ============================================================
+
+if ($Target -in "All", "ProxyDLL") {
+    Write-Banner "Proxy DLL (version.dll)  |  $CppConfig"
+
+    $proxyBuildDir = Join-Path $ROOT_DIR "build_proxy"
+
+    if (Test-Path $proxyBuildDir) {
+        Write-Step "Removing proxy CMake cache for clean build..."
+        Remove-Item $proxyBuildDir -Recurse -Force
+        Write-Ok "Proxy build directory cleaned"
+    }
+
+    Write-Step "Configuring CMake for Proxy DLL (Ninja + MSVC)..."
+    $configOk = Invoke-CmdInVsEnv "cmake -S `"$ROOT_DIR`" -B `"$proxyBuildDir`" -G Ninja -DCMAKE_BUILD_TYPE=$CppConfig -DBUILD_PROXY_DLL=ON"
+
+    if (-not $configOk) {
+        Write-Fail "CMake configure failed (Proxy DLL)"
+        $exitCode = 1
+    }
+    else {
+        Write-Ok "CMake configured (Proxy DLL)"
+
+        Write-Step "Building version.dll ($CppConfig)..."
+        $buildOk = Invoke-CmdInVsEnv "cmake --build `"$proxyBuildDir`" --config $CppConfig --target ZoltDumper_Proxy"
+
+        if (-not $buildOk) {
+            Write-Fail "Proxy DLL build failed"
+            $exitCode = 1
+        }
+        else {
+            $proxyDll = Get-ChildItem -Path $proxyBuildDir -Filter "version.dll" -Recurse |
+                        Select-Object -First 1
+
+            if ($proxyDll) {
+                $proxyOutDir = Join-Path $DIST_DIR "proxy"
+                if (-not (Test-Path $proxyOutDir)) { New-Item -Path $proxyOutDir -ItemType Directory | Out-Null }
+
+                Copy-Item $proxyDll.FullName -Destination $proxyOutDir -Force
+
+                $pdbFile = Get-ChildItem -Path $proxyBuildDir -Filter "version.pdb" -Recurse |
+                           Select-Object -First 1
+                if ($pdbFile) {
+                    Copy-Item $pdbFile.FullName -Destination $proxyOutDir -Force
+                }
+
+                $dllSize = Get-FileSize (Join-Path $proxyOutDir "version.dll")
+                Write-Ok "version.dll ($dllSize) -> dist\proxy\"
+            }
+            else {
+                Write-Fail "version.dll not found in build output"
+                $exitCode = 1
+            }
+        }
+    }
+}
+
+# ============================================================
+# Build C# Avalonia UI
+# ============================================================
+
+if ($Target -in "All", "UI") {
+    Write-Banner "C# Avalonia UI (ZoltDumpUI)  |  $CSharpConfig ($Mode)"
+
+    $uiProjDir = Split-Path $UI_PROJ -Parent
+    foreach ($subdir in @("bin", "obj")) {
+        $p = Join-Path $uiProjDir $subdir
+        if (Test-Path $p) {
+            Write-Step "Removing $subdir for clean build..."
+            Remove-Item $p -Recurse -Force
+        }
+    }
+
+    if (-not $SkipRestore) {
+        Write-Step "Restoring NuGet packages..."
+        & dotnet restore $UI_PROJ --nologo -v q
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "Package restore failed"
+            $exitCode = 1
+        }
+        else {
+            Write-Ok "Packages restored"
+        }
+    }
+
+    if ($exitCode -eq 0) {
+        $publishDir = Join-Path $DIST_DIR "publish"
+
+        if ($Mode -eq "Publish") {
+            Write-Step "Publishing ZoltDumpUI (Native AOT, Release)..."
+
+            & dotnet publish $UI_PROJ `
+                -c Release `
+                -r win-x64 `
+                -p:PublishAot=true `
+                -o $publishDir `
+                --nologo
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "UI AOT publish failed"
+                $exitCode = 1
+            }
+            else {
+                $exeFile = Get-ChildItem -Path $publishDir -Filter "ZoltDumpUI.exe" -ErrorAction SilentlyContinue |
+                           Select-Object -First 1
+
+                if ($exeFile) {
+                    Get-ChildItem -Path $publishDir -File |
+                        Where-Object { $_.Extension -in ".exe", ".dll", ".pdb" } |
+                        ForEach-Object { Copy-Item $_.FullName -Destination $DIST_DIR -Force }
+
+                    Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue
+
+                    $exeSize = Get-FileSize (Join-Path $DIST_DIR "ZoltDumpUI.exe")
+                    Write-Ok "ZoltDumpUI.exe ($exeSize)"
+                }
+                else {
+                    Write-Fail "No build output found"
+                    $exitCode = 1
+                }
+            }
+        }
+        else {
+            $publishConfig = if ($Mode -eq "Debug") { "Debug" } else { "Release" }
+            Write-Step "Publishing ZoltDumpUI ($publishConfig, self-contained single-file)..."
+
+            & dotnet publish $UI_PROJ `
+                -c $publishConfig `
+                -r win-x64 `
+                --self-contained `
+                -p:PublishSingleFile=true `
+                -p:PublishAot=false `
+                -p:IncludeNativeLibrariesForSelfExtract=true `
+                -p:IncludeAllContentForSelfExtract=true `
+                -o $publishDir `
+                --nologo
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "UI publish failed"
+                $exitCode = 1
+            }
+            else {
+                $exeFile = Get-ChildItem -Path $publishDir -Filter "ZoltDumpUI.exe" -ErrorAction SilentlyContinue |
+                           Select-Object -First 1
+
+                if ($exeFile) {
+                    Copy-Item $exeFile.FullName -Destination $DIST_DIR -Force
+
+                    if ($Mode -eq "Debug") {
+                        $pdb = Join-Path $exeFile.DirectoryName "ZoltDumpUI.pdb"
+                        if (Test-Path $pdb) { Copy-Item $pdb -Destination $DIST_DIR -Force }
+                    }
+
+                    Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue
+
+                    $exeSize = Get-FileSize (Join-Path $DIST_DIR "ZoltDumpUI.exe")
+                    Write-Ok "ZoltDumpUI.exe ($exeSize)"
+                }
+                else {
+                    Write-Fail "No build output found"
+                    $exitCode = 1
+                }
+            }
+        }
+    }
+}
+
+# ============================================================
+# Run Tests
+# ============================================================
+
+if ($Target -in "All", "Test") {
+    Write-Banner "Unit Tests"
+
+    if (-not (Test-Path $TEST_PROJ)) {
+        Write-Info "Test project not found, skipping"
+    }
+    else {
+        Write-Step "Building + running tests..."
+
+        $restoreFlag = if ($SkipRestore) { "--no-restore" } else { "" }
+        & dotnet test $TEST_PROJ -c $CSharpConfig --nologo $restoreFlag -v minimal
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "Tests failed"
+            $exitCode = 1
+        }
+        else {
+            Write-Ok "All tests passed"
+        }
+    }
+}
+
+# ============================================================
+# Copy CE scripts
+# ============================================================
+
+if ($Target -in "All", "DLL") {
+    Write-Step "Copying CE scripts to dist\..."
+    $src = Join-Path $ROOT_DIR "scripts\ZoltDump.CT"
+    if (Test-Path $src) {
+        Copy-Item $src -Destination $DIST_DIR -Force
+        Write-Ok "ZoltDump.CT copied to dist\"
+    }
+    $dissectSrc = Join-Path $ROOT_DIR "scripts\zolt_dissect.lua"
+    if (Test-Path $dissectSrc) {
+        Copy-Item $dissectSrc -Destination $DIST_DIR -Force
+        Write-Ok "zolt_dissect.lua copied to dist\"
+    }
+    $buildNumSrc = Join-Path $ROOT_DIR "build_number.txt"
+    if (Test-Path $buildNumSrc) {
+        Copy-Item $buildNumSrc -Destination $DIST_DIR -Force
+        Write-Ok "build_number.txt copied to dist\"
+    }
+}
+
+# ============================================================
+# Summary
+# ============================================================
+
+$sw.Stop()
+
+Write-Banner "Build Summary"
+
+Write-Host ""
+Write-Host "  Mode:     $Mode" -ForegroundColor White
+Write-Host "  Target:   $Target" -ForegroundColor White
+Write-Host "  Time:     $($sw.Elapsed.ToString('mm\:ss\.ff'))" -ForegroundColor White
+
+$statusColor = if ($exitCode -eq 0) { "Green" } else { "Red" }
+$statusText  = if ($exitCode -eq 0) { "SUCCESS" } else { "FAILED" }
+Write-Host "  Status:   $statusText" -ForegroundColor $statusColor
+Write-Host ""
+
+if (Test-Path $DIST_DIR) {
+    Write-Host "  Output: $DIST_DIR" -ForegroundColor White
+
+    Get-ChildItem $DIST_DIR -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $sz = Get-FileSize $_.FullName
+        Write-Host "    $($_.Name)  ($sz)" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
+
+if ($script:transcriptActive) {
+    try { Stop-Transcript | Out-Null } catch { }
+}
+exit $exitCode

@@ -1,0 +1,39 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.PropertySearchPanel"
+             x:DataType="vm:PropertySearchViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Search -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <DockPanel>
+                <Button Content="Search" DockPanel.Dock="Right" Margin="4,0,0,0"
+                        Command="{Binding SearchCommand}" />
+                <CheckBox Content="Game Only" DockPanel.Dock="Right"
+                          IsChecked="{Binding GameOnly}"
+                          Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
+                <TextBox Text="{Binding SearchQuery}" Watermark="Property name..." />
+            </DockPanel>
+        </Border>
+
+        <!-- Results -->
+        <DataGrid ItemsSource="{Binding Results}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  Background="#1E1E1E"
+                  Foreground="#D4D4D4"
+                  FontFamily="Consolas"
+                  FontSize="12">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Class" Binding="{Binding ClassName}" Width="200" />
+                <DataGridTextColumn Header="Super" Binding="{Binding SuperName}" Width="150" />
+                <DataGridTextColumn Header="Property" Binding="{Binding PropertyName}" Width="200" />
+                <DataGridTextColumn Header="Type" Binding="{Binding PropertyType}" Width="120" />
+                <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
+                <DataGridTextColumn Header="Size" Binding="{Binding Size}" Width="60" />
+                <DataGridTextColumn Header="Preview" Binding="{Binding Preview}" Width="200" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

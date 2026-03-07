@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.NodeFilterPanel"
+             x:DataType="vm:NodeFilterViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <DockPanel>
+                <Button Content="Load Classes" DockPanel.Dock="Left" Margin="0,0,4,0"
+                        Command="{Binding LoadClassesCommand}" />
+                <CheckBox Content="Game Only" DockPanel.Dock="Left"
+                          IsChecked="{Binding GameOnly}"
+                          Foreground="#D4D4D4" VerticalAlignment="Center" Margin="8,0" />
+                <TextBlock Text="{Binding DisplayCount, StringFormat='{}{0} classes'}"
+                           Foreground="#808080" VerticalAlignment="Center" />
+            </DockPanel>
+        </Border>
+
+        <!-- Filters -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#252526">
+            <StackPanel Spacing="4">
+                <AutoCompleteBox Watermark="Filter by super..."
+                                 ItemsSource="{Binding SuperSuggestions}"
+                                 Text="{Binding SuperFilter}"
+                                 FilterMode="Contains" />
+                <TextBox Text="{Binding FilterText}" Watermark="Filter by name..." />
+            </StackPanel>
+        </Border>
+
+        <!-- Class List -->
+        <DataGrid ItemsSource="{Binding DisplayedClasses}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  Background="#1E1E1E"
+                  Foreground="#D4D4D4"
+                  FontFamily="Consolas"
+                  FontSize="12">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Score" Binding="{Binding Score}" Width="50" />
+                <DataGridTextColumn Header="Class" Binding="{Binding ClassName}" Width="250" />
+                <DataGridTextColumn Header="Super" Binding="{Binding SuperName}" Width="200" />
+                <DataGridTextColumn Header="Props" Binding="{Binding PropertyCount}" Width="60" />
+                <DataGridTextColumn Header="Methods" Binding="{Binding MethodCount}" Width="60" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>
