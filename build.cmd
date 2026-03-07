@@ -1,5 +1,5 @@
 @echo off
-REM Zolt-Dump build wrapper — forwards to build.ps1
+REM Zolt-Dump build wrapper - forwards to build.ps1
 REM Usage: build.cmd [args...]
 REM   build.cmd                     = Release build, all targets
 REM   build.cmd debug               = Debug build
