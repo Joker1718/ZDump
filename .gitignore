@@ -416,3 +416,18 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# ============================================================
+# Zolt-Dump project-specific
+# ============================================================
+
+# Vendor cloned repos (re-fetch via tools/vendor-update.ps1)
+vendor/minhook/
+vendor/nlohmann/
+# vendor/godot-headers/ IS committed (small extracted headers)
+
+# CMake build directory
+build/
+
+# Claude Code
+.claude/

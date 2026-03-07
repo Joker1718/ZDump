@@ -1,0 +1,103 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.LiveWalkerPanel"
+             x:DataType="vm:LiveWalkerViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Toolbar Row 1 -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <WrapPanel>
+                <Button Content="Start World" Command="{Binding StartWorldCommand}" Margin="0,0,4,0" />
+                <Button Content="Back" Command="{Binding NavigateBackCommand}" Margin="0,0,4,0" />
+                <Button Content="Parent" Command="{Binding NavigateToParentCommand}" Margin="0,0,4,0" />
+                <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
+                <CheckBox Content="Auto" IsChecked="{Binding IsAutoRefresh}"
+                          Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
+                <NumericUpDown Value="{Binding AutoRefreshInterval}" Minimum="200" Maximum="10000"
+                               Increment="100" Width="100" Margin="2,0" />
+            </WrapPanel>
+        </Border>
+
+        <!-- Toolbar Row 2: Address -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <DockPanel>
+                <Button Content="Go" DockPanel.Dock="Right" Command="{Binding GoToAddressCommand}"
+                        Margin="4,0,0,0" />
+                <TextBox Text="{Binding AddressInput}" Watermark="Enter address..."
+                         FontFamily="Consolas" />
+            </DockPanel>
+        </Border>
+
+        <!-- Breadcrumbs -->
+        <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526"
+                IsVisible="{Binding Breadcrumbs.Count}">
+            <ItemsControl ItemsSource="{Binding Breadcrumbs}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="{Binding Display}" Classes="breadcrumb"
+                                    Command="{Binding $parent[ItemsControl].((vm:LiveWalkerViewModel)DataContext).NavigateToBreadcrumbCommand}"
+                                    CommandParameter="{Binding}"
+                                    Foreground="#569CD6" Background="Transparent"
+                                    Padding="4,2" FontSize="11" />
+                            <TextBlock Text=">" Foreground="#808080" VerticalAlignment="Center"
+                                       Margin="2,0" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </Border>
+
+        <!-- Object Info Header -->
+        <Border DockPanel.Dock="Top" Padding="8,4" Background="#1E1E1E">
+            <StackPanel Spacing="2">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                        <Button Content="Copy Addr" Command="{Binding CopyAddressCommand}" FontSize="11" />
+                        <Button Content="Copy Name" Command="{Binding CopyNameCommand}" FontSize="11" />
+                        <Button Content="HEX" Command="{Binding NavigateHexViewCommand}" FontSize="11" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding CurrentClassName}" Foreground="#569CD6" FontWeight="Bold" />
+                        <TextBlock Text="{Binding CurrentName}" Foreground="#D4D4D4" />
+                        <TextBlock Text="{Binding CurrentAddress}" Foreground="#4EC9B0" FontFamily="Consolas" FontSize="12" />
+                    </StackPanel>
+                </DockPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Search -->
+        <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526">
+            <TextBox Text="{Binding SearchQuery}" Watermark="Search fields..."
+                     FontSize="12" />
+        </Border>
+
+        <!-- Fields DataGrid -->
+        <DataGrid ItemsSource="{Binding Fields}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  GridLinesVisibility="Horizontal"
+                  HeadersVisibility="Column"
+                  Background="#1E1E1E"
+                  RowBackground="#1E1E1E"
+                  Foreground="#D4D4D4"
+                  FontFamily="Consolas"
+                  FontSize="12">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
+                <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="120" />
+                <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="200" />
+                <DataGridTextColumn Header="Hex" Binding="{Binding Hex}" Width="120" />
+                <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="140" />
+                <DataGridTextColumn Header="Ptr" Binding="{Binding PtrValue}" Width="140" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

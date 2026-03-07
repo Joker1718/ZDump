@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.ProxyDeployPanel"
+             x:DataType="vm:ProxyDeployViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
+            <WrapPanel>
+                <Button Content="Scan Games" Command="{Binding ScanGamesCommand}" Margin="0,0,4,0" />
+                <Separator Classes="vertical" Margin="4,2" />
+                <Button Content="Select All" Command="{Binding SelectAllCommand}" Margin="4,0,4,0" />
+                <Button Content="Unselect All" Command="{Binding UnselectAllCommand}" Margin="0,0,4,0" />
+                <Button Content="Invert" Command="{Binding InvertSelectionCommand}" Margin="0,0,8,0" />
+            </WrapPanel>
+        </Border>
+
+        <!-- Action Bar -->
+        <Border DockPanel.Dock="Bottom" Padding="4" Background="#2D2D30">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                    <CheckBox Content="Force" IsChecked="{Binding Force}"
+                              Foreground="#D4D4D4" VerticalAlignment="Center" />
+                    <Button Content="Deploy" Command="{Binding DeploySelectedCommand}" />
+                    <Button Content="Undeploy" Command="{Binding UndeploySelectedCommand}" />
+                </StackPanel>
+                <TextBlock Text="{Binding SourceVersion, StringFormat='Source: {0}'}"
+                           Foreground="#808080" VerticalAlignment="Center" />
+            </DockPanel>
+        </Border>
+
+        <!-- Games DataGrid -->
+        <DataGrid ItemsSource="{Binding Games}"
+                  AutoGenerateColumns="False"
+                  Background="#1E1E1E"
+                  Foreground="#D4D4D4"
+                  FontSize="12">
+            <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="" Binding="{Binding IsSelected}" Width="40" />
+                <DataGridTextColumn Header="Game" Binding="{Binding GameName}" Width="200" IsReadOnly="True" />
+                <DataGridTextColumn Header="Path" Binding="{Binding GamePath}" Width="300" IsReadOnly="True" />
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120" IsReadOnly="True" />
+                <DataGridTextColumn Header="Version" Binding="{Binding DeployedVersion}" Width="100" IsReadOnly="True" />
+                <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="200" IsReadOnly="True" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

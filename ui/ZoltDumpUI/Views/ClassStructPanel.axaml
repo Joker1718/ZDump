@@ -1,0 +1,56 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.ClassStructPanel"
+             x:DataType="vm:ClassStructViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="8,4" Background="#2D2D30">
+            <StackPanel Spacing="2">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Class:" Foreground="#808080" />
+                    <TextBlock Text="{Binding ClassName}" Foreground="#569CD6" FontWeight="Bold" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Super:" Foreground="#808080" />
+                    <TextBlock Text="{Binding SuperName}" Foreground="#4EC9B0" />
+                    <TextBlock Text="Address:" Foreground="#808080" Margin="16,0,0,0" />
+                    <TextBlock Text="{Binding ClassAddr}" Foreground="#D4D4D4" FontFamily="Consolas" />
+                    <TextBlock Text="{Binding PropertiesCount, StringFormat='({0} props)'}"
+                               Foreground="#808080" Margin="16,0,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Loading -->
+        <TextBlock Text="Loading..." IsVisible="{Binding IsLoading}"
+                   Foreground="#808080" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   DockPanel.Dock="Top" Margin="0,8" />
+
+        <!-- No class selected -->
+        <TextBlock Text="Select an object to view its class structure"
+                   IsVisible="{Binding !ClassName, Converter={x:Static StringConverters.IsNullOrEmpty}}"
+                   Foreground="#808080" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   DockPanel.Dock="Top" Margin="0,8" />
+
+        <!-- Properties DataGrid -->
+        <DataGrid ItemsSource="{Binding Properties}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  GridLinesVisibility="Horizontal"
+                  Background="#1E1E1E"
+                  RowBackground="#1E1E1E"
+                  Foreground="#D4D4D4"
+                  FontFamily="Consolas"
+                  FontSize="12">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
+                <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="150" />
+                <DataGridTextColumn Header="Size" Binding="{Binding Size}" Width="60" />
+                <DataGridTextColumn Header="Hint" Binding="{Binding Hint}" Width="150" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

@@ -1,0 +1,82 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:ZoltDumpUI.ViewModels"
+        xmlns:v="using:ZoltDumpUI.Views"
+        x:Class="ZoltDumpUI.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="Zolt-Dump — Godot Engine Dumper"
+        Width="1400" Height="900"
+        MinWidth="900" MinHeight="600"
+        Background="#1E1E1E"
+        WindowStartupLocation="CenterScreen">
+
+    <DockPanel>
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Background="#2D2D30" Padding="8,4">
+            <WrapPanel>
+                <Button Content="Connect" Command="{Binding ConnectCommand}"
+                        IsVisible="{Binding !IsConnected}" Margin="0,0,4,0" />
+                <Button Content="Disconnect" Command="{Binding DisconnectCommand}"
+                        IsVisible="{Binding IsConnected}" Margin="0,0,4,0" />
+                <Button Content="Scan" Command="{Binding TriggerScanCommand}"
+                        IsEnabled="{Binding IsConnected}" Margin="0,0,8,0" />
+
+                <Separator Classes="vertical" Margin="4,2" />
+
+                <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center"
+                           Foreground="#D4D4D4" Margin="8,0" />
+                <TextBlock Text="{Binding GodotVersion}" VerticalAlignment="Center"
+                           Foreground="#569CD6" Margin="4,0" />
+                <TextBlock Text="{Binding ErrorMessage}" VerticalAlignment="Center"
+                           Foreground="#F44747" Margin="8,0"
+                           IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                <Separator Classes="vertical" Margin="4,2" />
+
+                <TextBlock Text="Addr:" VerticalAlignment="Center" Foreground="#808080" Margin="4,0,2,0" />
+                <ComboBox SelectedIndex="{Binding AddressFormat}" MinWidth="100" Margin="0,0,4,0">
+                    <ComboBoxItem Content="Hex" />
+                    <ComboBoxItem Content="0x Hex" />
+                    <ComboBoxItem Content="Module+Offset" />
+                </ComboBox>
+
+                <CheckBox Content="Collapse Ptrs" IsChecked="{Binding CollapsePointers}"
+                          Foreground="#D4D4D4" Margin="8,0" VerticalAlignment="Center" />
+            </WrapPanel>
+        </Border>
+
+        <!-- Main Content -->
+        <Grid ColumnDefinitions="350,Auto,*">
+            <!-- Left: Node Tree -->
+            <v:NodeTreePanel Grid.Column="0" DataContext="{Binding NodeTree}" />
+
+            <GridSplitter Grid.Column="1" Width="4" Background="#3F3F46" />
+
+            <!-- Right: Tab Control -->
+            <TabControl Grid.Column="2" SelectedIndex="{Binding SelectedTabIndex}"
+                        Background="#1E1E1E">
+                <TabItem Header="Live Walker">
+                    <v:LiveWalkerPanel DataContext="{Binding LiveWalker}" />
+                </TabItem>
+                <TabItem Header="Instance Finder">
+                    <v:InstanceFinderPanel DataContext="{Binding InstanceFinder}" />
+                </TabItem>
+                <TabItem Header="Property Search">
+                    <v:PropertySearchPanel DataContext="{Binding PropertySearch}" />
+                </TabItem>
+                <TabItem Header="Node Filter">
+                    <v:NodeFilterPanel DataContext="{Binding NodeFilter}" />
+                </TabItem>
+                <TabItem Header="Class Struct">
+                    <v:ClassStructPanel DataContext="{Binding ClassStruct}" />
+                </TabItem>
+                <TabItem Header="Pointers">
+                    <v:PointerPanel DataContext="{Binding Pointers}" />
+                </TabItem>
+                <TabItem Header="Proxy Deploy">
+                    <v:ProxyDeployPanel DataContext="{Binding ProxyDeploy}" />
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </DockPanel>
+</Window>

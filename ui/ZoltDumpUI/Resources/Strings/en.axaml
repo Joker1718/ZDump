@@ -1,0 +1,58 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- Application -->
+    <sys:String x:Key="AppTitle">Zolt-Dump — Godot Engine Dumper</sys:String>
+    <sys:String x:Key="AppVersion">v1.0.0</sys:String>
+
+    <!-- Toolbar -->
+    <sys:String x:Key="BtnConnect">Connect</sys:String>
+    <sys:String x:Key="BtnDisconnect">Disconnect</sys:String>
+    <sys:String x:Key="BtnScan">Start Scan</sys:String>
+    <sys:String x:Key="BtnPause">Pause</sys:String>
+    <sys:String x:Key="BtnRefresh">Refresh</sys:String>
+
+    <!-- Tabs -->
+    <sys:String x:Key="TabNodeTree">Node Tree</sys:String>
+    <sys:String x:Key="TabLiveWalker">Live Walker</sys:String>
+    <sys:String x:Key="TabClassStruct">Class Struct</sys:String>
+    <sys:String x:Key="TabInstanceFinder">Instance Finder</sys:String>
+    <sys:String x:Key="TabPointers">Pointers</sys:String>
+    <sys:String x:Key="TabProxyDeploy">Proxy Deploy</sys:String>
+    <sys:String x:Key="TabPropertySearch">Property Search</sys:String>
+    <sys:String x:Key="TabNodeFilter">Node Filter</sys:String>
+
+    <!-- Context Menu -->
+    <sys:String x:Key="CtxCopyAddress">Copy Address</sys:String>
+    <sys:String x:Key="CtxCopyName">Copy Name</sys:String>
+    <sys:String x:Key="CtxCopyCeXml">Copy CE XML</sys:String>
+    <sys:String x:Key="CtxCopyCeField">Copy CE Field</sys:String>
+    <sys:String x:Key="CtxExportCsx">Export CSX</sys:String>
+    <sys:String x:Key="CtxExportSdk">Export SDK Header</sys:String>
+    <sys:String x:Key="CtxOpenInWalker">Open in Live Walker</sys:String>
+    <sys:String x:Key="CtxGotoAobMaker">Goto in AOBMaker</sys:String>
+
+    <!-- Status Bar -->
+    <sys:String x:Key="StatusDisconnected">Disconnected</sys:String>
+    <sys:String x:Key="StatusConnecting">Connecting...</sys:String>
+    <sys:String x:Key="StatusConnected">Connected</sys:String>
+    <sys:String x:Key="StatusScanning">Scanning...</sys:String>
+    <sys:String x:Key="StatusReady">Ready</sys:String>
+
+    <!-- Columns -->
+    <sys:String x:Key="ColName">Name</sys:String>
+    <sys:String x:Key="ColClass">Class</sys:String>
+    <sys:String x:Key="ColAddress">Address</sys:String>
+    <sys:String x:Key="ColType">Type</sys:String>
+    <sys:String x:Key="ColValue">Value</sys:String>
+    <sys:String x:Key="ColOffset">Offset</sys:String>
+    <sys:String x:Key="ColSize">Size</sys:String>
+    <sys:String x:Key="ColHex">Hex</sys:String>
+
+    <!-- Messages -->
+    <sys:String x:Key="MsgNoConnection">Not connected to game process. Inject DLL first.</sys:String>
+    <sys:String x:Key="MsgScanComplete">Scan complete. Found {0} objects.</sys:String>
+    <sys:String x:Key="MsgScanFailed">Scan failed: {0}</sys:String>
+
+</ResourceDictionary>

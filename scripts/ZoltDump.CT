@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="46">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"=== Zolt-Dump — Godot Engine Dumper ==="</Description>
+      <Options moHideChildren="1"/>
+      <LastState/>
+      <Color>008000</Color>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1</ID>
+          <Description>"Inject ZoltDumper.dll"</Description>
+          <LastState/>
+          <Color>0000FF</Color>
+          <VariableType>Auto Assembler Script</VariableType>
+          <AssemblerScript>
+{$lua}
+[ENABLE]
+-- Zolt-Dump DLL Injection Script
+-- Inject ZoltDumper.dll into the attached Godot process
+
+local function findDll()
+  -- 1. Check CE's autorun directory
+  local ceDir = getCheatEngineDir()
+  local path = ceDir .. '\\autorun\\ZoltDumper.dll'
+  if file_exists(path) then return path end
+
+  -- 2. Check same directory as cheat table
+  local ctDir = extractFilePath(getOpenedProcessName() or '')
+  if ctDir ~= '' then
+    path = ctDir .. '\\ZoltDumper.dll'
+    if file_exists(path) then return path end
+  end
+
+  -- 3. Check AppData
+  local appData = os.getenv('LOCALAPPDATA') or ''
+  path = appData .. '\\ZoltDump\\ZoltDumper.dll'
+  if file_exists(path) then return path end
+
+  -- 4. Ask user
+  local dlg = createOpenDialog(nil)
+  dlg.Filter = 'DLL Files (*.dll)|*.dll'
+  dlg.Title = 'Select ZoltDumper.dll'
+  if dlg.Execute() then return dlg.FileName end
+
+  return nil
+end
+
+local function file_exists(path)
+  local f = io.open(path, 'r')
+  if f then f:close() return true end
+  return false
+end
+
+local dllPath = findDll()
+if dllPath == nil then
+  showMessage('ZoltDumper.dll not found. Please locate it manually.')
+else
+  -- Countdown injection (15 seconds)
+  local countdownTimer = createTimer(nil)
+  local remaining = 15
+  local statusLabel = nil
+
+  -- Find or create status label
+  local form = getMainForm()
+  statusLabel = createLabel(form)
+  statusLabel.Caption = 'Injecting in ' .. remaining .. 's...'
+  statusLabel.Left = 10
+  statusLabel.Top = form.Height - 40
+
+  countdownTimer.Interval = 1000
+  countdownTimer.OnTimer = function(timer)
+    remaining = remaining - 1
+    if remaining <= 0 then
+      timer.Enabled = false
+      if statusLabel then statusLabel.Caption = 'Injecting...' end
+
+      local result = injectDLL(dllPath)
+      if result then
+        if statusLabel then statusLabel.Caption = 'ZoltDumper.dll injected!' end
+        print('[Zolt-Dump] DLL injected successfully: ' .. dllPath)
+      else
+        if statusLabel then statusLabel.Caption = 'Injection failed!' end
+        print('[Zolt-Dump] DLL injection FAILED: ' .. dllPath)
+      end
+    else
+      if statusLabel then
+        statusLabel.Caption = 'Injecting in ' .. remaining .. 's...'
+      end
+    end
+  end
+  countdownTimer.Enabled = true
+end
+
+[DISABLE]
+-- Unload not supported (DLL stays loaded)
+          </AssemblerScript>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

@@ -1,0 +1,61 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:ZoltDumpUI.ViewModels"
+             x:Class="ZoltDumpUI.Views.NodeTreePanel"
+             x:DataType="vm:NodeTreeViewModel">
+
+    <DockPanel Background="#252526">
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="8,4" Background="#2D2D30">
+            <DockPanel>
+                <TextBlock Text="Object Tree" FontWeight="Bold" Foreground="#D4D4D4"
+                           VerticalAlignment="Center" />
+                <TextBlock Text="{Binding DisplayCount, StringFormat='({0})'}"
+                           Foreground="#808080" VerticalAlignment="Center" Margin="8,0" />
+            </DockPanel>
+        </Border>
+
+        <!-- Search -->
+        <Border DockPanel.Dock="Top" Padding="4" Background="#252526">
+            <StackPanel Spacing="4">
+                <DockPanel>
+                    <Button Content="Cancel" DockPanel.Dock="Right" Margin="4,0,0,0"
+                            Command="{Binding CancelLoadCommand}"
+                            IsVisible="{Binding IsLoading}" />
+                    <Button Content="Load" DockPanel.Dock="Right" Margin="4,0,0,0"
+                            Command="{Binding LoadAllCommand}"
+                            IsVisible="{Binding !IsLoading}" />
+                    <AutoCompleteBox Watermark="Search..." FilterMode="Contains"
+                                    Text="{Binding FilterText}" />
+                </DockPanel>
+                <ComboBox ItemsSource="{Binding ClassSuggestions}"
+                          SelectedItem="{Binding ClassFilter}"
+                          PlaceholderText="Filter by class..." />
+            </StackPanel>
+        </Border>
+
+        <!-- List -->
+        <ListBox ItemsSource="{Binding DisplayedNodes}"
+                 SelectedItem="{Binding SelectedNode}"
+                 Background="#1E1E1E">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="2">
+                        <TextBlock Text="{Binding ClassName}" Foreground="#569CD6" FontSize="12" />
+                        <TextBlock Text="{Binding Name}" Foreground="#D4D4D4" FontSize="12" />
+                        <TextBlock Text="{Binding Address}" Foreground="#4EC9B0" FontSize="11"
+                                   Opacity="0.6" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+
+            <ListBox.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Copy Class Name" Command="{Binding CopyClassNameCommand}" />
+                    <MenuItem Header="Copy Name" Command="{Binding CopyNameCommand}" />
+                    <MenuItem Header="Copy Address" Command="{Binding CopyAddressCommand}" />
+                </ContextMenu>
+            </ListBox.ContextMenu>
+        </ListBox>
+    </DockPanel>
+</UserControl>
