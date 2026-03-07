@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.25)
 
 # ============================================================
+# C++ standard — project requires C++23 (nested namespaces,
+# inline variables, structured bindings, std::format, etc.)
+# ============================================================
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# ============================================================
 # Product version (major.minor.patch) — shared with UI project
 # ============================================================
 set(VER_MAJOR 1)
