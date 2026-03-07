@@ -429,5 +429,9 @@ vendor/nlohmann/
 # CMake build directory
 build/
 
+# repos specific
+dist/
+build_proxy/
+
 # Claude Code
 .claude/
