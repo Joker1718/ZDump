@@ -26,6 +26,7 @@ public sealed class DumpService : IDumpService
             Ok = resp["ok"]?.GetValue<bool>() ?? false,
             GodotVersion = resp["godot_version"]?.GetValue<string>() ?? "",
             ProcessName = resp["process_name"]?.GetValue<string>() ?? "",
+            Pid = resp["pid"]?.GetValue<int>() ?? 0,
             ModulePath = resp["module_path"]?.GetValue<string>() ?? "",
             ScanMethod = resp["scan_method"]?.GetValue<string>() ?? "",
             Error = resp["error"]?.GetValue<string>() ?? ""
@@ -270,6 +271,7 @@ public sealed class DumpService : IDumpService
             Total = resp["total"]?.GetValue<int>() ?? 0,
             Offset = resp["offset"]?.GetValue<int>() ?? 0,
             Count = objects.Count,
+            Scanned = resp["scanned"]?.GetValue<int>() ?? 0,
             Objects = objects
         };
     }

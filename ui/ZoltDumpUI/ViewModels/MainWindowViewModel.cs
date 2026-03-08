@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ZoltDumpUI.Core;
 using ZoltDumpUI.Models;
+using ZoltDumpUI.Services;
 
 namespace ZoltDumpUI.ViewModels;
 
@@ -90,6 +91,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
             // Load pointers
             await Pointers.LoadPointersAsync();
+            StatusText = $"Connected — Godot {state.GodotVersion} ({Pointers.ObjectCount:N0} objects)";
+
+            // Record inject history
+            InjectHistoryService.Record(state.ProcessName, state.Pid, state.GodotVersion, Pointers.ObjectCount);
         }
         catch (Exception ex)
         {
@@ -132,8 +137,8 @@ public partial class MainWindowViewModel : ViewModelBase
                 if (status.IsComplete) break;
             }
 
-            StatusText = "Scan complete";
             await Pointers.LoadPointersAsync();
+            StatusText = $"Scan complete — {Pointers.ObjectCount:N0} objects";
         }
         catch (Exception ex)
         {

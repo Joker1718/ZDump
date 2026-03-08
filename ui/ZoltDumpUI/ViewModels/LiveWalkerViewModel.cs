@@ -97,10 +97,17 @@ public partial class LiveWalkerViewModel : ViewModelBase
                 Breadcrumbs.Clear();
                 await NavigateToAddressAsync(tree.Root.Address);
             }
+            else
+            {
+                SetError("SceneTree root not found. The game may use a custom SceneTree layout. " +
+                         "Use address navigation or Object Tree instead.");
+                _log.Info("view", "StartWorld: SceneTree root is null (root probe failed)");
+            }
         }
         catch (Exception ex)
         {
             SetError($"SceneTree walk failed: {ex.Message}");
+            _log.Error("view", "StartWorld failed", ex);
         }
         finally
         {

@@ -8,6 +8,8 @@ public sealed class ObjectListResult
     public int Total { get; init; }
     public int Offset { get; init; }
     public int Count { get; init; }
+    /// <summary>Number of valid objects scanned from slot 0 to current position.</summary>
+    public int Scanned { get; init; }
     public List<ObjectEntry> Objects { get; init; } = [];
 }
 

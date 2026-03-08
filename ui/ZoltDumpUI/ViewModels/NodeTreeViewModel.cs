@@ -26,6 +26,7 @@ public partial class NodeTreeViewModel : ViewModelBase
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private ObjectEntry? _selectedNode;
+    [ObservableProperty] private string _statusText = "";
 
     public ObservableCollection<string> ClassSuggestions { get; } = [];
     public event Action<ObjectEntry?>? SelectionChanged;
@@ -60,29 +61,60 @@ public partial class NodeTreeViewModel : ViewModelBase
 
             var total = await _dump.GetObjectCountAsync(ct);
             TotalCount = total;
+            StatusText = $"Loading... 0 / {total:N0}";
 
-            const int pageSize = 500;
-            for (var offset = 0; offset < total; offset += pageSize)
+            // Use large page size like UE5CEDumper (2000 per batch).
+            // DLL's get_object_list uses slot index as offset — advance by
+            // last returned slot_index + 1, not by page size.
+            const int pageSize = 2000;
+            var offset = 0;
+
+            while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 var result = await _dump.GetObjectListAsync(offset, pageSize, ct);
+
+                if (result.Objects.Count == 0)
+                    break;
+
                 _allNodes.AddRange(result.Objects);
+                StatusText = $"Loading... {_allNodes.Count:N0} / {total:N0}";
+
+                // Next offset = slot index after the last returned object
+                var lastSlotIndex = result.Objects[^1].SlotIndex;
+                offset = lastSlotIndex + 1;
+
+                // Stop if we've loaded all objects
+                if (_allNodes.Count >= total)
+                    break;
             }
 
-            // Build class suggestions
-            var classes = _allNodes.Select(n => n.ClassName).Distinct().OrderBy(c => c).ToList();
+            // Build class suggestions (filter out empty class names)
+            var classes = _allNodes
+                .Select(n => n.ClassName)
+                .Where(c => !string.IsNullOrEmpty(c))
+                .Distinct()
+                .OrderBy(c => c)
+                .ToList();
             ClassSuggestions.Clear();
             ClassSuggestions.Add(""); // All
             foreach (var c in classes)
                 ClassSuggestions.Add(c);
 
             ApplyFilter();
+            StatusText = $"Loaded {_allNodes.Count:N0} objects";
             _log.Info("view", $"Loaded {_allNodes.Count} objects");
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            StatusText = _allNodes.Count > 0
+                ? $"Cancelled — {_allNodes.Count:N0} objects loaded"
+                : "";
+        }
         catch (Exception ex)
         {
             SetError($"Load failed: {ex.Message}");
+            StatusText = "";
             _log.Error("view", "Object load failed", ex);
         }
         finally
