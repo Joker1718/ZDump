@@ -26,9 +26,10 @@ struct EnginePointers {
     uintptr_t Engine     = 0;   // Engine* singleton address (holds pointer)
 
     // Godot version
-    std::string godotVersion;   // e.g. "4.3.stable"
-    uint32_t    godotMajor = 0; // 4
-    uint32_t    godotMinor = 0; // 3
+    std::string godotVersion;   // e.g. "4.3.stable" or "4.3.1.stable"
+    uint32_t    godotMajor = 0; // e.g. 4
+    uint32_t    godotMinor = 0; // e.g. 3
+    uint32_t    godotPatch = 0; // e.g. 1 (0 if not detected)
 
     // PE hash for hint cache
     char peHash[17] = {0};

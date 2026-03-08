@@ -35,7 +35,8 @@
                    DockPanel.Dock="Top" Margin="0,8" />
 
         <!-- Properties DataGrid -->
-        <DataGrid ItemsSource="{Binding Properties}"
+        <DataGrid x:CompileBindings="False"
+                  ItemsSource="{Binding Properties}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   GridLinesVisibility="Horizontal"

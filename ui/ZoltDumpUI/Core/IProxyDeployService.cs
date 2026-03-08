@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Core;
 
 /// <summary>
@@ -16,6 +18,7 @@ public interface IProxyDeployService
 }
 
 /// <summary>Deployment info for a single Godot game.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class GameDeployInfo
 {
     public string GameName { get; set; } = "";

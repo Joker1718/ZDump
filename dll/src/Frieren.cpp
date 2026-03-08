@@ -469,6 +469,304 @@ static uintptr_t ScanBssForClassDB() {
     return best.addr;
 }
 
+// ============================================================
+// 3.x ClassDB scanning — bucket-chain HashMap (16B inline)
+// Layout: hash_table*(8B) + power(1B+3B pad) + elements(4B)
+// ============================================================
+
+// Validate a 3.x bucket-chain HashMap as ClassDB
+// Note: ValidateClassDB3x is not currently called via AOB ScanForTarget (3.x uses BSS scan directly)
+// but is kept for potential future AOB pattern support.
+[[maybe_unused]] static bool ValidateClassDB3x(uintptr_t addr) {
+    if (!addr) return false;
+
+    uint64_t hashTable = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+    uint8_t  power     = Zoltraak::ReadSafe<uint8_t>(addr + 0x08, 0);
+    uint32_t elements  = Zoltraak::ReadSafe<uint32_t>(addr + 0x0C, 0);
+
+    // power should be reasonable (4-20 → 16 to 1M buckets)
+    if (power < 4 || power > 20) return false;
+
+    // 3.x ClassDB typically has 400-800 classes
+    if (elements < 50 || elements > 5000) return false;
+
+    // hash_table must be a valid heap pointer
+    if (!hashTable || !Zoltraak::IsReadable(hashTable)) return false;
+
+    // Verify some buckets: should have mix of null and readable element pointers
+    int validBuckets = 0;
+    int nullBuckets = 0;
+    int bucketCount = 1 << power;
+    int checkCount = (bucketCount < 16) ? bucketCount : 16;
+
+    for (int i = 0; i < checkCount; ++i) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(hashTable + i * 8, 0);
+        if (!elem) { nullBuckets++; continue; }
+        if (Zoltraak::IsReadable(elem)) validBuckets++;
+    }
+
+    // Hash table should be sparse (some null, some valid)
+    if (validBuckets < 2) return false;
+
+    Solliter::Info("SCAN:ClsDB", "ValidateClassDB3x: power=%u buckets=%d elements=%u "
+        "valid=%d null=%d hashTable=%p",
+        power, bucketCount, elements, validBuckets, nullBuckets,
+        reinterpret_cast<void*>(hashTable));
+    return true;
+}
+
+// Sample class names from a 3.x bucket-chain HashMap
+static int SampleHashMapClassNames3x(uint64_t hashTable, uint8_t power, int maxSamples) {
+    int classLike = 0;
+    int sampled = 0;
+    uint32_t bucketCount = 1u << power;
+    // Cap bucket scan to prevent slow iteration on high-power HashMaps
+    int scanBuckets = static_cast<int>(std::min(bucketCount, 2048u));
+
+    for (int b = 0; b < scanBuckets && sampled < maxSamples; ++b) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(hashTable + b * 8, 0);
+        int chainDepth = 0;
+        while (elem && sampled < maxSamples && chainDepth < 256) {
+            if (!Zoltraak::IsReadable(elem)) break;
+
+            // 3.x Element: hash(4B)+pad(4B)+next(8B)+key(8B StringName)+value(ClassInfo...)
+            uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_KEY_OFF, 0);
+            if (dataPtr && Zoltraak::IsReadable(dataPtr)) {
+                std::string name = Flamme::ResolveAt(dataPtr);
+                if (LooksLikeClassName(name)) classLike++;
+            }
+            sampled++;
+            chainDepth++;
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+            if (next == elem) break;
+            elem = next;
+        }
+    }
+    return classLike;
+}
+
+// Brute-force .bss/.data scan for 3.x ClassDB HashMap (16B inline struct)
+static uintptr_t ScanBssForClassDB3x() {
+    auto bss = Zoltraak::GetBssSection();
+    auto data = Zoltraak::GetDataSection();
+
+    Solliter::Info("SCAN:ClsDB", "Brute-force scanning for 3.x ClassDB HashMap (16B inline)");
+
+    struct Candidate { uintptr_t addr; uint32_t elements; uint64_t hashTable; uint8_t power; };
+    std::vector<Candidate> candidateList;
+
+    auto scanSection = [&](uint64_t base, uint64_t size) {
+        if (size < 16) return;
+        for (uint64_t offset = 0; offset + 16 <= size; offset += 8) {
+            uintptr_t probeAddr = static_cast<uintptr_t>(base + offset);
+            uint64_t hashTable = Zoltraak::ReadSafe<uint64_t>(probeAddr, 0);
+            uint8_t  power     = Zoltraak::ReadSafe<uint8_t>(probeAddr + 0x08, 0);
+            uint32_t elements  = Zoltraak::ReadSafe<uint32_t>(probeAddr + 0x0C, 0);
+
+            if (power < 4 || power > 20) continue;
+            if (elements < 50 || elements > 5000) continue;
+            if (!hashTable || !Zoltraak::IsReadable(hashTable)) continue;
+
+            // Load factor sanity: reject if power is much too high for element count
+            uint32_t bucketCount = 1u << power;
+            if (power >= 10 && elements * 4 < bucketCount) continue;
+
+            // Quick bucket check: at least 2 non-null readable buckets
+            int valid = 0;
+            int check = bucketCount < 16 ? static_cast<int>(bucketCount) : 16;
+            for (int i = 0; i < check; ++i) {
+                uint64_t e = Zoltraak::ReadSafe<uint64_t>(hashTable + i * 8, 0);
+                if (e && Zoltraak::IsReadable(e)) valid++;
+            }
+            if (valid < 2) continue;
+
+            Solliter::Debug("SCAN:ClsDB", "3x HashMap at %p: power=%u elements=%u hashTable=%p",
+                reinterpret_cast<void*>(probeAddr), power, elements,
+                reinterpret_cast<void*>(hashTable));
+            candidateList.push_back({ probeAddr, elements, hashTable, power });
+        }
+    };
+
+    if (bss.size > 0) scanSection(bss.baseAddr, bss.size);
+    if (data.size > 0) scanSection(data.baseAddr, data.size);
+
+    if (candidateList.empty()) {
+        Solliter::Warn("SCAN:ClsDB", "3x brute-force scan found no valid HashMap candidates");
+        return 0;
+    }
+
+    // Sort by element count descending
+    std::sort(candidateList.begin(), candidateList.end(),
+        [](const Candidate& a, const Candidate& b) { return a.elements > b.elements; });
+
+    // Validate with class name sampling
+    for (auto& c : candidateList) {
+        int classLike = SampleHashMapClassNames3x(c.hashTable, c.power, 10);
+        Solliter::Debug("SCAN:ClsDB", "  3x Candidate %p (%u elems): %d/10 CamelCase class names",
+            reinterpret_cast<void*>(c.addr), c.elements, classLike);
+
+        if (classLike >= 5) {
+            Solliter::Info("SCAN:ClsDB", "3x brute-force found ClassDB at %p with %u elements (%d/10 class names)",
+                reinterpret_cast<void*>(c.addr), c.elements, classLike);
+            return c.addr;
+        }
+    }
+
+    // Fallback: use largest candidate
+    auto& best = candidateList[0];
+    Solliter::Warn("SCAN:ClsDB", "3x: using largest candidate %p (%u elements)",
+        reinterpret_cast<void*>(best.addr), best.elements);
+    return best.addr;
+}
+
+// ============================================================
+// 3.x ObjectDB validation and scanning
+// ============================================================
+
+// Validate a 3.x ObjectDB HashMap<uint64_t, Object*> at the given address.
+// Layout: hash_table(8B) + power(1B+3B pad) + elements(4B) = 16 bytes
+// Note: ValidateObjectDB3x is not currently called via AOB ScanForTarget (3.x uses BSS scan directly)
+// but is kept for potential future AOB pattern support.
+[[maybe_unused]] static bool ValidateObjectDB3x(uintptr_t addr) {
+    if (!addr) return false;
+    EnsureModuleInfo();
+
+    uint64_t hashTable = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+    uint8_t  power     = Zoltraak::ReadSafe<uint8_t>(addr + 0x08, 0);
+    uint32_t elements  = Zoltraak::ReadSafe<uint32_t>(addr + 0x0C, 0);
+
+    // power 4-20 → 16 to 1M buckets
+    if (power < 4 || power > 20) return false;
+
+    // 3.x ObjectDB typically has hundreds to thousands of objects
+    if (elements < 10 || elements > 500000) return false;
+
+    // hash_table must be a valid heap pointer
+    if (!hashTable || !Zoltraak::IsReadable(hashTable)) return false;
+
+    // Sample some buckets → follow chains → validate Object* vtable pointers
+    int validVtables = 0;
+    int sampled = 0;
+    int bucketCount = 1 << power;
+
+    for (int b = 0; b < bucketCount && sampled < 50; ++b) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(hashTable + b * 8, 0);
+        while (elem && sampled < 50) {
+            if (!Zoltraak::IsReadable(elem)) break;
+
+            // 3.x HashMap<ObjectID, Object*>::Element:
+            //   hash(4B)+pad(4B)+next*(8B)+key(8B ObjectID)+value(8B Object*)
+            uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_VALUE_OFF, 0);
+            if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+                if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                    validVtables++;
+                }
+            }
+            sampled++;
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+            if (next == elem) break;
+            elem = next;
+        }
+    }
+
+    if (validVtables < 3) return false;
+
+    Solliter::Info("SCAN:ObjDB", "ValidateObjectDB3x: power=%u elements=%u "
+        "sampled=%d validVtables=%d hashTable=%p",
+        power, elements, sampled, validVtables,
+        reinterpret_cast<void*>(hashTable));
+    return true;
+}
+
+// Brute-force .bss/.data scan for 3.x ObjectDB HashMap<ObjectID, Object*> (16B inline)
+static uintptr_t ScanBssForObjectDB3x() {
+    auto bss  = Zoltraak::GetBssSection();
+    auto data = Zoltraak::GetDataSection();
+    EnsureModuleInfo();
+
+    Solliter::Info("SCAN:ObjDB", "Brute-force scanning for 3.x ObjectDB HashMap (16B inline)");
+
+    struct Candidate { uintptr_t addr; uint32_t elements; int validVtables; };
+    std::vector<Candidate> candidateList;
+
+    auto scanSection = [&](uint64_t base, uint64_t size) {
+        if (size < 16) return;
+        for (uint64_t offset = 0; offset + 16 <= size; offset += 8) {
+            uintptr_t probeAddr = static_cast<uintptr_t>(base + offset);
+            uint64_t hashTable = Zoltraak::ReadSafe<uint64_t>(probeAddr, 0);
+            uint8_t  power     = Zoltraak::ReadSafe<uint8_t>(probeAddr + 0x08, 0);
+            uint32_t elements  = Zoltraak::ReadSafe<uint32_t>(probeAddr + 0x0C, 0);
+
+            if (power < 4 || power > 20) continue;
+            if (elements < 10 || elements > 500000) continue;
+            if (!hashTable || !Zoltraak::IsReadable(hashTable)) continue;
+
+            // Load factor sanity: Godot 3.x doubles capacity when elements >= capacity,
+            // so a legitimate HashMap should have elements >= 25% of bucket count.
+            // power=16 with 503 elements (0.77% load) is a false positive.
+            uint32_t bucketCount = 1u << power;
+            if (power >= 10 && elements * 4 < bucketCount) continue;
+
+            // Sample buckets → validate Object* vtables
+            // Cap bucket scan to prevent slow iteration on high-power false positives
+            int validVtables = 0;
+            int sampled = 0;
+            int scanBuckets = static_cast<int>(std::min(bucketCount, 2048u));
+
+            for (int b = 0; b < scanBuckets && sampled < 30; ++b) {
+                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(hashTable + b * 8, 0);
+                int chainDepth = 0;
+                while (elem && sampled < 30 && chainDepth < 256) {
+                    if (!Zoltraak::IsReadable(elem)) break;
+
+                    uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+                        elem + DynOff::ELEM_3X_VALUE_OFF, 0);
+                    if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                        uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+                        if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                            validVtables++;
+                        }
+                    }
+                    sampled++;
+                    chainDepth++;
+
+                    uint64_t next = Zoltraak::ReadSafe<uint64_t>(
+                        elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                    if (next == elem) break;
+                    elem = next;
+                }
+            }
+
+            if (validVtables >= 3) {
+                Solliter::Debug("SCAN:ObjDB", "3x ObjectDB candidate at %p: power=%u elements=%u vtables=%d",
+                    reinterpret_cast<void*>(probeAddr), power, elements, validVtables);
+                candidateList.push_back({ probeAddr, elements, validVtables });
+            }
+        }
+    };
+
+    if (bss.size > 0) scanSection(bss.baseAddr, bss.size);
+    if (data.size > 0) scanSection(data.baseAddr, data.size);
+
+    if (candidateList.empty()) {
+        Solliter::Warn("SCAN:ObjDB", "3x brute-force scan found no valid ObjectDB candidates");
+        return 0;
+    }
+
+    // Sort by element count descending (largest is most likely the real ObjectDB)
+    std::sort(candidateList.begin(), candidateList.end(),
+        [](const Candidate& a, const Candidate& b) { return a.elements > b.elements; });
+
+    auto& best = candidateList[0];
+    Solliter::Info("SCAN:ObjDB", "3x brute-force found ObjectDB at %p with %u elements (%d vtables, %d candidates)",
+        reinterpret_cast<void*>(best.addr), best.elements, best.validVtables,
+        static_cast<int>(candidateList.size()));
+    return best.addr;
+}
+
 // Brute-force .bss/.data scan for ObjectDB object_slots pointer.
 // Scans for an 8-byte value that is a heap pointer to a valid ObjectSlot array.
 // Returns the address of the pointer variable (in .bss/.data), consistent with AOB results.
@@ -561,6 +859,37 @@ static bool ValidateSceneTree(uintptr_t addr) {
         reinterpret_cast<void*>(vtable),
         valid ? "yes" : "no");
     return valid;
+}
+
+// Relaxed SceneTree validation: accepts BSS addresses even when singleton pointer is NULL.
+// The AOB pattern correctly finds the .bss variable for SceneTree::singleton,
+// but Main::start() may not have populated it yet. Accept the address for
+// deferred resolution via Serie::GetRoot() lazy re-deref.
+static bool ValidateSceneTreeRelaxed(uintptr_t addr) {
+    if (!addr) return false;
+    EnsureModuleInfo();
+
+    // Must be in a writable section (.bss/.data where singleton variables live)
+    if (!Zoltraak::IsInWritableSection(addr)) return false;
+
+    uint64_t treePtr = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+
+    // If non-null, apply strict validation
+    if (treePtr) {
+        if (!Zoltraak::IsReadable(treePtr)) return false;
+        uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(treePtr, 0);
+        bool valid = (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize);
+        if (valid) {
+            Solliter::Info("SCAN:STree", "ValidateSceneTreeRelaxed: strict pass ptr=%p vtable=%p",
+                reinterpret_cast<void*>(treePtr), reinterpret_cast<void*>(vtable));
+        }
+        return valid;
+    }
+
+    // Pointer is NULL — accept the BSS address for deferred resolution
+    Solliter::Info("SCAN:STree", "ValidateSceneTreeRelaxed: accepting NULL singleton at %p (deferred)",
+        reinterpret_cast<void*>(addr));
+    return true;
 }
 
 // Validate Engine: same pattern as SceneTree (dereference, vtable check)
@@ -812,9 +1141,10 @@ static uintptr_t ScanForTarget(
 // ============================================================
 
 // Parse "4.3.stable" or "4.3.0.stable" into major/minor
-static void ParseVersion(const std::string& ver, uint32_t& major, uint32_t& minor) {
+static void ParseVersion(const std::string& ver, uint32_t& major, uint32_t& minor, uint32_t& patch) {
     major = 0;
     minor = 0;
+    patch = 0;
     if (ver.empty()) return;
 
     size_t dot1 = ver.find('.');
@@ -822,6 +1152,23 @@ static void ParseVersion(const std::string& ver, uint32_t& major, uint32_t& mino
 
     major = static_cast<uint32_t>(std::atoi(ver.c_str()));
     minor = static_cast<uint32_t>(std::atoi(ver.c_str() + dot1 + 1));
+
+    // Extract patch version (e.g. "4.3.1.stable" → patch=1)
+    size_t dot2 = ver.find('.', dot1 + 1);
+    if (dot2 != std::string::npos) {
+        const char* patchStr = ver.c_str() + dot2 + 1;
+        // Only parse if next char is a digit (not "stable", "dev", etc.)
+        if (*patchStr >= '0' && *patchStr <= '9') {
+            patch = static_cast<uint32_t>(std::atoi(patchStr));
+        }
+    }
+}
+
+// Store parsed version in global GodotVer state for other modules
+static void StoreGodotVersion(uint32_t major, uint32_t minor, uint32_t patch) {
+    GodotVer::Major = major;
+    GodotVer::Minor = minor;
+    GodotVer::Patch = patch;
 }
 
 // Try to detect version from Engine singleton memory
@@ -984,20 +1331,41 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         out.godotVersion = hints.godotVersion;
         Solliter::Info("SCAN:Ver", "Using cached version: %s", out.godotVersion.c_str());
     }
-    ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor);
-    Solliter::Summary("Godot version: %s (major=%u minor=%u)",
+    ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor, out.godotPatch);
+    StoreGodotVersion(out.godotMajor, out.godotMinor, out.godotPatch);
+    Solliter::Summary("Godot version: %s (major=%u minor=%u patch=%u)",
         out.godotVersion.empty() ? "unknown" : out.godotVersion.c_str(),
-        out.godotMajor, out.godotMinor);
+        out.godotMajor, out.godotMinor, out.godotPatch);
+
+    // Apply version-specific StringName layout BEFORE Phase 3/4 scanning.
+    // The BSS scan's SampleHashMapClassNames calls Flamme::ResolveAt,
+    // which needs correct SDATA offsets to resolve class names.
+    // Flamme::ProbeLayout runs later (Phase 7), so we must set this early.
+    if (GodotVer::IsGodot45Plus()) {
+        DynOff::SDATA_CNAME = 0x08; // cname removed in 4.5+; String name at +0x08
+        DynOff::SDATA_NAME  = 0x08;
+        Solliter::Info("SCAN:Ver", "Applied Godot 4.5+ StringName offsets: cname=name=+0x08");
+    }
 
     // Phase 3: ObjectDB
     if (progress) progress(3, "Scanning for ObjectDB...");
-    out.ObjectDB = ScanForTarget(
-        GodotSig::OBJECTDB_PATTERNS,
-        hints.objectDBPatternId.c_str(),
-        ValidateObjectDB,
-        out.objectDBPatternsTried,
-        out.objectDBPatternId,
-        out.objectDBMethod);
+    if (GodotVer::IsGodot3()) {
+        // 3.x ObjectDB is HashMap<ObjectID, Object*> (16B bucket-chain HashMap)
+        Solliter::Info("SCAN:ObjDB", "Godot 3.x detected, using 3.x ObjectDB scanner");
+        out.ObjectDB = ScanBssForObjectDB3x();
+        if (out.ObjectDB) {
+            out.objectDBPatternId = "BSS_SCAN_3X";
+            out.objectDBMethod = "bss_scan_3x";
+        }
+    } else {
+        out.ObjectDB = ScanForTarget(
+            GodotSig::OBJECTDB_PATTERNS,
+            hints.objectDBPatternId.c_str(),
+            ValidateObjectDB,
+            out.objectDBPatternsTried,
+            out.objectDBPatternId,
+            out.objectDBMethod);
+    }
     Solliter::Info("SCAN:ObjDB", "ObjectDB: %s at %p (pattern: %s, tried: %d)",
         out.objectDBMethod,
         reinterpret_cast<void*>(out.ObjectDB),
@@ -1006,24 +1374,35 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
     // Phase 4: ClassDB
     if (progress) progress(4, "Scanning for ClassDB...");
-    out.ClassDB = ScanForTarget(
-        GodotSig::CLASSDB_PATTERNS,
-        hints.classDBPatternId.c_str(),
-        ValidateClassDB,
-        out.classDBPatternsTried,
-        out.classDBPatternId,
-        out.classDBMethod);
-
-    // Fallback: brute-force scan .bss/.data for ClassDB HashMap
-    if (!out.ClassDB) {
-        Solliter::Info("SCAN:ClsDB", "AOB patterns failed, trying brute-force .bss/.data scan");
-        out.ClassDB = ScanBssForClassDB();
+    if (GodotVer::IsGodot3()) {
+        // 3.x ClassDB is HashMap<StringName, ClassInfo> (16B bucket-chain HashMap)
+        Solliter::Info("SCAN:ClsDB", "Godot 3.x detected, using 3.x ClassDB scanner");
+        out.ClassDB = ScanBssForClassDB3x();
         if (out.ClassDB) {
-            out.classDBPatternId = "BSS_SCAN";
-            out.classDBMethod = "bss_scan";
-            // Brute-force returns the address of core HashMap fields directly
-            // (without PagedAllocator prefix), so set alloc offset to 0
+            out.classDBPatternId = "BSS_SCAN_3X";
+            out.classDBMethod = "bss_scan_3x";
             DynOff::CLASSDB_ALLOC_OFFSET = 0;
+        }
+    } else {
+        out.ClassDB = ScanForTarget(
+            GodotSig::CLASSDB_PATTERNS,
+            hints.classDBPatternId.c_str(),
+            ValidateClassDB,
+            out.classDBPatternsTried,
+            out.classDBPatternId,
+            out.classDBMethod);
+
+        // Fallback: brute-force scan .bss/.data for ClassDB HashMap
+        if (!out.ClassDB) {
+            Solliter::Info("SCAN:ClsDB", "AOB patterns failed, trying brute-force .bss/.data scan");
+            out.ClassDB = ScanBssForClassDB();
+            if (out.ClassDB) {
+                out.classDBPatternId = "BSS_SCAN";
+                out.classDBMethod = "bss_scan";
+                // Brute-force returns the address of core HashMap fields directly
+                // (without PagedAllocator prefix), so set alloc offset to 0
+                DynOff::CLASSDB_ALLOC_OFFSET = 0;
+            }
         }
     }
 
@@ -1046,6 +1425,24 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         out.sceneTreePatternId,
         out.sceneTreeMethod,
         streeExclude, out.Engine ? 1 : 0);
+    // If strict validation failed (SceneTree singleton NULL), try relaxed:
+    // accept the BSS address even when Main::start() hasn't populated it yet.
+    if (!out.SceneTree) {
+        Solliter::Info("SCAN:STree", "Strict scan failed, trying relaxed validation (accept NULL singleton)...");
+        uintptr_t streeExcludeRelaxed[] = { out.Engine };
+        out.SceneTree = ScanForTarget(
+            GodotSig::SCENETREE_PATTERNS,
+            hints.sceneTreePatternId.c_str(),
+            ValidateSceneTreeRelaxed,
+            out.sceneTreePatternsTried,
+            out.sceneTreePatternId,
+            out.sceneTreeMethod,
+            streeExcludeRelaxed, out.Engine ? 1 : 0);
+        if (out.SceneTree) {
+            out.sceneTreeMethod = "aob_relaxed";
+        }
+    }
+
     Solliter::Info("SCAN:STree", "SceneTree: %s at %p (pattern: %s, tried: %d)",
         out.sceneTreeMethod,
         reinterpret_cast<void*>(out.SceneTree),
@@ -1084,15 +1481,16 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                     if (out.godotVersion.empty()) {
                         out.godotVersion = DetectVersionFromEngine(out.Engine);
                         if (!out.godotVersion.empty()) {
-                            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor);
+                            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor, out.godotPatch);
+                            StoreGodotVersion(out.godotMajor, out.godotMinor, out.godotPatch);
                         }
                     }
                 }
             }
 
-            // Retry SceneTree (with Engine exclusion)
+            // Retry SceneTree (with Engine exclusion) — strict then relaxed
             if (!out.SceneTree) {
-                Solliter::Info("SCAN", "Retry: scanning for SceneTree...");
+                Solliter::Info("SCAN", "Retry: scanning for SceneTree (strict)...");
                 uintptr_t streeExclude2[] = { out.Engine };
                 out.SceneTree = ScanForTarget(
                     GodotSig::SCENETREE_PATTERNS,
@@ -1107,9 +1505,35 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                         reinterpret_cast<void*>(out.SceneTree));
                 }
             }
+            // Relaxed retry: accept NULL singleton for deferred resolution
+            if (!out.SceneTree) {
+                Solliter::Info("SCAN", "Retry: scanning for SceneTree (relaxed)...");
+                uintptr_t streeExclude3[] = { out.Engine };
+                out.SceneTree = ScanForTarget(
+                    GodotSig::SCENETREE_PATTERNS,
+                    hints.sceneTreePatternId.c_str(),
+                    ValidateSceneTreeRelaxed,
+                    out.sceneTreePatternsTried,
+                    out.sceneTreePatternId,
+                    out.sceneTreeMethod,
+                    streeExclude3, out.Engine ? 1 : 0);
+                if (out.SceneTree) {
+                    out.sceneTreeMethod = "aob_relaxed";
+                    Solliter::Summary("  Retry SceneTree (relaxed): address at %p (deferred)",
+                        reinterpret_cast<void*>(out.SceneTree));
+                }
+            }
 
             // Retry ObjectDB (strict first, then relaxed)
             if (!out.ObjectDB) {
+                if (GodotVer::IsGodot3()) {
+                    Solliter::Info("SCAN", "Retry: 3.x brute-force .bss scan for ObjectDB...");
+                    out.ObjectDB = ScanBssForObjectDB3x();
+                    if (out.ObjectDB) {
+                        out.objectDBPatternId = "BSS_SCAN_3X";
+                        out.objectDBMethod = "bss_scan_3x";
+                    }
+                } else {
                 Solliter::Info("SCAN", "Retry: scanning for ObjectDB (strict)...");
                 out.ObjectDB = ScanForTarget(
                     GodotSig::OBJECTDB_PATTERNS,
@@ -1143,6 +1567,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                         out.objectDBMethod = "aob_relaxed";
                     }
                 }
+                } // end else (4.x ObjectDB retry)
 
                 if (out.ObjectDB) {
                     Solliter::Summary("  Retry ObjectDB: found at %p (%s)",
@@ -1168,7 +1593,8 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
             out.godotVersion = DetectVersionFromRdata();
         }
         if (!out.godotVersion.empty()) {
-            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor);
+            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor, out.godotPatch);
+            StoreGodotVersion(out.godotMajor, out.godotMinor, out.godotPatch);
         }
     }
 

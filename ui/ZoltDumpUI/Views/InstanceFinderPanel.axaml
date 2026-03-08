@@ -13,21 +13,24 @@
                             Command="{Binding FindInstancesCommand}" />
                     <CheckBox Content="Exact" DockPanel.Dock="Right" IsChecked="{Binding ExactMatch}"
                               Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
-                    <TextBox Text="{Binding SearchClassName}" Watermark="Class name..." />
+                    <TextBox x:Name="ClassNameBox" Text="{Binding SearchClassName}" Watermark="Class name..." />
                 </DockPanel>
                 <DockPanel>
                     <Button Content="Lookup" DockPanel.Dock="Right" Margin="4,0,0,0"
                             Command="{Binding FindByAddressCommand}" />
-                    <TextBox Text="{Binding AddressSearch}" Watermark="Address lookup..."
+                    <TextBox x:Name="AddressBox" Text="{Binding AddressSearch}" Watermark="Address lookup..."
                              FontFamily="Consolas" />
                 </DockPanel>
+                <TextBlock Text="{Binding StatusText}" Foreground="#569CD6" FontSize="11"
+                           IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             </StackPanel>
         </Border>
 
         <!-- Split: Instances + Fields -->
         <Grid RowDefinitions="*,4,*">
             <!-- Instances -->
-            <DataGrid Grid.Row="0"
+            <DataGrid x:CompileBindings="False"
+                      Grid.Row="0"
                       ItemsSource="{Binding Instances}"
                       SelectedItem="{Binding SelectedInstance}"
                       AutoGenerateColumns="False"
@@ -47,7 +50,8 @@
             <GridSplitter Grid.Row="1" Height="4" Background="#3F3F46" />
 
             <!-- Selected Instance Fields -->
-            <DataGrid Grid.Row="2"
+            <DataGrid x:CompileBindings="False"
+                      Grid.Row="2"
                       ItemsSource="{Binding SelectedFields}"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"

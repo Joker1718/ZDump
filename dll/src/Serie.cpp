@@ -246,8 +246,11 @@ void Init(uint64_t sceneTreeAddr) {
     // Dereference the singleton pointer
     s_sceneTree = Zoltraak::ReadSafe<uint64_t>(sceneTreeAddr, 0);
     if (!s_sceneTree || !Zoltraak::IsReadable(s_sceneTree)) {
-        Solliter::Warn("STREE", "SceneTree singleton at %p: null or unreadable",
+        // Singleton pointer is NULL — Main::start() may not have created it yet.
+        // Store the BSS address; GetRoot() will lazily retry the dereference.
+        Solliter::Info("STREE", "SceneTree singleton at %p: null (deferred resolution via GetRoot())",
             reinterpret_cast<void*>(sceneTreeAddr));
+        s_sceneTree = 0;
         return;
     }
 
@@ -268,6 +271,23 @@ void Init(uint64_t sceneTreeAddr) {
 }
 
 uint64_t GetRoot() {
+    // Lazy deref: if we have the BSS address but SceneTree instance is NULL,
+    // try to re-dereference. The game may have populated it since Init().
+    if (!s_sceneTree && s_sceneTreeAddr) {
+        uint64_t newTree = Zoltraak::ReadSafe<uint64_t>(s_sceneTreeAddr, 0);
+        if (newTree && Zoltraak::IsReadable(newTree)) {
+            EnsureModuleInfo();
+            uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(newTree, 0);
+            if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                s_sceneTree = newTree;
+                Solliter::Info("STREE", "Lazy deref: SceneTree populated at %p",
+                    reinterpret_cast<void*>(s_sceneTree));
+                // Also probe for root now
+                s_rootNode = ProbeRootNode(s_sceneTree);
+            }
+        }
+    }
+
     if (!s_rootNode && s_sceneTree) {
         s_rootNode = ProbeRootNode(s_sceneTree);
     }

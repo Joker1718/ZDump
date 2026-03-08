@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:ZoltDumpUI.ViewModels"
+             xmlns:m="using:ZoltDumpUI.Models"
              x:Class="ZoltDumpUI.Views.NodeTreePanel"
              x:DataType="vm:NodeTreeViewModel">
 
@@ -12,6 +13,9 @@
                            VerticalAlignment="Center" />
                 <TextBlock Text="{Binding DisplayCount, StringFormat='({0})'}"
                            Foreground="#808080" VerticalAlignment="Center" Margin="8,0" />
+                <TextBlock Text="{Binding StatusText}" Foreground="#569CD6"
+                           VerticalAlignment="Center" Margin="8,0,0,0"
+                           HorizontalAlignment="Right" FontSize="11" />
             </DockPanel>
         </Border>
 
@@ -39,21 +43,23 @@
                  SelectedItem="{Binding SelectedNode}"
                  Background="#1E1E1E">
             <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="2">
-                        <TextBlock Text="{Binding ClassName}" Foreground="#569CD6" FontSize="12" />
-                        <TextBlock Text="{Binding Name}" Foreground="#D4D4D4" FontSize="12" />
+                <DataTemplate x:DataType="m:ObjectEntry">
+                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="2">
+                        <TextBlock Text="{Binding ClassName}" Foreground="#569CD6" FontSize="12"
+                                   IsVisible="{Binding ClassName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        <TextBlock Text="{Binding Name}" Foreground="#D4D4D4" FontSize="12"
+                                   IsVisible="{Binding Name, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                         <TextBlock Text="{Binding Address}" Foreground="#4EC9B0" FontSize="11"
-                                   Opacity="0.6" />
+                                   FontFamily="Consolas" />
                     </StackPanel>
                 </DataTemplate>
             </ListBox.ItemTemplate>
 
             <ListBox.ContextMenu>
                 <ContextMenu>
-                    <MenuItem Header="Copy Class Name" Command="{Binding CopyClassNameCommand}" />
                     <MenuItem Header="Copy Name" Command="{Binding CopyNameCommand}" />
                     <MenuItem Header="Copy Address" Command="{Binding CopyAddressCommand}" />
+                    <MenuItem Header="Copy Class Name" Command="{Binding CopyClassNameCommand}" />
                 </ContextMenu>
             </ListBox.ContextMenu>
         </ListBox>

@@ -424,6 +424,22 @@ FodyWeavers.xsd
 # Vendor cloned repos (re-fetch via tools/vendor-update.ps1)
 vendor/minhook/
 vendor/nlohmann/
+
+# Vendor cloned repos (via vendor_clone.cmd)
+vendor/godot-3.5
+vendor/godot-3.5.3
+vendor/godot-3.6.2
+vendor/godot-4.0.4
+vendor/godot-4.1.4
+vendor/godot-4.2.2
+vendor/godot-4.3
+vendor/godot-4.4.1
+vendor/godot-4.5.1
+vendor/godot-4.2
+vendor/godot-4.1
+vendor/godot-4.6.1
+vendor/godot-3.x
+
 # vendor/godot-headers/ IS committed (small extracted headers)
 
 # CMake build directory

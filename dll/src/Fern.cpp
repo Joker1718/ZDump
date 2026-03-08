@@ -26,10 +26,12 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <filesystem>
 
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace Zolt::Fern {
 
@@ -94,18 +96,29 @@ static json ErrorResponse(int id, const std::string& msg) {
     return json{{"id", id}, {"ok", false}, {"error", msg}};
 }
 
+// Accept both "addr" and "address" from request payloads
+static std::string GetAddrField(const json& req) {
+    if (req.contains("address")) return req["address"].get<std::string>();
+    if (req.contains("addr"))    return req["addr"].get<std::string>();
+    return "";
+}
+
+// Accept both "hex" and "data" from request payloads
+static std::string GetHexField(const json& req) {
+    if (req.contains("data")) return req["data"].get<std::string>();
+    if (req.contains("hex"))  return req["hex"].get<std::string>();
+    return "";
+}
+
 // Read object name (StringName) by probing node name offsets
-// This mirrors Serie's ProbeNodeName logic
 static std::string ReadObjectName(uint64_t objAddr) {
     if (!objAddr) return "";
 
-    // Try known NODE_NAME offset first
     if (DynOff::NODE_NAME >= 0) {
         std::string name = Flamme::Resolve(objAddr + DynOff::NODE_NAME);
         if (!name.empty()) return name;
     }
 
-    // Probe common offsets for StringName fields
     for (int off = 0x80; off <= 0x300; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(objAddr + off, 0);
         if (!candidate || candidate < 0x10000) continue;
@@ -117,6 +130,54 @@ static std::string ReadObjectName(uint64_t objAddr) {
     }
 
     return "";
+}
+
+// Godot Variant::Type enum to string name mapping
+static const char* VariantTypeName(int type) {
+    static const char* names[] = {
+        "Nil",            // 0
+        "bool",           // 1
+        "int",            // 2
+        "float",          // 3
+        "String",         // 4
+        "Vector2",        // 5
+        "Vector2i",       // 6
+        "Rect2",          // 7
+        "Rect2i",         // 8
+        "Vector3",        // 9
+        "Vector3i",       // 10
+        "Transform2D",    // 11
+        "Vector4",        // 12
+        "Vector4i",       // 13
+        "Plane",          // 14
+        "Quaternion",     // 15
+        "AABB",           // 16
+        "Basis",          // 17
+        "Transform3D",    // 18
+        "Projection",     // 19
+        "Color",          // 20
+        "StringName",     // 21
+        "NodePath",       // 22
+        "RID",            // 23
+        "Object",         // 24
+        "Callable",       // 25
+        "Signal",         // 26
+        "Dictionary",     // 27
+        "Array",          // 28
+        "PackedByteArray",    // 29
+        "PackedInt32Array",   // 30
+        "PackedInt64Array",   // 31
+        "PackedFloat32Array", // 32
+        "PackedFloat64Array", // 33
+        "PackedStringArray",  // 34
+        "PackedVector2Array", // 35
+        "PackedVector3Array", // 36
+        "PackedColorArray",   // 37
+        "PackedVector4Array", // 38
+    };
+    if (type >= 0 && type < static_cast<int>(std::size(names)))
+        return names[type];
+    return "Unknown";
 }
 
 // ============================================================
@@ -132,17 +193,22 @@ static json HandleInit(int id, const json& /*req*/) {
     resp["godot_version"]       = ptrs.godotVersion;
     resp["godot_version_major"] = ptrs.godotMajor;
     resp["godot_version_minor"] = ptrs.godotMinor;
+    resp["godot_version_patch"] = ptrs.godotPatch;
 
     // Module info
     wchar_t processPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, processPath, MAX_PATH);
-    char moduleName[MAX_PATH] = {};
-    WideCharToMultiByte(CP_UTF8, 0, processPath, -1, moduleName, MAX_PATH, nullptr, nullptr);
-    // Extract filename only
-    const char* sep = strrchr(moduleName, '\\');
-    resp["module_name"] = sep ? (sep + 1) : moduleName;
-    resp["module_base"] = AddrToHex(Zoltraak::GetModuleBase());
-    resp["pid"]         = static_cast<int>(GetCurrentProcessId());
+    char modulePathUtf8[MAX_PATH] = {};
+    WideCharToMultiByte(CP_UTF8, 0, processPath, -1, modulePathUtf8, MAX_PATH, nullptr, nullptr);
+
+    // Extract process name (filename without extension)
+    std::string procName = fs::path(modulePathUtf8).stem().string();
+
+    resp["process_name"] = procName;
+    resp["module_name"]  = fs::path(modulePathUtf8).filename().string();
+    resp["module_path"]  = modulePathUtf8;
+    resp["module_base"]  = AddrToHex(Zoltraak::GetModuleBase());
+    resp["pid"]          = static_cast<int>(GetCurrentProcessId());
 
     LOG_INFO("cmd:init -> version=%s pid=%d", ptrs.godotVersion.c_str(), GetCurrentProcessId());
     return resp;
@@ -153,20 +219,26 @@ static json HandleGetPointers(int id, const json& /*req*/) {
     const auto& ptrs = Frieren::GetPointers();
 
     json resp = OkResponse(id);
-    resp["object_db"]          = AddrToHex(ptrs.ObjectDB);
-    resp["object_db_slot_max"] = Ausetiese::GetSlotMax();
-    resp["class_db"]           = AddrToHex(ptrs.ClassDB);
-    resp["scene_tree"]         = AddrToHex(ptrs.SceneTree);
-    resp["engine"]             = AddrToHex(ptrs.Engine);
+    resp["object_db"]   = AddrToHex(ptrs.ObjectDB);
+    resp["class_db"]    = AddrToHex(ptrs.ClassDB);
+    resp["scene_tree"]  = AddrToHex(ptrs.SceneTree);
+    resp["engine"]      = AddrToHex(ptrs.Engine);
 
-    json stats;
-    stats["object_db_method"]   = ptrs.objectDBMethod;
-    stats["class_db_method"]    = ptrs.classDBMethod;
-    stats["scene_tree_method"]  = ptrs.sceneTreeMethod;
-    stats["engine_method"]      = ptrs.engineMethod;
-    stats["patterns_tried"]     = ptrs.objectDBPatternsTried + ptrs.classDBPatternsTried
-                                + ptrs.sceneTreePatternsTried + ptrs.enginePatternsTried;
-    resp["scan_stats"] = stats;
+    // Flat fields (UI expects these at top level)
+    resp["slot_max"]     = Ausetiese::GetSlotMax();
+    resp["slot_count"]   = Ausetiese::GetSlotMax(); // slot_count ~ slot_max
+    resp["object_count"] = Ausetiese::GetObjectCount();
+
+    // Scan methods and pattern IDs (flat, not nested)
+    resp["object_db_method"]     = ptrs.objectDBMethod;
+    resp["class_db_method"]      = ptrs.classDBMethod;
+    resp["scene_tree_method"]    = ptrs.sceneTreeMethod;
+    resp["object_db_pattern_id"]   = ptrs.objectDBPatternId ? ptrs.objectDBPatternId : "";
+    resp["class_db_pattern_id"]    = ptrs.classDBPatternId ? ptrs.classDBPatternId : "";
+    resp["scene_tree_pattern_id"]  = ptrs.sceneTreePatternId ? ptrs.sceneTreePatternId : "";
+    resp["object_db_scan_addr"]    = AddrToHex(ptrs.ObjectDB);
+    resp["class_db_scan_addr"]     = AddrToHex(ptrs.ClassDB);
+    resp["scene_tree_scan_addr"]   = AddrToHex(ptrs.SceneTree);
 
     return resp;
 }
@@ -174,7 +246,7 @@ static json HandleGetPointers(int id, const json& /*req*/) {
 // cmd: get_object_count
 static json HandleGetObjectCount(int id, const json& /*req*/) {
     json resp = OkResponse(id);
-    resp["count"] = Ausetiese::GetObjectCount();
+    resp["count"]    = Ausetiese::GetObjectCount();
     resp["slot_max"] = Ausetiese::GetSlotMax();
     return resp;
 }
@@ -227,8 +299,8 @@ static json HandleGetObjectList(int id, const json& req) {
 
     Ausetiese::ForEachEx([&](int index, uint64_t objAddr) {
         scanned++;
-        if (index < offset) return true;        // Skip until offset
-        if (added >= limit) return false;        // Enough items
+        if (index < offset) return true;
+        if (added >= limit) return false;
 
         std::string name      = ReadObjectName(objAddr);
         std::string className = DiAgolze::GetObjectClass(objAddr);
@@ -236,14 +308,11 @@ static json HandleGetObjectList(int id, const json& req) {
         uint64_t objId = Zoltraak::ReadSafe<uint64_t>(
             objAddr + DynOff::OBJECT_INSTANCE_ID, 0);
 
-        // Check is_ref_counted from slot metadata (bit 0 of metadata word)
-        // We don't have easy access to slot metadata here, so skip for now
-
         json obj;
-        obj["addr"]       = AddrToHex(objAddr);
+        obj["address"]    = AddrToHex(objAddr);
         obj["name"]       = name;
         obj["class_name"] = className;
-        obj["object_id"]  = std::to_string(objId);
+        obj["object_id"]  = static_cast<int64_t>(objId);
         obj["slot_index"] = index;
 
         objects.push_back(std::move(obj));
@@ -253,6 +322,7 @@ static json HandleGetObjectList(int id, const json& req) {
 
     json resp = OkResponse(id);
     resp["total"]   = total;
+    resp["offset"]  = offset;
     resp["scanned"] = scanned;
     resp["objects"]  = std::move(objects);
     return resp;
@@ -260,8 +330,8 @@ static json HandleGetObjectList(int id, const json& req) {
 
 // cmd: get_object
 static json HandleGetObject(int id, const json& req) {
-    std::string addrStr = req.value("addr", std::string{});
-    if (addrStr.empty()) return ErrorResponse(id, "Missing 'addr' field");
+    std::string addrStr = GetAddrField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
     if (!addr || !Zoltraak::IsReadable(addr))
@@ -274,11 +344,13 @@ static json HandleGetObject(int id, const json& req) {
     int slotIndex = Ausetiese::FindByAddress(addr);
 
     json resp = OkResponse(id);
-    resp["addr"]       = AddrToHex(addr);
+    resp["address"]    = AddrToHex(addr);
     resp["name"]       = name;
     resp["class_name"] = className;
-    resp["object_id"]  = std::to_string(objId);
+    resp["object_id"]  = static_cast<int64_t>(objId);
     resp["slot_index"] = slotIndex;
+    resp["is_node"]    = !className.empty(); // approximate
+    resp["is_ref_counted"] = false;
 
     return resp;
 }
@@ -288,7 +360,6 @@ static json HandleFindObject(int id, const json& req) {
     std::string path = req.value("path", std::string{});
     if (path.empty()) return ErrorResponse(id, "Missing 'path' field");
 
-    // Split path by '/'
     std::vector<std::string> segments;
     std::istringstream ss(path);
     std::string segment;
@@ -299,19 +370,19 @@ static json HandleFindObject(int id, const json& req) {
     if (segments.empty())
         return ErrorResponse(id, "Invalid path: " + path);
 
-    // Start from root
     uint64_t current = Serie::GetRoot();
-    if (!current)
-        return ErrorResponse(id, "SceneTree root not available");
+    if (!current) {
+        json resp = OkResponse(id);
+        resp["found"] = false;
+        return resp;
+    }
 
-    // Check if first segment matches root
     std::string rootName = ReadObjectName(current);
     size_t startSeg = 0;
     if (!rootName.empty() && rootName == segments[0]) {
         startSeg = 1;
     }
 
-    // Walk down the tree
     for (size_t i = startSeg; i < segments.size(); ++i) {
         auto children = Serie::GetChildren(current);
         bool found = false;
@@ -323,7 +394,9 @@ static json HandleFindObject(int id, const json& req) {
             }
         }
         if (!found) {
-            return ErrorResponse(id, "Node not found: " + segments[i] + " in path " + path);
+            json resp = OkResponse(id);
+            resp["found"] = false;
+            return resp;
         }
     }
 
@@ -331,25 +404,26 @@ static json HandleFindObject(int id, const json& req) {
     std::string className = DiAgolze::GetObjectClass(current);
 
     json resp = OkResponse(id);
-    resp["addr"]       = AddrToHex(current);
+    resp["found"]      = true;
+    resp["address"]    = AddrToHex(current);
     resp["name"]       = name;
     resp["class_name"] = className;
-    resp["path"]       = path;
+    resp["node_path"]  = path;
     return resp;
 }
 
 // cmd: find_by_address
 static json HandleFindByAddress(int id, const json& req) {
-    std::string addrStr = req.value("addr", std::string{});
-    if (addrStr.empty()) return ErrorResponse(id, "Missing 'addr' field");
+    std::string addrStr = GetAddrField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
     int slotIndex = Ausetiese::FindByAddress(addr);
 
     if (slotIndex < 0) {
         json resp = OkResponse(id);
-        resp["found"] = false;
-        resp["addr"]  = addrStr;
+        resp["found"]   = false;
+        resp["address"] = addrStr;
         return resp;
     }
 
@@ -358,7 +432,7 @@ static json HandleFindByAddress(int id, const json& req) {
 
     json resp = OkResponse(id);
     resp["found"]      = true;
-    resp["addr"]       = AddrToHex(addr);
+    resp["address"]    = AddrToHex(addr);
     resp["name"]       = name;
     resp["class_name"] = className;
     resp["slot_index"] = slotIndex;
@@ -374,15 +448,15 @@ static json HandleWalkClass(int id, const json& req) {
     if (classInfo.name.empty())
         return ErrorResponse(id, "Class not found: " + className);
 
-    json fields = json::array();
+    json properties = json::array();
     for (auto& prop : classInfo.properties) {
         json f;
-        f["name"]       = prop.name;
-        f["class_name"] = prop.className;
-        f["type"]       = prop.type;
-        f["offset"]     = prop.offset;
+        f["name"]   = prop.name;
+        f["type"]   = VariantTypeName(prop.type);
+        f["offset"] = prop.offset;
+        f["size"]   = 0; // Not tracked in DiAgolze yet
         if (!prop.hint.empty()) f["hint"] = prop.hint;
-        fields.push_back(std::move(f));
+        properties.push_back(std::move(f));
     }
 
     json methods = json::array();
@@ -396,17 +470,109 @@ static json HandleWalkClass(int id, const json& req) {
 
     json resp = OkResponse(id);
     resp["class_name"]  = classInfo.name;
-    resp["parent_name"] = classInfo.parentName;
-    resp["native_ptr"]  = AddrToHex(classInfo.nativePtr);
-    resp["fields"]      = std::move(fields);
+    resp["super_name"]  = classInfo.parentName;
+    resp["class_addr"]  = AddrToHex(classInfo.nativePtr);
+    resp["properties"]  = std::move(properties);
     resp["methods"]     = std::move(methods);
     return resp;
 }
 
+// Map a raw Variant::Type to 4.x type number for unified helper logic.
+// For 4.x, returns the same value. For 3.x, remaps the different enum numbering.
+static int NormalizeVariantType(int rawType) {
+    if (!GodotVer::IsGodot3()) return rawType;
+    // Godot 3.x → 4.x mapping
+    static const int map3to4[] = {
+        0, 1, 2, 3, 4, 5,    // 0-5: same (NIL..VECTOR2)
+        7,                     // 6: RECT2 → 7
+        9,                     // 7: VECTOR3 → 9
+        11,                    // 8: TRANSFORM2D → 11
+        14,                    // 9: PLANE → 14
+        15,                    // 10: QUAT → 15
+        16,                    // 11: AABB → 16
+        17,                    // 12: BASIS → 17
+        18,                    // 13: TRANSFORM → 18
+        20,                    // 14: COLOR → 20
+        22,                    // 15: NODE_PATH → 22
+        23,                    // 16: _RID → 23
+        24,                    // 17: OBJECT → 24
+        27,                    // 18: DICTIONARY → 27
+        28,                    // 19: ARRAY → 28
+        29,                    // 20: POOL_BYTE → 29
+        30,                    // 21: POOL_INT → 30
+        32,                    // 22: POOL_REAL → 32
+        34,                    // 23: POOL_STRING → 34
+        35,                    // 24: POOL_VEC2 → 35
+        36,                    // 25: POOL_VEC3 → 36
+        37,                    // 26: POOL_COLOR → 37
+    };
+    if (rawType >= 0 && rawType < static_cast<int>(std::size(map3to4)))
+        return map3to4[rawType];
+    return rawType;
+}
+
+// Helper: Determine if a Variant::Type represents a pointer-like type
+// Uses 4.x type numbers via NormalizeVariantType.
+static bool IsPointerType(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    // Object, Callable, Signal, Dictionary, Array, and all Packed arrays
+    return t == 24 || t == 25 || t == 26 ||
+           t == 27 || t == 28 ||
+           (t >= 29 && t <= 38);
+}
+
+// Helper: Determine if a Variant::Type represents a struct-like type
+static bool IsStructType(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    // Vector2/3/4, Rect2, Plane, Quaternion, AABB, Color, Transform types
+    return (t >= 5 && t <= 20);
+}
+
+// Helper: Determine if a Variant::Type represents a container type
+static bool IsContainerType(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    return t == 27 || t == 28 || // Dictionary, Array
+           (t >= 29 && t <= 38); // Packed arrays
+}
+
+// Helper: Approximate in-memory size for a Variant::Type
+// Normalizes to 4.x type numbers for a single switch.
+static int VariantTypeSize(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    switch (t) {
+        case 0:  return 0;    // Nil
+        case 1:  return 4;    // bool
+        case 2:  return 8;    // int64
+        case 3:  return 8;    // double
+        case 4:  return 8;    // String ptr
+        case 5:  return 8;    // Vector2
+        case 6:  return 8;    // Vector2i
+        case 7:  return 16;   // Rect2
+        case 8:  return 16;   // Rect2i
+        case 9:  return 12;   // Vector3
+        case 10: return 12;   // Vector3i
+        case 11: return 24;   // Transform2D (6 floats)
+        case 12: return 16;   // Vector4
+        case 13: return 16;   // Vector4i
+        case 14: return 16;   // Plane
+        case 15: return 16;   // Quaternion
+        case 16: return 24;   // AABB
+        case 17: return 36;   // Basis (9 floats)
+        case 18: return 48;   // Transform3D (12 floats)
+        case 19: return 64;   // Projection (16 floats)
+        case 20: return 16;   // Color
+        case 21: return 8;    // StringName
+        case 22: return 8;    // NodePath
+        case 23: return 8;    // RID
+        case 24: return 16;   // Object (id + ptr)
+        default: return 8;    // Callables, Signals, containers, packed arrays
+    }
+}
+
 // cmd: walk_instance
 static json HandleWalkInstance(int id, const json& req) {
-    std::string addrStr = req.value("addr", std::string{});
-    if (addrStr.empty()) return ErrorResponse(id, "Missing 'addr' field");
+    std::string addrStr = GetAddrField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
     if (!addr || !Zoltraak::IsReadable(addr))
@@ -419,16 +585,23 @@ static json HandleWalkInstance(int id, const json& req) {
     Ubel::WalkInstance(addr, [&](const Ubel::FieldEntry& entry) {
         json f;
         f["name"]         = entry.name;
-        f["class_name"]   = entry.className;
         f["type"]         = entry.value.typeName;
         f["variant_type"] = entry.value.type;
         f["value"]        = entry.value.value;
-        f["raw_addr"]     = AddrToHex(entry.value.rawAddr);
+        f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
+        f["offset"]       = -1;  // Godot doesn't expose byte offsets via ClassDB
+        f["size"]         = VariantTypeSize(entry.value.type);
+        f["is_pointer"]   = IsPointerType(entry.value.type);
+        f["is_struct"]    = IsStructType(entry.value.type);
+        f["is_container"] = IsContainerType(entry.value.type);
+        if (!entry.className.empty()) {
+            f["class_name"] = entry.className; // owning class for the property
+        }
         fields.push_back(std::move(f));
     });
 
     json resp = OkResponse(id);
-    resp["addr"]       = AddrToHex(addr);
+    resp["address"]    = AddrToHex(addr);
     resp["name"]       = name;
     resp["class_name"] = className;
     resp["fields"]     = std::move(fields);
@@ -438,7 +611,7 @@ static json HandleWalkInstance(int id, const json& req) {
 // Recursive helper for walk_tree
 static json BuildTreeNode(uint64_t nodeAddr, int depth, int maxDepth) {
     json node;
-    node["addr"]       = AddrToHex(nodeAddr);
+    node["address"]    = AddrToHex(nodeAddr);
     node["name"]       = ReadObjectName(nodeAddr);
     node["class_name"] = DiAgolze::GetObjectClass(nodeAddr);
 
@@ -467,8 +640,9 @@ static json HandleWalkTree(int id, const json& req) {
 
     // Optional: start from a specific node instead of root
     uint64_t startAddr = 0;
-    if (req.contains("addr")) {
-        startAddr = HexToAddr(req["addr"].get<std::string>());
+    std::string addrStr = GetAddrField(req);
+    if (!addrStr.empty()) {
+        startAddr = HexToAddr(addrStr);
     }
 
     if (!startAddr) {
@@ -503,7 +677,7 @@ static json HandleFindInstances(int id, const json& req) {
             std::string name = ReadObjectName(objAddr);
 
             json obj;
-            obj["addr"]       = AddrToHex(objAddr);
+            obj["address"]    = AddrToHex(objAddr);
             obj["name"]       = name;
             obj["class_name"] = cls;
             obj["slot_index"] = index;
@@ -522,8 +696,8 @@ static json HandleFindInstances(int id, const json& req) {
 
 // cmd: read_mem
 static json HandleReadMem(int id, const json& req) {
-    std::string addrStr = req.value("addr", std::string{});
-    if (addrStr.empty()) return ErrorResponse(id, "Missing 'addr' field");
+    std::string addrStr = GetAddrField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     int size = req.value("size", 0);
     if (size <= 0 || size > 65536)
@@ -536,18 +710,18 @@ static json HandleReadMem(int id, const json& req) {
         return ErrorResponse(id, "Failed to read memory at " + addrStr);
 
     json resp = OkResponse(id);
-    resp["addr"] = addrStr;
-    resp["size"] = size;
-    resp["hex"]  = BytesToHex(buffer.data(), size);
+    resp["address"] = addrStr;
+    resp["size"]    = size;
+    resp["data"]    = BytesToHex(buffer.data(), size);
     return resp;
 }
 
 // cmd: write_mem
 static json HandleWriteMem(int id, const json& req) {
-    std::string addrStr = req.value("addr", std::string{});
-    std::string hexData = req.value("hex", std::string{});
-    if (addrStr.empty()) return ErrorResponse(id, "Missing 'addr' field");
-    if (hexData.empty()) return ErrorResponse(id, "Missing 'hex' field");
+    std::string addrStr = GetAddrField(req);
+    std::string hexData = GetHexField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
+    if (hexData.empty()) return ErrorResponse(id, "Missing 'data' field");
     if (hexData.size() % 2 != 0)
         return ErrorResponse(id, "Invalid hex string (odd length)");
 
@@ -563,8 +737,109 @@ static json HandleWriteMem(int id, const json& req) {
         return ErrorResponse(id, "Failed to write memory at " + addrStr);
 
     json resp = OkResponse(id);
-    resp["addr"]    = addrStr;
+    resp["address"] = addrStr;
     resp["written"] = static_cast<int>(byteLen);
+    return resp;
+}
+
+// cmd: list_classes — enumerate all ClassDB classes
+static json HandleListClasses(int id, const json& /*req*/) {
+    json classes = json::array();
+
+    DiAgolze::EnumerateClasses([&](const std::string& name, uint64_t /*infoAddr*/) {
+        auto info = DiAgolze::GetClassInfo(name.c_str());
+
+        json cls;
+        cls["class_name"]     = name;
+        cls["super_name"]     = info.parentName;
+        cls["property_count"] = static_cast<int>(info.properties.size());
+        cls["method_count"]   = static_cast<int>(info.methods.size());
+        cls["is_game_class"]  = false; // TODO: detect game vs engine classes
+        classes.push_back(std::move(cls));
+    });
+
+    json resp = OkResponse(id);
+    resp["classes"] = std::move(classes);
+    return resp;
+}
+
+// cmd: search_properties — search property names across all classes
+static json HandleSearchProperties(int id, const json& req) {
+    std::string query = req.value("query", std::string{});
+    if (query.empty()) return ErrorResponse(id, "Missing 'query' field");
+
+    // Convert query to lowercase for case-insensitive search
+    std::string queryLower = query;
+    std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    json hits = json::array();
+    int maxHits = 200;
+
+    DiAgolze::EnumerateClasses([&](const std::string& className, uint64_t /*infoAddr*/) {
+        if (static_cast<int>(hits.size()) >= maxHits) return;
+
+        auto info = DiAgolze::GetClassInfo(className.c_str());
+        for (auto& prop : info.properties) {
+            if (static_cast<int>(hits.size()) >= maxHits) return;
+
+            std::string propLower = prop.name;
+            std::transform(propLower.begin(), propLower.end(), propLower.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (propLower.find(queryLower) != std::string::npos) {
+                json hit;
+                hit["class_name"]    = className;
+                hit["super_name"]    = info.parentName;
+                hit["property_name"] = prop.name;
+                hit["property_type"] = VariantTypeName(prop.type);
+                hit["offset"]        = prop.offset;
+                hit["size"]          = 0;
+                hits.push_back(std::move(hit));
+            }
+        }
+    });
+
+    json resp = OkResponse(id);
+    resp["count"] = static_cast<int>(hits.size());
+    resp["hits"]  = std::move(hits);
+    return resp;
+}
+
+// cmd: get_scan_status — report scan status (scan is done at init time)
+static json HandleGetScanStatus(int id, const json& /*req*/) {
+    json resp = OkResponse(id);
+    resp["status"]      = "complete";
+    resp["progress"]    = 100;
+    resp["total"]       = 100;
+    resp["message"]     = "Scan completed during initialization";
+    resp["is_complete"] = true;
+    return resp;
+}
+
+// cmd: trigger_scan — attempt to resolve any missing pointers (e.g. SceneTree)
+static json HandleTriggerScan(int id, const json& /*req*/) {
+    bool sceneTreeResolved = (Serie::GetRoot() != 0);
+
+    // If SceneTree still not resolved, try a full scan
+    if (!sceneTreeResolved) {
+        uintptr_t addr = Frieren::FindSceneTree();
+        if (addr) {
+            Serie::Init(addr);
+            sceneTreeResolved = (Serie::GetRoot() != 0);
+        }
+    }
+
+    json resp = OkResponse(id);
+    resp["scene_tree_resolved"] = sceneTreeResolved;
+    return resp;
+}
+
+// cmd: get_ce_pointer_info — stub for Phase 5+
+static json HandleGetCePointerInfo(int id, const json& /*req*/) {
+    json resp = OkResponse(id);
+    resp["breadcrumbs"] = json::array();
+    resp["fields"]      = json::array();
     return resp;
 }
 
@@ -572,20 +847,25 @@ static json HandleWriteMem(int id, const json& req) {
 // Command dispatch table
 // ============================================================
 static const std::unordered_map<std::string, HandlerFn> s_handlers = {
-    {"init",             HandleInit},
-    {"get_pointers",     HandleGetPointers},
-    {"get_object_count", HandleGetObjectCount},
-    {"get_offsets",      HandleGetOffsets},
-    {"get_object_list",  HandleGetObjectList},
-    {"get_object",       HandleGetObject},
-    {"find_object",      HandleFindObject},
-    {"find_by_address",  HandleFindByAddress},
-    {"walk_class",       HandleWalkClass},
-    {"walk_instance",    HandleWalkInstance},
-    {"walk_tree",        HandleWalkTree},
-    {"find_instances",   HandleFindInstances},
-    {"read_mem",         HandleReadMem},
-    {"write_mem",        HandleWriteMem},
+    {"init",               HandleInit},
+    {"get_pointers",       HandleGetPointers},
+    {"get_object_count",   HandleGetObjectCount},
+    {"get_offsets",        HandleGetOffsets},
+    {"get_object_list",    HandleGetObjectList},
+    {"get_object",         HandleGetObject},
+    {"find_object",        HandleFindObject},
+    {"find_by_address",    HandleFindByAddress},
+    {"walk_class",         HandleWalkClass},
+    {"walk_instance",      HandleWalkInstance},
+    {"walk_tree",          HandleWalkTree},
+    {"find_instances",     HandleFindInstances},
+    {"read_mem",           HandleReadMem},
+    {"write_mem",          HandleWriteMem},
+    {"list_classes",       HandleListClasses},
+    {"search_properties",  HandleSearchProperties},
+    {"get_scan_status",    HandleGetScanStatus},
+    {"trigger_scan",       HandleTriggerScan},
+    {"get_ce_pointer_info",HandleGetCePointerInfo},
 };
 
 // ============================================================
@@ -642,16 +922,15 @@ static DWORD WINAPI PipeThreadProc(LPVOID /*param*/) {
     LOG_INFO("Pipe server thread started on %s", Grimoire::PIPE_NAME);
 
     while (s_running.load()) {
-        // Create the named pipe (one client at a time)
         s_hPipe = CreateNamedPipeA(
             Grimoire::PIPE_NAME,
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,                            // Max instances (single client)
-            Grimoire::PIPE_BUF_SIZE,      // Output buffer
-            Grimoire::PIPE_BUF_SIZE,      // Input buffer
-            0,                            // Default timeout
-            nullptr                       // Default security
+            1,
+            Grimoire::PIPE_BUF_SIZE,
+            Grimoire::PIPE_BUF_SIZE,
+            0,
+            nullptr
         );
 
         if (s_hPipe == INVALID_HANDLE_VALUE) {
@@ -663,10 +942,9 @@ static DWORD WINAPI PipeThreadProc(LPVOID /*param*/) {
 
         LOG_INFO("Waiting for client connection...");
 
-        // Wait for a client to connect (blocking)
         BOOL connected = ConnectNamedPipe(s_hPipe, nullptr);
         if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) {
-            if (!s_running.load()) break; // Shutting down
+            if (!s_running.load()) break;
             LOG_ERROR("ConnectNamedPipe failed: error %lu", GetLastError());
             CloseHandle(s_hPipe);
             s_hPipe = INVALID_HANDLE_VALUE;
@@ -677,7 +955,6 @@ static DWORD WINAPI PipeThreadProc(LPVOID /*param*/) {
         s_connected.store(true);
         LOG_INFO("Client connected");
 
-        // Message loop: read lines, process, respond
         std::string lineBuffer;
         char readBuf[4096];
 
@@ -693,19 +970,17 @@ static DWORD WINAPI PipeThreadProc(LPVOID /*param*/) {
                 } else if (s_running.load()) {
                     LOG_ERROR("ReadFile failed: error %lu", err);
                 }
-                break; // Client disconnected
+                break;
             }
 
             readBuf[bytesRead] = '\0';
             lineBuffer += readBuf;
 
-            // Process complete lines (newline-delimited)
             size_t pos;
             while ((pos = lineBuffer.find('\n')) != std::string::npos) {
                 std::string line = lineBuffer.substr(0, pos);
                 lineBuffer.erase(0, pos + 1);
 
-                // Trim \r if present
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (line.empty()) continue;
 
@@ -726,7 +1001,7 @@ static DWORD WINAPI PipeThreadProc(LPVOID /*param*/) {
 
         if (s_running.load()) {
             LOG_INFO("Pipe closed, will reconnect...");
-            Sleep(100); // Brief pause before re-creating
+            Sleep(100);
         }
     }
 
@@ -757,9 +1032,7 @@ void Stop() {
     LOG_INFO("Stopping pipe server");
     s_running.store(false);
 
-    // Cancel blocking ConnectNamedPipe / ReadFile by closing the pipe handle
     if (s_hPipe != INVALID_HANDLE_VALUE) {
-        // CancelIoEx to unblock blocking I/O on the pipe
         CancelIoEx(s_hPipe, nullptr);
         DisconnectNamedPipe(s_hPipe);
         CloseHandle(s_hPipe);

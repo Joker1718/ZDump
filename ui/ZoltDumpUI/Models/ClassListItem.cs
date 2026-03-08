@@ -1,6 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Models;
 
 /// <summary>Single class entry from "list_classes" command.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class ClassListItem
 {
     public string ClassName { get; init; } = "";

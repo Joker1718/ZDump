@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Models;
 
 /// <summary>Result of property search across classes.</summary>
@@ -8,6 +10,7 @@ public sealed class PropertySearchResult
 }
 
 /// <summary>Single property search hit.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class PropertySearchHit
 {
     public string ClassName { get; init; } = "";

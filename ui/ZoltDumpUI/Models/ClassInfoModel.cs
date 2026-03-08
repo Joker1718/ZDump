@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Models;
 
 /// <summary>Class definition from ClassDB via "walk_class" command.</summary>
@@ -13,6 +15,7 @@ public sealed class ClassInfoModel
 }
 
 /// <summary>Single property in a class definition.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class FieldInfoModel
 {
     public string Name { get; init; } = "";

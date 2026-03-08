@@ -14,6 +14,11 @@
 
 #include <filesystem>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 namespace fs = std::filesystem;
 
 // Global state
@@ -26,6 +31,38 @@ static bool        s_initialized   = false;
 
 // Version string buffer (static storage for C ABI return)
 static char s_versionBuf[64] = ZOLT_VERSION_STRING;
+
+// Background SceneTree retry thread — runs when initial scan found the
+// BSS address but the singleton pointer was NULL (game not ready yet).
+// Periodically retries until SceneTree is populated or timeout (30s).
+static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
+    Zolt::Solliter::Info("INIT", "SceneTree retry thread started");
+
+    for (int attempt = 0; attempt < 15; ++attempt) {
+        Sleep(2000);
+
+        // Check if Serie already resolved it via lazy deref
+        if (Zolt::Serie::GetRoot()) {
+            Zolt::Solliter::Summary("SceneTree resolved (lazy deref, attempt %d)", attempt + 1);
+            return 0;
+        }
+
+        // Try full FindSceneTree with strict validation
+        uintptr_t addr = Zolt::Frieren::FindSceneTree();
+        if (addr) {
+            Zolt::Serie::Init(addr);
+            if (Zolt::Serie::GetRoot()) {
+                s_sceneTreeAddr = addr;
+                Zolt::Solliter::Summary("SceneTree retry: found at %p (attempt %d)",
+                    reinterpret_cast<void*>(addr), attempt + 1);
+                return 0;
+            }
+        }
+    }
+
+    Zolt::Solliter::Warn("INIT", "SceneTree retry thread gave up after 30s");
+    return 1;
+}
 
 extern "C" {
 
@@ -71,6 +108,14 @@ int Zolt_AutoStart() {
 
     // Start Fern pipe server for UI communication
     Zolt::Fern::Start();
+
+    // If SceneTree BSS address was found but singleton is NULL,
+    // spawn a background thread to periodically retry resolution.
+    if (s_sceneTreeAddr && !Zolt::Serie::GetRoot()) {
+        Zolt::Solliter::Info("INIT", "SceneTree not yet populated, starting background retry thread");
+        HANDLE hRetry = CreateThread(nullptr, 0, SceneTreeRetryThread, nullptr, 0, nullptr);
+        if (hRetry) CloseHandle(hRetry);
+    }
 
     s_initialized = true;
 

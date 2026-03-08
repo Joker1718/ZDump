@@ -4,7 +4,7 @@
         xmlns:v="using:ZoltDumpUI.Views"
         x:Class="ZoltDumpUI.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Title="Zolt-Dump — Godot Engine Dumper"
+        Title="{Binding WindowTitle}"
         Width="1400" Height="900"
         MinWidth="900" MinHeight="600"
         Background="#1E1E1E"
