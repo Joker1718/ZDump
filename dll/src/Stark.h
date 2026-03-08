@@ -61,6 +61,17 @@ __declspec(dllexport) const char* Zolt_GetClassName(uint64_t objectAddr);
 // Get root node address from SceneTree (0 if unavailable)
 __declspec(dllexport) uint64_t Zolt_GetRootNode();
 
+// ----- Phase 3: Pipe Server exports -----
+
+// Start the named pipe server (\\.\pipe\ZoltDumpBfx)
+__declspec(dllexport) int Zolt_StartPipeServer();
+
+// Stop the named pipe server
+__declspec(dllexport) void Zolt_StopPipeServer();
+
+// Check if a UI client is connected to the pipe (returns 1/0)
+__declspec(dllexport) int Zolt_IsPipeConnected();
+
 } // extern "C"
 
 // Internal C++ interface used by dllmain
