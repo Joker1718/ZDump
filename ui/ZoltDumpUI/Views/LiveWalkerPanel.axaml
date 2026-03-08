@@ -24,7 +24,7 @@
             <DockPanel>
                 <Button Content="Go" DockPanel.Dock="Right" Command="{Binding GoToAddressCommand}"
                         Margin="4,0,0,0" />
-                <TextBox Text="{Binding AddressInput}" Watermark="Enter address..."
+                <TextBox x:Name="AddressBox" Text="{Binding AddressInput}" Watermark="Enter address..."
                          FontFamily="Consolas" />
             </DockPanel>
         </Border>
@@ -79,7 +79,8 @@
         </Border>
 
         <!-- Fields DataGrid -->
-        <DataGrid ItemsSource="{Binding Fields}"
+        <DataGrid x:CompileBindings="False"
+                  ItemsSource="{Binding Fields}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   GridLinesVisibility="Horizontal"

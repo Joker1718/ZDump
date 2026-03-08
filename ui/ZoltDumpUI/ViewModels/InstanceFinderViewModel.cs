@@ -22,6 +22,7 @@ public partial class InstanceFinderViewModel : ViewModelBase
     [ObservableProperty] private int _instanceCount;
     [ObservableProperty] private ObjectEntry? _selectedInstance;
     [ObservableProperty] private bool _isLoading;
+    [ObservableProperty] private string _statusText = "";
 
     public event Action<string>? NavigateToLiveWalker;
 
@@ -52,16 +53,22 @@ public partial class InstanceFinderViewModel : ViewModelBase
         {
             ClearError();
             IsLoading = true;
+            StatusText = "Searching...";
 
             var result = await _dump.FindInstancesAsync(SearchClassName, ExactMatch);
             Instances.Clear();
             foreach (var inst in result.Instances)
                 Instances.Add(inst);
             InstanceCount = result.Count;
+
+            StatusText = result.Count > 0
+                ? $"Found {result.Count} instance{(result.Count == 1 ? "" : "s")}"
+                : $"No instances of '{SearchClassName}' found";
         }
         catch (Exception ex)
         {
             SetError($"Search failed: {ex.Message}");
+            StatusText = "";
             _log.Error("view", "Instance search failed", ex);
         }
         finally
@@ -77,6 +84,7 @@ public partial class InstanceFinderViewModel : ViewModelBase
         try
         {
             ClearError();
+            StatusText = "Looking up...";
             var addr = AddressHelper.NormalizeAddress(AddressSearch);
             var result = await _dump.FindByAddressAsync(addr);
             if (result.Found)
@@ -90,15 +98,19 @@ public partial class InstanceFinderViewModel : ViewModelBase
                     SlotIndex = result.SlotIndex
                 });
                 InstanceCount = 1;
+                StatusText = $"Found: {result.Name} ({result.ClassName})";
             }
             else
             {
-                SetError("No object found at address");
+                Instances.Clear();
+                InstanceCount = 0;
+                StatusText = $"No object found at {addr}";
             }
         }
         catch (Exception ex)
         {
             SetError($"Lookup failed: {ex.Message}");
+            StatusText = "";
         }
     }
 

@@ -30,7 +30,8 @@
         </Border>
 
         <!-- Class List -->
-        <DataGrid ItemsSource="{Binding DisplayedClasses}"
+        <DataGrid x:CompileBindings="False"
+                  ItemsSource="{Binding DisplayedClasses}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   Background="#1E1E1E"

@@ -25,6 +25,9 @@ public partial class MainWindowViewModel : ViewModelBase
     public NodeFilterViewModel NodeFilter { get; }
     public ProxyDeployViewModel ProxyDeploy { get; }
 
+    private const string DefaultTitle = "Zolt-Dump — Godot Engine Dumper";
+
+    [ObservableProperty] private string _windowTitle = DefaultTitle;
     [ObservableProperty] private string _statusText = "Disconnected";
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _godotVersion = "";
@@ -66,6 +69,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             IsConnected = connected;
             StatusText = connected ? "Connected" : "Disconnected";
+            if (!connected) WindowTitle = DefaultTitle;
         };
     }
 
@@ -86,6 +90,7 @@ public partial class MainWindowViewModel : ViewModelBase
             }
 
             GodotVersion = state.GodotVersion;
+            WindowTitle = $"Zolt-Dump — {state.ProcessName} (PID {state.Pid})";
             StatusText = $"Connected — Godot {state.GodotVersion}";
             _log.Info("Connected to game process");
 
@@ -100,6 +105,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             SetError($"Connect failed: {ex.Message}");
             StatusText = "Disconnected";
+            WindowTitle = DefaultTitle;
             _log.Error("Connection failed", ex);
         }
     }
@@ -112,6 +118,7 @@ public partial class MainWindowViewModel : ViewModelBase
             await _pipe.DisconnectAsync();
             StatusText = "Disconnected";
             GodotVersion = "";
+            WindowTitle = DefaultTitle;
             _log.Info("Disconnected");
         }
         catch (Exception ex)

@@ -13,12 +13,13 @@
                 <CheckBox Content="Game Only" DockPanel.Dock="Right"
                           IsChecked="{Binding GameOnly}"
                           Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
-                <TextBox Text="{Binding SearchQuery}" Watermark="Property name..." />
+                <TextBox x:Name="SearchBox" Text="{Binding SearchQuery}" Watermark="Property name..." />
             </DockPanel>
         </Border>
 
         <!-- Results -->
-        <DataGrid ItemsSource="{Binding Results}"
+        <DataGrid x:CompileBindings="False"
+                  ItemsSource="{Binding Results}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   Background="#1E1E1E"
