@@ -17,7 +17,7 @@ namespace Zolt::Stark {
 
 // Solliter — 索莉緹爾 — Logger
 namespace Zolt::Solliter {
-    void Init(HMODULE hModule);
+    bool Init();
 }
 
 // Qual — 全 — Mailbox
@@ -31,11 +31,18 @@ namespace Zolt::Macht {
 }
 
 static HMODULE g_hModule = nullptr;
+static volatile LONG g_autoStartOnce = 0;  // InterlockedExchange guard
 
 static DWORD WINAPI AutoStartThreadProc(LPVOID /*param*/) {
+    // Prevent double invocation (e.g. if DllMain is called twice)
+    if (InterlockedCompareExchange(&g_autoStartOnce, 1, 0) != 0) {
+        return 0;
+    }
+
 #ifdef ZOLT_PROXY_BUILD
-    // Eisen — 艾乍 — Proxy mode: brief delay then start
-    Sleep(500);
+    // Eisen — 艾乍 — Proxy mode: wait for engine to initialize singletons
+    // 1500ms gives Godot time to create Engine, SceneTree etc. before we scan
+    Sleep(1500);
     Zolt::Stark::AutoStart();
 #else
     // CE/Inject mode: wait for CE plugin init
@@ -65,8 +72,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID /*reserved*/) {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
-        // Initialize logging
-        Zolt::Solliter::Init(hModule);
+        // Initialize logging (early buffering until InitProcessMirror)
+        Zolt::Solliter::Init();
 
         // Start mailbox polling for CE Lua communication
         Zolt::Qual::StartPolling();

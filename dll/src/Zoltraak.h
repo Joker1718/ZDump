@@ -15,13 +15,32 @@ namespace Zolt::Zoltraak {
 uint64_t GetModuleBase(const char* moduleName = nullptr);
 uint64_t GetModuleSize(const char* moduleName = nullptr);
 
-// AOB pattern scan on the .text section of the main module
+// PE section info for targeted scanning
+struct SectionInfo {
+    uint64_t baseAddr = 0;   // Virtual address (in-process)
+    uint64_t size = 0;
+};
+
+// Get PE section ranges for the main module
+SectionInfo GetTextSection();
+SectionInfo GetDataSection();   // .data (initialized writable data)
+SectionInfo GetBssSection();    // .bss  (zero-initialized writable data)
+SectionInfo GetRdataSection();  // .rdata (read-only data)
+
+// Check if an address falls within a writable section (.data or .bss)
+bool IsInWritableSection(uint64_t addr);
+
+// AOB pattern scan on the main module
 // pattern: space-separated hex bytes, ?? for wildcard
 // Returns: address of first match, or 0 if not found
 uint64_t AOBScan(const char* pattern);
 
 // AOB pattern scan within a specific address range
 uint64_t AOBScanRange(const char* pattern, uint64_t start, uint64_t size);
+
+// AOB pattern scan returning ALL matches (up to maxResults)
+// Scans the main module, returns addresses of all matches
+std::vector<uint64_t> AOBScanAll(const char* pattern, size_t maxResults = 200);
 
 // Resolve a RIP-relative instruction target
 // matchAddr: address where pattern matched

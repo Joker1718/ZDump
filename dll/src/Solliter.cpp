@@ -1,54 +1,364 @@
 // Solliter — 索莉緹爾 (Mana Concealment — Logger)
 // 5-category per-process logging system for Zolt-Dump.
+// Ported from UE5CEDumper Logger.cpp with adaptations for Godot targets.
+//
+// Category file mapping:
+//   init-0.log    - DLL load, version info, startup, summary
+//   scan-0.log    - AOB scanning, pattern matching, memory scans
+//   offsets-0.log - Offset validation, DynOff, version detection
+//   pipe-0.log    - Named pipe IPC events
+//   walk-0.log    - Scene tree traversal, object enumeration, property walking
 
 #include "Solliter.h"
+#include "Grimoire.h"
+
+#include <ShlObj.h>       // SHGetKnownFolderPath
 #include <cstdio>
-#include <ctime>
+#include <cstdarg>
+#include <chrono>
+#include <mutex>
+#include <vector>
+#include <string>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 namespace Zolt::Solliter {
 
-static HMODULE s_hModule = nullptr;
-static bool    s_initialized = false;
+// ============================================================
+// Log file enumeration (5 categories)
+// ============================================================
+enum LogFile : uint8_t {
+    LF_Init = 0,    // init-0.log
+    LF_Scan,        // scan-0.log
+    LF_Offsets,     // offsets-0.log
+    LF_Pipe,        // pipe-0.log
+    LF_Walk,        // walk-0.log
+    LF_COUNT
+};
 
-// TODO: Implement log directory creation under %LOCALAPPDATA%\ZoltDump\Logs\<pid>\
-// TODO: Implement 4-file rotation with 8MB max per file
-// TODO: Implement per-category file handles (init.log, scan.log, offsets.log, pipe.log, walk.log)
+static const char* s_fileNames[LF_COUNT] = {
+    "init", "scan", "offsets", "pipe", "walk"
+};
 
-static void WriteLog(const char* /*category*/, const char* msg) {
-    // TODO: Write to category-specific log file with timestamp
-    // Stub: output to debug console
-    OutputDebugStringA("[Zolt] ");
-    OutputDebugStringA(msg);
-    OutputDebugStringA("\n");
+// ============================================================
+// Category routing table (longest-prefix-first)
+// ============================================================
+struct CatMapping {
+    const char* prefix;
+    int         prefixLen;
+    LogFile     file;
+};
+
+// Sorted longest-prefix-first for correct matching
+static const CatMapping s_catMap[] = {
+    { "SCAN:ObjDB",  10, LF_Scan    },
+    { "SCAN:ClsDB",  10, LF_Scan    },
+    { "SCAN:STree",  10, LF_Scan    },
+    { "SCAN:Eng",     8, LF_Scan    },
+    { "SCAN:Ver",     8, LF_Scan    },
+    { "SCAN:Hint",    9, LF_Scan    },
+    { "PIPE:svr",     8, LF_Pipe    },
+    { "PIPE:cmd",     8, LF_Pipe    },
+    { "WALK:Node",    9, LF_Walk    },
+    { "WALK:Prop",    9, LF_Walk    },
+    { "WALK:Inst",    9, LF_Walk    },
+    { "SUMMARY",      7, LF_Init    },
+    { "INIT",         4, LF_Init    },
+    { "SCAN",         4, LF_Scan    },
+    { "DYNO",         4, LF_Offsets },
+    { "OFFS",         4, LF_Offsets },
+    { "WALK",         4, LF_Walk    },
+    { "PIPE",         4, LF_Pipe    },
+    { "MEM",          3, LF_Scan    },
+    { "HINT",         4, LF_Scan    },
+};
+
+static constexpr int s_catMapCount = sizeof(s_catMap) / sizeof(s_catMap[0]);
+
+// ============================================================
+// Per-file state
+// ============================================================
+struct LogFileState {
+    FILE*         handle   = nullptr;
+    size_t        written  = 0;       // Bytes written to current file
+    fs::path      path;               // Full path to current file
+    std::string   baseName;           // e.g. "init", "scan"
+};
+
+// ============================================================
+// Module state
+// ============================================================
+static std::mutex      s_mutex;
+static LogFileState    s_files[LF_COUNT];
+static fs::path        s_logDir;            // Per-process log directory
+static bool            s_initialized = false;
+static bool            s_filesOpen   = false;
+
+// Early buffer: lines logged before InitProcessMirror opens files
+struct BufferedLine {
+    LogFile     file;
+    std::string text;
+};
+static std::vector<BufferedLine> s_earlyBuffer;
+static bool s_earlyBuffering = false;
+
+// ============================================================
+// Internal helpers
+// ============================================================
+
+static fs::path GetBaseLogDirectory() {
+    wchar_t* appdata = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appdata))) {
+        fs::path dir = fs::path(appdata) / Grimoire::LOG_DIR_NAME / Grimoire::LOG_SUBFOLDER;
+        CoTaskMemFree(appdata);
+        return dir;
+    }
+    return fs::path(L".");
 }
 
-void Init(HMODULE hModule) {
-    if (s_initialized) return;
-    s_hModule = hModule;
-    // TODO: Create log directory structure
-    // TODO: Open per-category log files
+static LogFile ResolveFile(const char* cat) {
+    if (!cat || !cat[0]) return LF_Init;
+
+    for (int i = 0; i < s_catMapCount; ++i) {
+        if (_strnicmp(cat, s_catMap[i].prefix, s_catMap[i].prefixLen) == 0) {
+            return s_catMap[i].file;
+        }
+    }
+    return LF_Init;  // Default: init.log
+}
+
+static std::string FormatTimestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+
+    struct tm tm_now {};
+    localtime_s(&tm_now, &time_t_now);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+        tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+        tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec,
+        static_cast<int>(ms.count()));
+    return buf;
+}
+
+static void RotateFile(LogFile lf) {
+    auto& f = s_files[lf];
+    if (f.handle) {
+        fclose(f.handle);
+        f.handle = nullptr;
+    }
+
+    // Shift files: 2->3, 1->2, 0->1
+    for (int i = Grimoire::LOG_ROTATE_MAX - 1; i > 0; --i) {
+        fs::path oldPath = s_logDir / (f.baseName + "-" + std::to_string(i - 1) + ".log");
+        fs::path newPath = s_logDir / (f.baseName + "-" + std::to_string(i) + ".log");
+        std::error_code ec;
+        fs::rename(oldPath, newPath, ec);  // Ignore errors (file may not exist)
+    }
+
+    // Reopen -0.log
+    f.path = s_logDir / (f.baseName + "-0.log");
+    f.handle = _wfopen(f.path.c_str(), L"wt");
+    f.written = 0;
+}
+
+static void WriteToFile(LogFile lf, const char* text, size_t len) {
+    auto& f = s_files[lf];
+    if (!f.handle) return;
+
+    // Check rotation
+    if (f.written + len > Grimoire::LOG_MAX_SIZE) {
+        RotateFile(lf);
+        if (!f.handle) return;
+    }
+
+    fwrite(text, 1, len, f.handle);
+    fflush(f.handle);
+    f.written += len;
+}
+
+static void OpenFiles() {
+    std::error_code ec;
+    fs::create_directories(s_logDir, ec);
+    if (ec) return;
+
+    for (int i = 0; i < LF_COUNT; ++i) {
+        auto& f = s_files[i];
+        f.baseName = s_fileNames[i];
+        f.path = s_logDir / (f.baseName + "-0.log");
+
+        // Append to existing file if it exists and is under size limit
+        f.handle = _wfopen(f.path.c_str(), L"at");
+        if (f.handle) {
+            fseek(f.handle, 0, SEEK_END);
+            f.written = static_cast<size_t>(ftell(f.handle));
+
+            // If already over limit, rotate
+            if (f.written > Grimoire::LOG_MAX_SIZE) {
+                RotateFile(static_cast<LogFile>(i));
+            }
+        }
+    }
+    s_filesOpen = true;
+}
+
+// Prune old subfolders if count exceeds max
+static void PruneSubfolders(const fs::path& baseDir, int maxSubfolders) {
+    std::error_code ec;
+    std::vector<fs::directory_entry> dirs;
+    for (auto& entry : fs::directory_iterator(baseDir, ec)) {
+        if (entry.is_directory()) {
+            dirs.push_back(entry);
+        }
+    }
+
+    if (static_cast<int>(dirs.size()) <= maxSubfolders) return;
+
+    // Sort by last write time (oldest first)
+    std::sort(dirs.begin(), dirs.end(), [](const auto& a, const auto& b) {
+        std::error_code ec2;
+        return fs::last_write_time(a, ec2) < fs::last_write_time(b, ec2);
+    });
+
+    // Remove oldest until under limit
+    int toRemove = static_cast<int>(dirs.size()) - maxSubfolders;
+    for (int i = 0; i < toRemove; ++i) {
+        fs::remove_all(dirs[i].path(), ec);
+    }
+}
+
+static void WriteLogLine(const char* level, const char* cat, const char* message) {
+    std::string timestamp = FormatTimestamp();
+    LogFile lf = ResolveFile(cat);
+
+    // Format line
+    char line[4096];
+    int len;
+    if (cat && cat[0]) {
+        len = snprintf(line, sizeof(line), "[%s] [%s] [%s] %s\n",
+            timestamp.c_str(), level, cat, message);
+    } else {
+        len = snprintf(line, sizeof(line), "[%s] [%s] %s\n",
+            timestamp.c_str(), level, message);
+    }
+    if (len < 0) return;
+    if (len >= static_cast<int>(sizeof(line))) len = sizeof(line) - 1;
+
+    std::lock_guard<std::mutex> lock(s_mutex);
+
+    // Always output to debug console
+    OutputDebugStringA(line);
+
+    if (s_filesOpen) {
+        WriteToFile(lf, line, static_cast<size_t>(len));
+    } else if (s_earlyBuffering) {
+        if (static_cast<int>(s_earlyBuffer.size()) < Grimoire::LOG_EARLY_BUF) {
+            s_earlyBuffer.push_back({ lf, std::string(line, len) });
+        }
+    }
+}
+
+static void FormatAndWrite(const char* level, const char* cat, const char* fmt, va_list args) {
+    char message[3072];
+    vsnprintf(message, sizeof(message), fmt, args);
+    message[sizeof(message) - 1] = '\0';
+    WriteLogLine(level, cat, message);
+}
+
+// ============================================================
+// Public API
+// ============================================================
+
+bool Init() {
+    if (s_initialized) return true;
+    s_earlyBuffering = true;
     s_initialized = true;
-    LogInit("Solliter logger initialized");
+    return true;
 }
 
-void LogInit(const char* msg) {
-    WriteLog("init", msg);
+void InitProcessMirror(const std::wstring& processName, int maxSubfolders) {
+    std::lock_guard<std::mutex> lock(s_mutex);
+
+    if (s_filesOpen) return;  // Already initialized
+
+    // Build log directory path
+    fs::path baseDir = GetBaseLogDirectory();
+    s_logDir = baseDir / processName;
+
+    // Prune old process subfolders
+    if (fs::exists(baseDir)) {
+        PruneSubfolders(baseDir, maxSubfolders);
+    }
+
+    // Open all 5 category files
+    OpenFiles();
+
+    // Flush early buffer
+    s_earlyBuffering = false;
+    for (auto& entry : s_earlyBuffer) {
+        WriteToFile(entry.file, entry.text.c_str(), entry.text.size());
+    }
+    s_earlyBuffer.clear();
+    s_earlyBuffer.shrink_to_fit();
 }
 
-void LogScan(const char* msg) {
-    WriteLog("scan", msg);
+void Shutdown() {
+    std::lock_guard<std::mutex> lock(s_mutex);
+    for (int i = 0; i < LF_COUNT; ++i) {
+        if (s_files[i].handle) {
+            fflush(s_files[i].handle);
+            fclose(s_files[i].handle);
+            s_files[i].handle = nullptr;
+        }
+    }
+    s_filesOpen = false;
+    s_initialized = false;
 }
 
-void LogOffsets(const char* msg) {
-    WriteLog("offsets", msg);
+void Info(const char* cat, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("INFO", cat, fmt, args);
+    va_end(args);
 }
 
-void LogPipe(const char* msg) {
-    WriteLog("pipe", msg);
+void Error(const char* cat, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("ERROR", cat, fmt, args);
+    va_end(args);
 }
 
-void LogWalk(const char* msg) {
-    WriteLog("walk", msg);
+void Warn(const char* cat, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("WARN", cat, fmt, args);
+    va_end(args);
 }
+
+void Debug(const char* cat, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("DEBUG", cat, fmt, args);
+    va_end(args);
+}
+
+void Summary(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("INFO", "SUMMARY", fmt, args);
+    va_end(args);
+}
+
+// Legacy API wrappers
+void LogInit(const char* msg)    { Info("INIT", "%s", msg); }
+void LogScan(const char* msg)    { Info("SCAN", "%s", msg); }
+void LogOffsets(const char* msg) { Info("OFFS", "%s", msg); }
+void LogPipe(const char* msg)    { Info("PIPE", "%s", msg); }
+void LogWalk(const char* msg)    { Info("WALK", "%s", msg); }
 
 } // namespace Zolt::Solliter

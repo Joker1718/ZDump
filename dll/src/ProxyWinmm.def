@@ -1,0 +1,46 @@
+; ProxyWinmm.def - Module definition for winmm.dll proxy
+; Eisen — 艾乍 — Iron Warrior (Proxy DLL Forwarding)
+;
+; Maps exported names to internal Proxy_* implementations.
+; Covers the most commonly imported WINMM functions.
+; Only used when building with ZOLT_PROXY_BUILD + ZOLT_PROXY_WINMM.
+
+LIBRARY winmm
+EXPORTS
+    ; --- Timer functions ---
+    timeBeginPeriod             = Proxy_timeBeginPeriod
+    timeEndPeriod               = Proxy_timeEndPeriod
+    timeGetDevCaps              = Proxy_timeGetDevCaps
+    timeGetTime                 = Proxy_timeGetTime
+    timeGetSystemTime           = Proxy_timeGetSystemTime
+
+    ; --- MIDI In functions ---
+    midiInClose                 = Proxy_midiInClose
+    midiInGetDevCapsA           = Proxy_midiInGetDevCapsA
+    midiInGetDevCapsW           = Proxy_midiInGetDevCapsW
+    midiInGetErrorTextA         = Proxy_midiInGetErrorTextA
+    midiInGetNumDevs            = Proxy_midiInGetNumDevs
+    midiInOpen                  = Proxy_midiInOpen
+    midiInStart                 = Proxy_midiInStart
+    midiInStop                  = Proxy_midiInStop
+
+    ; --- Wave Out functions ---
+    waveOutGetNumDevs           = Proxy_waveOutGetNumDevs
+    waveOutOpen                 = Proxy_waveOutOpen
+    waveOutClose                = Proxy_waveOutClose
+
+    ; --- PlaySound ---
+    PlaySoundA                  = Proxy_PlaySoundA
+    PlaySoundW                  = Proxy_PlaySoundW
+
+    ; --- Zolt-Dump C ABI exports (for CE Lua getAddress) ---
+    Zolt_Init
+    Zolt_Shutdown
+    Zolt_GetVersion
+    Zolt_AutoStart
+    Zolt_GetObjectDBAddr
+    Zolt_GetClassDBAddr
+    Zolt_GetSceneTreeAddr
+    Zolt_GetEngineAddr
+    Zolt_GetObjectCount
+    Zolt_GetGodotVersion
