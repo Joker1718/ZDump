@@ -476,6 +476,58 @@ static json HandleWalkClass(int id, const json& req) {
     return resp;
 }
 
+// Helper: Determine if a Variant::Type represents a pointer-like type
+static bool IsPointerType(int varType) {
+    // Object, Callable, Signal, Dictionary, Array, and all Packed arrays
+    return varType == 24 || varType == 25 || varType == 26 ||
+           varType == 27 || varType == 28 ||
+           (varType >= 29 && varType <= 38);
+}
+
+// Helper: Determine if a Variant::Type represents a struct-like type
+static bool IsStructType(int varType) {
+    // Vector2/3/4, Rect2, Plane, Quaternion, AABB, Color, Transform types
+    return (varType >= 5 && varType <= 20);
+}
+
+// Helper: Determine if a Variant::Type represents a container type
+static bool IsContainerType(int varType) {
+    return varType == 27 || varType == 28 || // Dictionary, Array
+           (varType >= 29 && varType <= 38); // Packed arrays
+}
+
+// Helper: Approximate in-memory size for a Variant::Type
+static int VariantTypeSize(int varType) {
+    switch (varType) {
+        case 0:  return 0;    // Nil
+        case 1:  return 4;    // bool
+        case 2:  return 8;    // int64
+        case 3:  return 8;    // double
+        case 4:  return 8;    // String ptr
+        case 5:  return 8;    // Vector2
+        case 6:  return 8;    // Vector2i
+        case 7:  return 16;   // Rect2
+        case 8:  return 16;   // Rect2i
+        case 9:  return 12;   // Vector3
+        case 10: return 12;   // Vector3i
+        case 11: return 24;   // Transform2D (6 floats)
+        case 12: return 16;   // Vector4
+        case 13: return 16;   // Vector4i
+        case 14: return 16;   // Plane
+        case 15: return 16;   // Quaternion
+        case 16: return 24;   // AABB
+        case 17: return 36;   // Basis (9 floats)
+        case 18: return 48;   // Transform3D (12 floats)
+        case 19: return 64;   // Projection (16 floats)
+        case 20: return 16;   // Color
+        case 21: return 8;    // StringName
+        case 22: return 8;    // NodePath
+        case 23: return 8;    // RID
+        case 24: return 16;   // Object (id + ptr)
+        default: return 8;    // Callables, Signals, containers, packed arrays
+    }
+}
+
 // cmd: walk_instance
 static json HandleWalkInstance(int id, const json& req) {
     std::string addrStr = GetAddrField(req);
@@ -495,7 +547,15 @@ static json HandleWalkInstance(int id, const json& req) {
         f["type"]         = entry.value.typeName;
         f["variant_type"] = entry.value.type;
         f["value"]        = entry.value.value;
-        f["address"]      = AddrToHex(entry.value.rawAddr);
+        f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
+        f["offset"]       = -1;  // Godot doesn't expose byte offsets via ClassDB
+        f["size"]         = VariantTypeSize(entry.value.type);
+        f["is_pointer"]   = IsPointerType(entry.value.type);
+        f["is_struct"]    = IsStructType(entry.value.type);
+        f["is_container"] = IsContainerType(entry.value.type);
+        if (!entry.className.empty()) {
+            f["class_name"] = entry.className; // owning class for the property
+        }
         fields.push_back(std::move(f));
     });
 

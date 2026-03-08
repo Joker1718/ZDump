@@ -89,10 +89,25 @@ namespace DynOff {
     inline int STREE_ROOT_OFFSET   = -1;    // Window* root within SceneTree (probe required)
     inline int STREE_SCENE_OFFSET  = -1;    // Node* current_scene within SceneTree (probe required)
 
+    // ----- ClassInfo layout offsets (probed by DiAgolze::ProbeClassInfoLayout) -----
+    inline int CLASSINFO_NAME_OFFSET      = -1;  // StringName 'name' field within ClassInfo
+    inline int CLASSINFO_INHERITS_OFFSET  = -1;  // StringName 'inherits' field within ClassInfo
+    inline int CLASSINFO_PROPLIST_OFFSET  = -1;  // List<PropertyInfo> property_list within ClassInfo
+    inline int CLASSINFO_METHODMAP_OFFSET = -1;  // HashMap<StringName, MethodBind*> method_map within ClassInfo
+
+    // ----- PropertyInfo field offsets within List::Element (probed) -----
+    inline int PROPINFO_TYPE_OFFSET   = 0;   // Variant::Type (always first field, offset 0)
+    inline int PROPINFO_NAME_OFFSET   = -1;  // String name offset within PropertyInfo
+    inline int PROPINFO_HINT_OFFSET   = -1;  // PropertyHint offset within PropertyInfo
+    inline int PROPINFO_USAGE_OFFSET  = -1;  // usage flags offset within PropertyInfo
+    inline int PROPINFO_TOTAL_SIZE    = -1;  // total PropertyInfo size in bytes
+    inline int ELEMENT_NEXT_OFFSET    = -1;  // Element.next_ptr offset (after PropertyInfo value)
+
     // ----- Validation state -----
     inline std::atomic<bool> bOffsetsValidated{false};
     inline std::atomic<bool> bNodeOffsetsValidated{false};
     inline std::atomic<bool> bStringNameProbed{false};
+    inline std::atomic<bool> bClassInfoProbed{false};
 }
 
 } // namespace Zolt
