@@ -231,21 +231,13 @@ std::string ReadString(uint64_t addr, size_t maxLen) {
     return result;
 }
 
-std::string ReadGodotString(uint64_t cowDataPtr) {
-    if (!cowDataPtr || !IsReadable(cowDataPtr)) return "";
-
-    // Godot String CowData layout:
-    // _ptr points to char32_t[] data
-    // At _ptr - 4: uint32_t size (element count)
-    uint32_t size = ReadSafe<uint32_t>(cowDataPtr - 4, 0);
-    if (size == 0 || size > 4096) return "";
-
-    // Read UTF-32 characters and convert to UTF-8
+// Helper: convert char32_t[] to UTF-8, reading from memory
+static std::string ConvertChar32ToUtf8(uint64_t dataAddr, uint32_t maxChars) {
     std::string result;
-    result.reserve(size);
+    result.reserve(maxChars);
 
-    for (uint32_t i = 0; i < size; ++i) {
-        uint32_t ch = ReadSafe<uint32_t>(cowDataPtr + i * 4, 0);
+    for (uint32_t i = 0; i < maxChars; ++i) {
+        uint32_t ch = ReadSafe<uint32_t>(dataAddr + i * 4, 0);
         if (ch == 0) break;
 
         // Simple UTF-32 to UTF-8 conversion
@@ -266,6 +258,61 @@ std::string ReadGodotString(uint64_t cowDataPtr) {
         }
     }
     return result;
+}
+
+std::string ReadGodotString(uint64_t cowDataPtr) {
+    if (!cowDataPtr || !IsReadable(cowDataPtr)) return "";
+
+    // Godot CowData<char32_t> layout:
+    // _ptr points to char32_t[] data. Size is stored before the data.
+    // The layout changed across Godot versions:
+    //
+    // Old layout (Godot 4.0-4.2): [uint32_t refcount][uint32_t size][data...]
+    //   → size at _ptr - 4 (uint32_t)
+    //
+    // New layout (Godot 4.3+): [SafeNumeric<uint64_t> refcount][uint64_t capacity][uint64_t size][padding][data...]
+    //   → size at _ptr - 0x10 (uint64_t), DATA_OFFSET = 0x20
+    //
+    // Since the layout varies, we try multiple strategies and validate each one.
+    // A size is valid if: (a) it's in range 1..4096, and (b) char32_t[size] == 0 (null terminator).
+
+    // Strategy 1: Old CowData layout — uint32_t size at _ptr - 4
+    uint32_t size = ReadSafe<uint32_t>(cowDataPtr - 4, 0);
+    if (size > 0 && size <= 4096) {
+        // Validate: null terminator at expected position
+        uint32_t term = ReadSafe<uint32_t>(cowDataPtr + size * 4, 0);
+        if (term == 0) {
+            return ConvertChar32ToUtf8(cowDataPtr, size);
+        }
+    }
+
+    // Strategy 2: New CowData layout — uint64_t size at _ptr - 0x10
+    uint64_t size64 = ReadSafe<uint64_t>(cowDataPtr - 0x10, 0);
+    if (size64 > 0 && size64 <= 4096) {
+        uint32_t s = static_cast<uint32_t>(size64);
+        uint32_t term = ReadSafe<uint32_t>(cowDataPtr + s * 4, 0);
+        if (term == 0) {
+            return ConvertChar32ToUtf8(cowDataPtr, s);
+        }
+    }
+
+    // Strategy 3: Try uint32_t at _ptr - 8 (some intermediate layouts)
+    size = ReadSafe<uint32_t>(cowDataPtr - 8, 0);
+    if (size > 0 && size <= 4096) {
+        uint32_t term = ReadSafe<uint32_t>(cowDataPtr + size * 4, 0);
+        if (term == 0) {
+            return ConvertChar32ToUtf8(cowDataPtr, size);
+        }
+    }
+
+    // Strategy 4: Null-terminated read (most robust fallback)
+    // Works regardless of header layout — just read char32_t until null
+    return ConvertChar32ToUtf8(cowDataPtr, 256);
+}
+
+std::string ReadChar32String(uint64_t addr, size_t maxChars) {
+    if (!addr || !IsReadable(addr)) return "";
+    return ConvertChar32ToUtf8(addr, static_cast<uint32_t>(maxChars));
 }
 
 } // namespace Zolt::Zoltraak

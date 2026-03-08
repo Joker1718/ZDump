@@ -14,7 +14,7 @@ param(
 
 $testDir    = "D:\Github\Zolt-Dump\test\godot"
 $logRoot    = "$env:LOCALAPPDATA\ZoltDump\Logs"
-$proxyPath  = "D:\Github\Zolt-Dump\build\dll\winmm.dll"
+$proxyPath  = "D:\Github\Zolt-Dump\build_proxy\dll\winmm.dll"
 
 if (-not (Test-Path $proxyPath)) {
     Write-Host "ERROR: Proxy DLL not found at $proxyPath. Build first!" -ForegroundColor Red
@@ -39,7 +39,9 @@ $games = @(
     @{ Name="Magic Archery (4.2.2)";     Exe="D:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";             Args=$null; LogDir="Magic Archery";             ProxyDir="D:\SteamLibrary\steamapps\common\Magic Archery" },
     @{ Name="One Potion Please (4.3)";   Exe="D:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="D:\SteamLibrary\steamapps\common\One Potion Please" },
     @{ Name="Virtual Cottage";           Exe="D:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="D:\SteamLibrary\steamapps\common\Virtual Cottage" },
-    @{ Name="Upload Labs";               Exe="D:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="D:\SteamLibrary\steamapps\common\Upload Labs" }
+    @{ Name="Upload Labs";               Exe="D:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="D:\SteamLibrary\steamapps\common\Upload Labs" },
+    @{ Name="Holo X Break";              Exe="D:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="D:\SteamLibrary\steamapps\common\Holo X Break" },
+    @{ Name="Dome Keeper";               Exe="D:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="D:\SteamLibrary\steamapps\common\Dome Keeper" }
 )
 
 # Select which targets to test

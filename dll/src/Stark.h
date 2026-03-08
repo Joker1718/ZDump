@@ -41,6 +41,26 @@ __declspec(dllexport) const char* Zolt_GetGodotVersion();
 // Get object count from ObjectDB
 __declspec(dllexport) int Zolt_GetObjectCount();
 
+// ----- Phase 2: Object Enumeration exports -----
+
+// Get max slot index in ObjectDB
+__declspec(dllexport) int Zolt_GetSlotMax();
+
+// Get Object* at a specific slot index (0 if empty/invalid)
+__declspec(dllexport) uint64_t Zolt_GetObjectByIndex(int index);
+
+// Find an object's slot index by its address (-1 if not found)
+__declspec(dllexport) int Zolt_FindObjectByAddress(uint64_t addr);
+
+// Get total number of registered classes
+__declspec(dllexport) int Zolt_GetClassCount();
+
+// Get class name for an Object* (returns "" if unknown)
+__declspec(dllexport) const char* Zolt_GetClassName(uint64_t objectAddr);
+
+// Get root node address from SceneTree (0 if unavailable)
+__declspec(dllexport) uint64_t Zolt_GetRootNode();
+
 } // extern "C"
 
 // Internal C++ interface used by dllmain
