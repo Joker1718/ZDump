@@ -4,6 +4,8 @@
              RequestedThemeVariant="Default">
     <Application.Styles>
         <FluentTheme />
+        <!-- DataGrid requires its own style include in Avalonia 11.x -->
+        <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
     </Application.Styles>
     <Application.Resources>
         <ResourceDictionary>

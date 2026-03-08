@@ -33,9 +33,11 @@
             </DockPanel>
         </Border>
 
-        <!-- Breadcrumbs -->
+        <!-- Breadcrumbs (max 60px tall to prevent pushing fields DataGrid off-screen) -->
         <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526"
+                MaxHeight="60" ClipToBounds="True"
                 IsVisible="{Binding Breadcrumbs.Count}">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding Breadcrumbs}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
@@ -56,6 +58,7 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </ScrollViewer>
         </Border>
 
         <!-- Object Info Header -->

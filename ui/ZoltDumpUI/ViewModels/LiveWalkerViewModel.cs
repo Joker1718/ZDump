@@ -54,6 +54,15 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
     public async Task NavigateToAddressAsync(string address)
     {
+        await FetchAndShowAsync(address);
+        // Add breadcrumb only on navigation (not refresh)
+        if (!string.IsNullOrEmpty(CurrentAddress))
+            Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName));
+    }
+
+    /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
+    private async Task FetchAndShowAsync(string address)
+    {
         try
         {
             ClearError();
@@ -68,9 +77,6 @@ public partial class LiveWalkerViewModel : ViewModelBase
             Fields.Clear();
             foreach (var f in result.Fields)
                 Fields.Add(f);
-
-            // Update breadcrumbs
-            Breadcrumbs.Add(new BreadcrumbItem(result.Address, result.Name, result.ClassName));
 
             AddressInput = address;
             _log.Debug("view", $"Walked instance {result.Name} @ {result.Address}");
@@ -132,8 +138,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         if (Breadcrumbs.Count <= 1) return;
         Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
         var prev = Breadcrumbs[^1];
-        Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1); // Will be re-added by NavigateToAddress
-        await NavigateToAddressAsync(prev.Address);
+        await FetchAndShowAsync(prev.Address);
     }
 
     [RelayCommand]
@@ -147,7 +152,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task RefreshAsync()
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
-        await NavigateToAddressAsync(CurrentAddress);
+        await FetchAndShowAsync(CurrentAddress);
     }
 
     [RelayCommand]
@@ -184,16 +189,16 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [RelayCommand]
     private async Task NavigateToBreadcrumbAsync(BreadcrumbItem crumb)
     {
-        // Remove all breadcrumbs after this one
+        // Remove all breadcrumbs after this one (keep the clicked one)
         var idx = -1;
         for (var i = 0; i < Breadcrumbs.Count; i++)
         {
             if (Breadcrumbs[i].Address == crumb.Address) { idx = i; break; }
         }
         if (idx < 0) return;
-        while (Breadcrumbs.Count > idx)
+        while (Breadcrumbs.Count > idx + 1)
             Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
-        await NavigateToAddressAsync(crumb.Address);
+        await FetchAndShowAsync(crumb.Address);
     }
 
     [RelayCommand]

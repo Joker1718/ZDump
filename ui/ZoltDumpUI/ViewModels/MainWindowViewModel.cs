@@ -94,6 +94,7 @@ public partial class MainWindowViewModel : ViewModelBase
             }
 
             GodotVersion = state.GodotVersion;
+            Pointers.GodotVersion = state.GodotVersion;
             WindowTitle = $"Zolt-Dump — {state.ProcessName} (PID {state.Pid})";
             StatusText = $"Connected — Godot {state.GodotVersion}";
             LiveWalker.ModuleName = state.ProcessName;
