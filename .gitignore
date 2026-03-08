@@ -433,5 +433,15 @@ build/
 dist/
 build_proxy/
 
+# Test binaries and artifacts
+test/godot/*.exe
+test/godot/*.dll
+test/*.zip
+nul
+
 # Claude Code
 .claude/
+
+# Test binary downloads
+test/godot/*.zip
+test/godot/Godot_v*.exe

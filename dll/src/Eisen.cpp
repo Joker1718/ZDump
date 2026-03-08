@@ -1,10 +1,14 @@
-// Eisen - Iron Warrior (ProxyVersion)
-// version.dll forwarding layer for proxy DLL deployment.
+// Eisen — 艾乍 (Iron Warrior — Proxy DLL Forwarding)
+// Common proxy infrastructure + target-specific forwarding.
 // Only compiled when ZOLT_PROXY_BUILD is defined.
 //
-// Loads the real version.dll from System32 and forwards all 17 exports.
-// Internal functions use a Proxy_ prefix; ProxyVersion.def maps them
-// to the real export names (GetFileVersionInfoA, etc.).
+// Supports multiple proxy targets:
+//   ZOLT_PROXY_WINMM   — winmm.dll proxy (180 exports via MASM trampolines)
+//   default             — version.dll proxy (17 typed C++ wrappers)
+//
+// winmm: Real DLL loaded at DLL_PROCESS_ATTACH, all 180 function pointers
+// resolved immediately. MASM naked JMP stubs forward calls perfectly.
+// version: Typed C++ wrappers with lazy GetProcAddress on first call.
 
 #ifdef ZOLT_PROXY_BUILD
 
@@ -12,58 +16,84 @@
 #include "Solliter.h"
 #include <Windows.h>
 
+// Include generated winmm function pointer table (defines g_pfn_* variables)
+#if defined(ZOLT_PROXY_WINMM)
+#include "EisenWinmmPtrs.h"
+#endif
+
 namespace Zolt::Eisen {
 
-// Real version.dll handle - loaded on first call
-static HMODULE g_realVersion = nullptr;
+// ============================================================
+// Common proxy infrastructure
+// ============================================================
 
-static HMODULE LoadRealVersion()
+// Real system DLL handle — loaded at DLL_PROCESS_ATTACH
+static HMODULE g_realDll = nullptr;
+
+// Name of the real system DLL to load from System32
+#if defined(ZOLT_PROXY_WINMM)
+static const wchar_t* const kRealDllName = L"winmm.dll";
+static const char*    const kRealDllTag  = "winmm.dll";
+#else // default: version.dll
+static const wchar_t* const kRealDllName = L"version.dll";
+static const char*    const kRealDllTag  = "version.dll";
+#endif
+
+static HMODULE LoadRealDll()
 {
-    if (g_realVersion) return g_realVersion;
+    if (g_realDll) return g_realDll;
 
-    // Build path to the real version.dll in System32
+    // Build full path to the real DLL in System32
     wchar_t systemDir[MAX_PATH] = {};
     GetSystemDirectoryW(systemDir, MAX_PATH);
 
     wchar_t realPath[MAX_PATH] = {};
-    wsprintfW(realPath, L"%s\\version.dll", systemDir);
+    wsprintfW(realPath, L"%s\\%s", systemDir, kRealDllName);
 
-    g_realVersion = LoadLibraryW(realPath);
-    if (!g_realVersion) {
-        Solliter::LogInit("Eisen: Failed to load real version.dll");
+    g_realDll = LoadLibraryW(realPath);
+    if (!g_realDll) {
+        Solliter::Info("INIT", "Eisen: Failed to load real %s", kRealDllTag);
     } else {
-        Solliter::LogInit("Eisen: Loaded real version.dll from System32");
+        Solliter::Info("INIT", "Eisen: Loaded real %s from System32", kRealDllTag);
     }
-    return g_realVersion;
+    return g_realDll;
 }
 
-// Helper: resolve a function from the real version.dll
-static FARPROC RealProc(const char* name)
+FARPROC RealProc(const char* name)
 {
-    HMODULE real = LoadRealVersion();
+    HMODULE real = LoadRealDll();
     return real ? GetProcAddress(real, name) : nullptr;
 }
 
 bool InitProxy() {
-    return LoadRealVersion() != nullptr;
+    HMODULE real = LoadRealDll();
+    if (!real) return false;
+
+#if defined(ZOLT_PROXY_WINMM)
+    // Resolve all 180 winmm function pointers for MASM trampolines
+    InitWinmmPointers(real);
+#endif
+
+    return true;
 }
 
 void ShutdownProxy() {
-    if (g_realVersion) {
-        FreeLibrary(g_realVersion);
-        g_realVersion = nullptr;
+    if (g_realDll) {
+        FreeLibrary(g_realDll);
+        g_realDll = nullptr;
     }
 }
 
 } // namespace Zolt::Eisen
 
+using namespace Zolt::Eisen;
+
 // ============================================================
-// Forwarded exports (17 total)
-// Internal names use Proxy_ prefix; ProxyVersion.def maps them
-// to the real export names (GetFileVersionInfoA, etc.).
+// version.dll forwarding exports (17 total)
+// Only compiled when building as version.dll proxy.
 // ============================================================
 
-using namespace Zolt::Eisen;
+#if !defined(ZOLT_PROXY_WINMM)
 
 // --- GetFileVersionInfo family ---
 
@@ -218,5 +248,14 @@ extern "C" DWORD WINAPI Proxy_VerLanguageNameW(DWORD wLang, LPWSTR szLang, DWORD
     static auto fn = reinterpret_cast<Fn>(RealProc("VerLanguageNameW"));
     return fn ? fn(wLang, szLang, cchLang) : 0;
 }
+
+#endif // !ZOLT_PROXY_WINMM
+
+// ============================================================
+// winmm.dll forwarding exports
+// All 180 exports are handled by MASM naked JMP trampolines
+// (ProxyWinmmTrampoline.asm) through function pointers initialized
+// in InitProxy() above. No typed C++ wrappers needed.
+// ============================================================
 
 #endif // ZOLT_PROXY_BUILD

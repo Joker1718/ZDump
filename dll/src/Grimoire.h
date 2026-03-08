@@ -34,6 +34,15 @@ namespace Grimoire {
 
     // CE Plugin pipe name (for Mailbox)
     constexpr const char* MAILBOX_NAME = "ZoltDumpMailbox";
+
+    // ----- Logging constants -----
+    constexpr const wchar_t* LOG_SUBFOLDER   = L"Logs";
+    constexpr int            LOG_ROTATE_MAX  = 4;                    // 4-file rotation (0..3)
+    constexpr size_t         LOG_MAX_SIZE    = 8 * 1024 * 1024;      // 8 MB per file
+    constexpr int            LOG_EARLY_BUF   = 100;                  // Max buffered lines before files open
+
+    // ----- Pipe constants -----
+    constexpr int            PIPE_BUF_SIZE   = 65536;                // 64 KB pipe buffer
 }
 
 // ============================================================

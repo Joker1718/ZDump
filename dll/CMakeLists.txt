@@ -158,6 +158,8 @@ target_link_libraries(ZoltDumper PRIVATE
     Shlwapi
     Psapi
     Version     # GetFileVersionInfoW / VerQueryValueW for PE VERSIONINFO
+    Shell32     # SHGetKnownFolderPath for log/cache directory resolution
+    Ole32       # CoTaskMemFree for SHGetKnownFolderPath cleanup
     minhook
 )
 
@@ -168,10 +170,16 @@ set_target_properties(ZoltDumper PROPERTIES
 )
 
 # ============================================================
-# Proxy DLL target — builds as version.dll for direct game-folder injection
+# Proxy DLL target — builds as version.dll or winmm.dll for
+# direct game-folder injection (DLL hijacking).
 # Eisen — 艾乍 — The iron warrior's armored defense
+#
+# PROXY_TARGET selects which system DLL to impersonate:
+#   "version" (default) — version.dll (17 exports)
+#   "winmm"             — winmm.dll  (180 exports via MASM trampolines)
 # ============================================================
-option(BUILD_PROXY_DLL "Build the proxy DLL (version.dll) target" OFF)
+option(BUILD_PROXY_DLL "Build the proxy DLL target" OFF)
+set(PROXY_TARGET "version" CACHE STRING "Proxy DLL target: version or winmm")
 
 if(BUILD_PROXY_DLL)
     add_library(ZoltDumper_Proxy SHARED
@@ -190,6 +198,7 @@ if(BUILD_PROXY_DLL)
         src/Himmel.cpp
         src/Heiter.cpp
         src/Qual.cpp
+        src/Macht.cpp
         src/version.rc
     )
 
@@ -199,36 +208,57 @@ if(BUILD_PROXY_DLL)
         ${CMAKE_SOURCE_DIR}/vendor/nlohmann/include
     )
 
-    target_compile_definitions(ZoltDumper_Proxy PRIVATE
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        _CRT_SECURE_NO_WARNINGS
+    # Common compile definitions
+    set(PROXY_DEFS
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
         ZOLT_PROXY_BUILD
     )
+
+    # Target-specific configuration
+    if(PROXY_TARGET STREQUAL "winmm")
+        # Enable MASM for winmm trampoline stubs
+        enable_language(ASM_MASM)
+        target_sources(ZoltDumper_Proxy PRIVATE
+            src/ProxyWinmmTrampoline.asm
+        )
+        list(APPEND PROXY_DEFS ZOLT_PROXY_WINMM)
+        set(PROXY_DEF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/ProxyWinmm.def")
+        set(PROXY_OUTPUT_NAME "winmm")
+        set(PROXY_DELAYLOAD_DLL "winmm.dll")
+        set(PROXY_LINK_LIB "Winmm")
+        message(STATUS "Proxy target: winmm.dll (180 exports via MASM trampolines)")
+    else()
+        set(PROXY_DEF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/ProxyVersion.def")
+        set(PROXY_OUTPUT_NAME "version")
+        set(PROXY_DELAYLOAD_DLL "version.dll")
+        set(PROXY_LINK_LIB "Version")
+        message(STATUS "Proxy target: version.dll")
+    endif()
+
+    target_compile_definitions(ZoltDumper_Proxy PRIVATE ${PROXY_DEFS})
 
     if(MSVC)
         set_property(TARGET ZoltDumper_Proxy PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
         )
         string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        # Apply C/CXX flags only (not to MASM .asm files)
         target_compile_options(ZoltDumper_Proxy PRIVATE
-            /utf-8 /W4 /permissive- /EHa /arch:AVX2 /favor:blend
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8 /W4 /permissive- /EHa /arch:AVX2 /favor:blend>
         )
     endif()
 
     target_link_libraries(ZoltDumper_Proxy PRIVATE
-        ws2_32 Shlwapi Psapi Version delayimp minhook
+        ws2_32 Shlwapi Psapi ${PROXY_LINK_LIB} Shell32 Ole32 delayimp minhook
     )
 
     target_link_options(ZoltDumper_Proxy PRIVATE
-        /DELAYLOAD:version.dll
-        /DEF:${CMAKE_CURRENT_SOURCE_DIR}/src/ProxyVersion.def
+        /DELAYLOAD:${PROXY_DELAYLOAD_DLL}
+        /DEF:${PROXY_DEF_FILE}
     )
 
     set_target_properties(ZoltDumper_Proxy PROPERTIES
         PREFIX ""
-        OUTPUT_NAME "version"
+        OUTPUT_NAME "${PROXY_OUTPUT_NAME}"
     )
 endif()

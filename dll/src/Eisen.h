@@ -1,9 +1,14 @@
 #pragma once
 
-// Eisen — 艾乍 (Iron Warrior — ProxyVersion)
-// version.dll forwarding stub for proxy DLL deployment.
+// Eisen — 艾乍 (Iron Warrior — Proxy DLL Forwarding)
+// DLL forwarding layer for proxy DLL deployment.
 // Only compiled when ZOLT_PROXY_BUILD is defined.
-// Forwards all version.dll exports to the real system version.dll.
+//
+// Supports multiple proxy targets:
+//   ZOLT_PROXY_VERSION  — version.dll (17 exports)
+//   ZOLT_PROXY_WINMM    — winmm.dll  (10+ exports)
+//
+// The real system DLL is loaded lazily on first forwarded call.
 
 #ifdef ZOLT_PROXY_BUILD
 
@@ -11,11 +16,14 @@
 
 namespace Zolt::Eisen {
 
-// Load the real version.dll from System32 and resolve all forwarded exports
+// Load the real system DLL from System32
 bool InitProxy();
 
-// Unload the real version.dll
+// Unload the real system DLL
 void ShutdownProxy();
+
+// Helper: resolve a function from the real system DLL by name
+FARPROC RealProc(const char* name);
 
 } // namespace Zolt::Eisen
 

@@ -39,6 +39,9 @@ param(
     [ValidateSet("All", "DLL", "ProxyDLL", "UI", "Test")]
     [string]$Target = "All",
 
+    [ValidateSet("version", "winmm")]
+    [string]$ProxyTarget = "version",
+
     [switch]$Clean,
     [switch]$SkipRestore,
 
@@ -314,11 +317,11 @@ if ($Target -in "All", "DLL") {
 }
 
 # ============================================================
-# Build Proxy DLL (version.dll)
+# Build Proxy DLL (version.dll or winmm.dll)
 # ============================================================
 
 if ($Target -in "All", "ProxyDLL") {
-    Write-Banner "Proxy DLL (version.dll)  |  $CppConfig"
+    Write-Banner "Proxy DLL ($ProxyTarget.dll)  |  $CppConfig"
 
     $proxyBuildDir = Join-Path $ROOT_DIR "build_proxy"
 
@@ -328,17 +331,17 @@ if ($Target -in "All", "ProxyDLL") {
         Write-Ok "Proxy build directory cleaned"
     }
 
-    Write-Step "Configuring CMake for Proxy DLL (Ninja + MSVC)..."
-    $configOk = Invoke-CmdInVsEnv "cmake -S `"$ROOT_DIR`" -B `"$proxyBuildDir`" -G Ninja -DCMAKE_BUILD_TYPE=$CppConfig -DBUILD_PROXY_DLL=ON"
+    Write-Step "Configuring CMake for Proxy DLL (Ninja + MSVC, target=$ProxyTarget)..."
+    $configOk = Invoke-CmdInVsEnv "cmake -S `"$ROOT_DIR`" -B `"$proxyBuildDir`" -G Ninja -DCMAKE_BUILD_TYPE=$CppConfig -DBUILD_PROXY_DLL=ON -DPROXY_TARGET=$ProxyTarget"
 
     if (-not $configOk) {
         Write-Fail "CMake configure failed (Proxy DLL)"
         $exitCode = 1
     }
     else {
-        Write-Ok "CMake configured (Proxy DLL)"
+        Write-Ok "CMake configured (Proxy DLL, target=$ProxyTarget)"
 
-        Write-Step "Building version.dll ($CppConfig)..."
+        Write-Step "Building $ProxyTarget.dll ($CppConfig)..."
         $buildOk = Invoke-CmdInVsEnv "cmake --build `"$proxyBuildDir`" --config $CppConfig --target ZoltDumper_Proxy"
 
         if (-not $buildOk) {
@@ -346,7 +349,10 @@ if ($Target -in "All", "ProxyDLL") {
             $exitCode = 1
         }
         else {
-            $proxyDll = Get-ChildItem -Path $proxyBuildDir -Filter "version.dll" -Recurse |
+            $proxyDllName = "$ProxyTarget.dll"
+            $proxyPdbName = "$ProxyTarget.pdb"
+
+            $proxyDll = Get-ChildItem -Path $proxyBuildDir -Filter $proxyDllName -Recurse |
                         Select-Object -First 1
 
             if ($proxyDll) {
@@ -355,17 +361,17 @@ if ($Target -in "All", "ProxyDLL") {
 
                 Copy-Item $proxyDll.FullName -Destination $proxyOutDir -Force
 
-                $pdbFile = Get-ChildItem -Path $proxyBuildDir -Filter "version.pdb" -Recurse |
+                $pdbFile = Get-ChildItem -Path $proxyBuildDir -Filter $proxyPdbName -Recurse |
                            Select-Object -First 1
                 if ($pdbFile) {
                     Copy-Item $pdbFile.FullName -Destination $proxyOutDir -Force
                 }
 
-                $dllSize = Get-FileSize (Join-Path $proxyOutDir "version.dll")
-                Write-Ok "version.dll ($dllSize) -> dist\proxy\"
+                $dllSize = Get-FileSize (Join-Path $proxyOutDir $proxyDllName)
+                Write-Ok "$proxyDllName ($dllSize) -> dist\proxy\"
             }
             else {
-                Write-Fail "version.dll not found in build output"
+                Write-Fail "$proxyDllName not found in build output"
                 $exitCode = 1
             }
         }
