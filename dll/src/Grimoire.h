@@ -75,15 +75,31 @@ namespace DynOff {
     inline int VARIANT_TYPE        = 0x00;  // Variant::Type (4 bytes)
     inline int VARIANT_DATA        = 0x08;  // Union data start (after padding)
 
-    // ----- StringName _Data layout (stable across Godot 4.0-4.4) -----
-    // _Data { SafeRefCount(4B), SafeNumeric(4B), const char* cname(8B), String name(8B), int idx(4B), uint32_t hash(4B), ... }
+    // ----- StringName _Data layout -----
+    // 3.x:     _Data { SafeRefCount(4B), pad(4B), const char* cname(8B), String name(8B wchar_t CowData), ... }
+    // 4.0-4.4: _Data { SafeRefCount(4B), SafeNumeric(4B), const char* cname(8B), String name(8B char32 CowData), ... }
+    // 4.5+:    _Data { SafeRefCount(4B), SafeNumeric(4B), String name(8B char32 CowData), ... }  ← cname REMOVED
     inline int STRINGNAME_DATA_PTR = 0x00;  // _Data* pointer within StringName
-    inline int SDATA_CNAME         = 0x08;  // const char* cname within _Data (raw ASCII, .rdata pointer)
-    inline int SDATA_NAME          = 0x10;  // String name within _Data (CowData<char32_t>._ptr, heap pointer)
+    inline int SDATA_CNAME         = 0x08;  // const char* cname within _Data (ASCII, .rdata pointer) — absent in 4.5+
+    inline int SDATA_NAME          = 0x10;  // String name within _Data (CowData<char32_t>._ptr) — moves to 0x08 in 4.5+
     inline int SDATA_HASH          = 0x1C;  // uint32_t hash within _Data
 
-    // ----- ClassDB HashMap layout -----
+    // ----- ClassDB HashMap layout (4.x) -----
     inline int CLASSDB_ALLOC_OFFSET = 0x28; // PagedAllocator size before HashMap core fields (probed by Frieren)
+
+    // ----- 3.x HashMap layout (bucket-chain, separate chaining) -----
+    // HashMap<K,V> is 16 bytes inline: hash_table(8B) + power(1B+3B pad) + elements(4B)
+    // No PagedAllocator prefix, no head/tail linked list, no capacity_index.
+    inline constexpr int HASHMAP_3X_SIZE          = 16;   // Total inline size
+    inline constexpr int HASHMAP_3X_HASHTABLE_OFF = 0x00; // Element** hash_table
+    inline constexpr int HASHMAP_3X_POWER_OFF     = 0x08; // uint8_t hash_table_power
+    inline constexpr int HASHMAP_3X_ELEMENTS_OFF  = 0x0C; // uint32_t elements (count)
+
+    // 3.x HashMap::Element layout (bucket chain, singly-linked)
+    inline constexpr int ELEM_3X_HASH_OFF  = 0x00; // uint32_t hash
+    inline constexpr int ELEM_3X_NEXT_OFF  = 0x08; // Element* next (after 4B pad)
+    inline constexpr int ELEM_3X_KEY_OFF   = 0x10; // TKey (e.g. StringName 8B)
+    inline constexpr int ELEM_3X_VALUE_OFF = 0x18; // TData (e.g. ClassInfo or Object*)
 
     // ----- SceneTree layout -----
     inline int STREE_ROOT_OFFSET   = -1;    // Window* root within SceneTree (probe required)
@@ -108,6 +124,30 @@ namespace DynOff {
     inline std::atomic<bool> bNodeOffsetsValidated{false};
     inline std::atomic<bool> bStringNameProbed{false};
     inline std::atomic<bool> bClassInfoProbed{false};
+}
+
+// ============================================================
+// GodotVer — Detected Godot version state (set by Frieren after scan)
+// Used by Flamme, Ubel, DiAgolze for version-specific behavior.
+// ============================================================
+namespace GodotVer {
+    inline uint32_t Major = 0;
+    inline uint32_t Minor = 0;
+    inline uint32_t Patch = 0;
+
+    // Version predicates
+    inline bool IsGodot3()    { return Major == 3; }
+    inline bool IsGodot4()    { return Major == 4; }
+    inline bool IsGodot45Plus() { return Major > 4 || (Major == 4 && Minor >= 5); }
+
+    // Variant::Type max valid value (exclusive sentinel)
+    // 3.x: 27 types (0-26), 4.0-4.4: 38 types (0-37), 4.5+: 39 types (0-38)
+    inline int VariantTypeMax() {
+        if (Major == 3) return 27;
+        if (Major == 4 && Minor >= 5) return 39;
+        if (Major >= 4) return 38;
+        return 39; // Unknown version, use largest
+    }
 }
 
 } // namespace Zolt

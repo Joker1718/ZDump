@@ -193,6 +193,7 @@ static json HandleInit(int id, const json& /*req*/) {
     resp["godot_version"]       = ptrs.godotVersion;
     resp["godot_version_major"] = ptrs.godotMajor;
     resp["godot_version_minor"] = ptrs.godotMinor;
+    resp["godot_version_patch"] = ptrs.godotPatch;
 
     // Module info
     wchar_t processPath[MAX_PATH] = {};
@@ -476,29 +477,69 @@ static json HandleWalkClass(int id, const json& req) {
     return resp;
 }
 
+// Map a raw Variant::Type to 4.x type number for unified helper logic.
+// For 4.x, returns the same value. For 3.x, remaps the different enum numbering.
+static int NormalizeVariantType(int rawType) {
+    if (!GodotVer::IsGodot3()) return rawType;
+    // Godot 3.x → 4.x mapping
+    static const int map3to4[] = {
+        0, 1, 2, 3, 4, 5,    // 0-5: same (NIL..VECTOR2)
+        7,                     // 6: RECT2 → 7
+        9,                     // 7: VECTOR3 → 9
+        11,                    // 8: TRANSFORM2D → 11
+        14,                    // 9: PLANE → 14
+        15,                    // 10: QUAT → 15
+        16,                    // 11: AABB → 16
+        17,                    // 12: BASIS → 17
+        18,                    // 13: TRANSFORM → 18
+        20,                    // 14: COLOR → 20
+        22,                    // 15: NODE_PATH → 22
+        23,                    // 16: _RID → 23
+        24,                    // 17: OBJECT → 24
+        27,                    // 18: DICTIONARY → 27
+        28,                    // 19: ARRAY → 28
+        29,                    // 20: POOL_BYTE → 29
+        30,                    // 21: POOL_INT → 30
+        32,                    // 22: POOL_REAL → 32
+        34,                    // 23: POOL_STRING → 34
+        35,                    // 24: POOL_VEC2 → 35
+        36,                    // 25: POOL_VEC3 → 36
+        37,                    // 26: POOL_COLOR → 37
+    };
+    if (rawType >= 0 && rawType < static_cast<int>(std::size(map3to4)))
+        return map3to4[rawType];
+    return rawType;
+}
+
 // Helper: Determine if a Variant::Type represents a pointer-like type
-static bool IsPointerType(int varType) {
+// Uses 4.x type numbers via NormalizeVariantType.
+static bool IsPointerType(int rawType) {
+    int t = NormalizeVariantType(rawType);
     // Object, Callable, Signal, Dictionary, Array, and all Packed arrays
-    return varType == 24 || varType == 25 || varType == 26 ||
-           varType == 27 || varType == 28 ||
-           (varType >= 29 && varType <= 38);
+    return t == 24 || t == 25 || t == 26 ||
+           t == 27 || t == 28 ||
+           (t >= 29 && t <= 38);
 }
 
 // Helper: Determine if a Variant::Type represents a struct-like type
-static bool IsStructType(int varType) {
+static bool IsStructType(int rawType) {
+    int t = NormalizeVariantType(rawType);
     // Vector2/3/4, Rect2, Plane, Quaternion, AABB, Color, Transform types
-    return (varType >= 5 && varType <= 20);
+    return (t >= 5 && t <= 20);
 }
 
 // Helper: Determine if a Variant::Type represents a container type
-static bool IsContainerType(int varType) {
-    return varType == 27 || varType == 28 || // Dictionary, Array
-           (varType >= 29 && varType <= 38); // Packed arrays
+static bool IsContainerType(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    return t == 27 || t == 28 || // Dictionary, Array
+           (t >= 29 && t <= 38); // Packed arrays
 }
 
 // Helper: Approximate in-memory size for a Variant::Type
-static int VariantTypeSize(int varType) {
-    switch (varType) {
+// Normalizes to 4.x type numbers for a single switch.
+static int VariantTypeSize(int rawType) {
+    int t = NormalizeVariantType(rawType);
+    switch (t) {
         case 0:  return 0;    // Nil
         case 1:  return 4;    // bool
         case 2:  return 8;    // int64
@@ -776,9 +817,22 @@ static json HandleGetScanStatus(int id, const json& /*req*/) {
     return resp;
 }
 
-// cmd: trigger_scan — no-op (scan already done at startup)
+// cmd: trigger_scan — attempt to resolve any missing pointers (e.g. SceneTree)
 static json HandleTriggerScan(int id, const json& /*req*/) {
-    return OkResponse(id);
+    bool sceneTreeResolved = (Serie::GetRoot() != 0);
+
+    // If SceneTree still not resolved, try a full scan
+    if (!sceneTreeResolved) {
+        uintptr_t addr = Frieren::FindSceneTree();
+        if (addr) {
+            Serie::Init(addr);
+            sceneTreeResolved = (Serie::GetRoot() != 0);
+        }
+    }
+
+    json resp = OkResponse(id);
+    resp["scene_tree_resolved"] = sceneTreeResolved;
+    return resp;
 }
 
 // cmd: get_ce_pointer_info — stub for Phase 5+

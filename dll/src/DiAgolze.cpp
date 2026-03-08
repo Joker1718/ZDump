@@ -28,13 +28,19 @@
 
 namespace Zolt::DiAgolze {
 
-// Cached state
+// Cached state (4.x robin-hood HashMap)
 static uint64_t s_classDBAddr   = 0;
 static int      s_allocOffset   = 0;
 static uint64_t s_headElement   = 0;
 static uint64_t s_tailElement   = 0;
 static uint32_t s_numElements   = 0;
 static uint32_t s_capacityIndex = 0;
+
+// 3.x bucket-chain HashMap state
+static bool     s_is3x          = false;
+static uint64_t s_hashTable3x   = 0;  // Element** hash_table
+static uint8_t  s_power3x       = 0;  // hash_table_power
+static uint32_t s_elements3x    = 0;  // element count
 
 // Class name → (HashMapElement address, ClassInfo address) cache
 struct ClassEntry {
@@ -187,6 +193,115 @@ static void BuildClassCache() {
         static_cast<int>(s_classMap.size()), static_cast<int>(s_numElements), emptyNames);
 }
 
+// ============================================================
+// 3.x HashMap support (bucket-chain, separate chaining)
+// ============================================================
+
+// Read 3.x HashMap<StringName, ClassInfo> fields from the classDB address
+static bool ReadHashMapFields3x() {
+    if (!s_classDBAddr) return false;
+
+    s_hashTable3x = Zoltraak::ReadSafe<uint64_t>(
+        s_classDBAddr + DynOff::HASHMAP_3X_HASHTABLE_OFF, 0);
+    s_power3x     = Zoltraak::ReadSafe<uint8_t>(
+        s_classDBAddr + DynOff::HASHMAP_3X_POWER_OFF, 0);
+    s_elements3x  = Zoltraak::ReadSafe<uint32_t>(
+        s_classDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, 0);
+
+    if (!s_hashTable3x || !Zoltraak::IsReadable(s_hashTable3x)) {
+        Solliter::Warn("CLSDB", "3x HashMap: invalid hash_table pointer");
+        return false;
+    }
+
+    if (s_power3x < 4 || s_power3x > 20) {
+        Solliter::Warn("CLSDB", "3x HashMap: invalid power %u", s_power3x);
+        return false;
+    }
+
+    Solliter::Info("CLSDB", "3x HashMap: hashTable=%p power=%u elements=%u",
+        reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
+    return true;
+}
+
+// Build the class cache by iterating 3.x bucket-chain HashMap
+static void BuildClassCache3x() {
+    s_classMap.clear();
+    if (!s_hashTable3x) return;
+
+    int bucketCount = 1 << s_power3x;
+    int totalFound = 0;
+    int emptyNames = 0;
+
+    for (int b = 0; b < bucketCount; ++b) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(s_hashTable3x + b * 8, 0);
+
+        while (elem) {
+            if (!Zoltraak::IsReadable(elem)) break;
+
+            // 3.x Element: hash(4B)+pad(4B)+next(8B)+key(8B StringName)+value(ClassInfo...)
+            uint64_t keyAddr   = elem + DynOff::ELEM_3X_KEY_OFF;   // StringName (8B = _Data*)
+            uint64_t valueAddr = elem + DynOff::ELEM_3X_VALUE_OFF; // ClassInfo starts here
+
+            std::string className = Flamme::Resolve(keyAddr);
+
+            if (className.empty()) {
+                emptyNames++;
+                // Diagnostic: log first 3 empty names
+                if (emptyNames <= 3) {
+                    uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(keyAddr, 0);
+                    Solliter::Debug("CLSDB", "  3x elem[%d] at %p: _Data*=%p (no name)",
+                        totalFound, reinterpret_cast<void*>(elem),
+                        reinterpret_cast<void*>(dataPtr));
+                }
+            } else {
+                ClassEntry entry;
+                entry.elementAddr = elem;
+                entry.infoAddr    = valueAddr;
+                entry.parentName  = "";
+                s_classMap[className] = entry;
+            }
+
+            totalFound++;
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(
+                elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+            if (next == elem) break; // Self-loop protection
+            elem = next;
+        }
+    }
+
+    Solliter::Info("CLSDB", "3x: Built class cache: %d classes found (%u expected, %d empty names)",
+        static_cast<int>(s_classMap.size()), s_elements3x, emptyNames);
+}
+
+// Enumerate classes by walking 3.x bucket chains (deterministic order not guaranteed)
+static void EnumerateClasses3x(
+    const std::function<void(const std::string& name, uint64_t infoAddr)>& callback) {
+    if (!s_hashTable3x) return;
+
+    int bucketCount = 1 << s_power3x;
+    for (int b = 0; b < bucketCount; ++b) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(s_hashTable3x + b * 8, 0);
+
+        while (elem) {
+            if (!Zoltraak::IsReadable(elem)) break;
+
+            uint64_t keyAddr   = elem + DynOff::ELEM_3X_KEY_OFF;
+            uint64_t valueAddr = elem + DynOff::ELEM_3X_VALUE_OFF;
+
+            std::string className = Flamme::Resolve(keyAddr);
+            if (!className.empty()) {
+                callback(className, valueAddr);
+            }
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(
+                elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+            if (next == elem) break;
+            elem = next;
+        }
+    }
+}
+
 // Try to resolve the parent class name from a ClassInfo at infoAddr.
 // ClassInfo layout (partial): the inherits_ptr (ClassInfo*) is typically
 // one of the first fields. We probe nearby for a pointer that leads to
@@ -276,9 +391,11 @@ static bool ValidateListData(uint64_t dataPtr, int minCount, int maxCount) {
     if (!first || !Zoltraak::IsReadable(first)) return false;
     if (!last  || !Zoltraak::IsReadable(last))  return false;
 
-    // First element's first 4 bytes should be a valid Variant::Type (0-38)
+    // First element's first 4 bytes should be a valid Variant::Type
+    // Version-aware: 3.x max=26, 4.0-4.4 max=37, 4.5+ max=38
     int32_t firstType = Zoltraak::ReadSafe<int32_t>(first, -1);
-    if (firstType < 0 || firstType > 38) return false;
+    int typeMax = GodotVer::VariantTypeMax() - 1;
+    if (firstType < 0 || firstType > typeMax) return false;
 
     return true;
 }
@@ -332,9 +449,9 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                     uint64_t nextPtr = Zoltraak::ReadSafe<uint64_t>(first + nextOff, 0);
                     if (!nextPtr || !Zoltraak::IsReadable(nextPtr)) continue;
 
-                    // Check if nextPtr points to an Element with valid type
+                    // Check if nextPtr points to an Element with valid Variant::Type
                     int32_t nextType = Zoltraak::ReadSafe<int32_t>(nextPtr, -1);
-                    if (nextType >= 0 && nextType <= 38) {
+                    if (nextType >= 0 && nextType < GodotVer::VariantTypeMax()) {
                         // Verify the next element also has a string at the same name offset
                         uint64_t nextStr = Zoltraak::ReadSafe<uint64_t>(nextPtr + nameOff, 0);
                         if (nextStr && Zoltraak::IsReadable(nextStr)) {
@@ -408,6 +525,7 @@ static void ProbeClassInfoLayout() {
 
     // Step 1: Find the 'name' StringName field by scanning ClassInfo memory.
     // Scan at 8-byte stride for a StringName that resolves to the target class name.
+    // Range 0x40..0x800 covers all known versions (3.x ~536B, 4.5+ ~816B)
     s_nameOffset = -1;
     for (int off = 0x40; off <= 0x800; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
@@ -485,34 +603,63 @@ static void ProbeClassInfoLayout() {
     }
 
     // Step 4: Find 'method_map' — a HashMap with StringName keys.
-    // HashMap inline layout: elements*(8B), hashes*(8B), head*(8B), tail*(8B), capIdx(4B), num(4B)
-    // Total: 40 bytes. Look between infoAddr+0x20 and property_list.
     s_methodMapOffset = -1;
     int mmSearchEnd = (s_propListOffset > 0) ? s_propListOffset : s_inheritsOffset;
 
-    for (int off = 0x20; off < mmSearchEnd; off += 8) {
-        // Read potential HashMap fields
-        uint64_t elems  = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
-        uint64_t hashes = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 8, 0);
-        uint64_t head   = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x10, 0);
-        uint64_t tail   = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x18, 0);
-        // capIdx at +0x20 (not used for validation)
-        uint32_t num    = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x24, 0);
+    if (s_is3x) {
+        // 3.x method_map: bucket-chain HashMap (16 bytes inline)
+        // Layout: hash_table*(8B) + power(1B+3B pad) + elements(4B) = 16 bytes
+        for (int off = 0x20; off < mmSearchEnd; off += 8) {
+            uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
+            uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(infoAddr + off + 0x08, 0);
+            uint32_t count = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x0C, 0);
 
-        // Validate: all pointers readable, reasonable element count
-        if (!elems || !hashes || !head || !tail) continue;
-        if (!Zoltraak::IsReadable(elems) || !Zoltraak::IsReadable(head)) continue;
-        if (num < 5 || num > 1000) continue; // Node should have 20+ methods
+            if (!ht || !Zoltraak::IsReadable(ht)) continue;
+            if (pw < 2 || pw > 15) continue;
+            if (count < 5 || count > 1000) continue;
 
-        // Validate: head element should have a StringName key that resolves to a method name
-        // Element: next(8B), prev(8B), KeyValue{ StringName(8B), MethodBind*(8B) }
-        uint64_t keyAddr = head + 0x10; // StringName key
-        std::string methodName = Flamme::Resolve(keyAddr);
-        if (!methodName.empty() && methodName.size() >= 2 && methodName.size() <= 64) {
-            s_methodMapOffset = off;
-            Solliter::Info("CLSDB", "  Found 'method_map' at ClassInfo+0x%X (num=%u, first='%s')",
-                off, num, methodName.c_str());
-            break;
+            // Validate: first non-null bucket element should have a StringName key
+            int buckets = 1 << pw;
+            bool found = false;
+            for (int b = 0; b < buckets && !found; ++b) {
+                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                if (!elem || !Zoltraak::IsReadable(elem)) continue;
+
+                uint64_t keyAddr = elem + DynOff::ELEM_3X_KEY_OFF;
+                std::string methodName = Flamme::Resolve(keyAddr);
+                if (!methodName.empty() && methodName.size() >= 2 && methodName.size() <= 64) {
+                    s_methodMapOffset = off;
+                    Solliter::Info("CLSDB", "  Found 3.x 'method_map' at ClassInfo+0x%X "
+                        "(power=%u, num=%u, first='%s')",
+                        off, pw, count, methodName.c_str());
+                    found = true;
+                }
+            }
+            if (found) break;
+        }
+    } else {
+        // 4.x method_map: robin-hood HashMap (40 bytes inline)
+        // Layout: elements*(8B), hashes*(8B), head*(8B), tail*(8B), capIdx(4B), num(4B)
+        for (int off = 0x20; off < mmSearchEnd; off += 8) {
+            uint64_t elems  = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
+            uint64_t hashes = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 8, 0);
+            uint64_t head   = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x10, 0);
+            uint64_t tail   = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x18, 0);
+            uint32_t num    = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x24, 0);
+
+            if (!elems || !hashes || !head || !tail) continue;
+            if (!Zoltraak::IsReadable(elems) || !Zoltraak::IsReadable(head)) continue;
+            if (num < 5 || num > 1000) continue;
+
+            // Element: next(8B), prev(8B), KeyValue{ StringName(8B), MethodBind*(8B) }
+            uint64_t keyAddr = head + 0x10;
+            std::string methodName = Flamme::Resolve(keyAddr);
+            if (!methodName.empty() && methodName.size() >= 2 && methodName.size() <= 64) {
+                s_methodMapOffset = off;
+                Solliter::Info("CLSDB", "  Found 'method_map' at ClassInfo+0x%X (num=%u, first='%s')",
+                    off, num, methodName.c_str());
+                break;
+            }
         }
     }
 
@@ -541,6 +688,7 @@ void Init(uint64_t classDBAddr) {
     s_allocOffset = DynOff::CLASSDB_ALLOC_OFFSET;
     s_classMap.clear();
     s_vtableMap.clear();
+    s_is3x = GodotVer::IsGodot3();
     EnsureModuleInfo();
 
     if (!classDBAddr) {
@@ -548,14 +696,23 @@ void Init(uint64_t classDBAddr) {
         return;
     }
 
-    // Read HashMap fields
-    if (!ReadHashMapFields()) {
-        Solliter::Warn("CLSDB", "Failed to read ClassDB HashMap fields");
-        return;
+    if (s_is3x) {
+        // 3.x: bucket-chain HashMap<StringName, ClassInfo>
+        if (!ReadHashMapFields3x()) {
+            Solliter::Warn("CLSDB", "Failed to read 3.x ClassDB HashMap fields");
+            return;
+        }
+        BuildClassCache3x();
+        // Set s_numElements for diagnostics/compatibility
+        s_numElements = s_elements3x;
+    } else {
+        // 4.x: robin-hood HashMap with linked list
+        if (!ReadHashMapFields()) {
+            Solliter::Warn("CLSDB", "Failed to read ClassDB HashMap fields");
+            return;
+        }
+        BuildClassCache();
     }
-
-    // Build the class cache by walking the linked list
-    BuildClassCache();
 
     // Now resolve parent names for each class (second pass)
     int resolvedParents = 0;
@@ -576,7 +733,13 @@ int GetClassCount() {
 }
 
 void EnumerateClasses(const std::function<void(const std::string& name, uint64_t infoAddr)>& callback) {
-    // Walk the linked list in order for deterministic output
+    if (s_is3x) {
+        // 3.x: iterate bucket chains
+        EnumerateClasses3x(callback);
+        return;
+    }
+
+    // 4.x: Walk the linked list in order for deterministic output
     if (!s_headElement) return;
 
     uint64_t current = s_headElement;
@@ -643,7 +806,7 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
         // Read PropertyInfo from Element.value (starts at Element+0x00)
         // type is always the first field of PropertyInfo (offset 0)
         int32_t propType = Zoltraak::ReadSafe<int32_t>(elem, -1);
-        if (propType < 0 || propType > 38) {
+        if (propType < 0 || propType >= GodotVer::VariantTypeMax()) {
             // Invalid type — might have wrong offsets, stop
             Solliter::Debug("CLSDB", "  Invalid prop type %d at elem %p, stopping",
                 propType, reinterpret_cast<void*>(elem));
@@ -720,6 +883,50 @@ static std::vector<MethodInfo> ReadMethodMapRaw(uint64_t infoAddr) {
     std::vector<MethodInfo> result;
     if (s_methodMapOffset < 0) return result;
 
+    if (s_is3x) {
+        // 3.x: bucket-chain HashMap (16 bytes inline)
+        // Layout: hash_table*(8B) + power(1B+3B pad) + elements(4B)
+        uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_methodMapOffset, 0);
+        uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(infoAddr + s_methodMapOffset + 0x08, 0);
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(infoAddr + s_methodMapOffset + 0x0C, 0);
+
+        if (!ht || !Zoltraak::IsReadable(ht) || count == 0) return result;
+
+        result.reserve(count);
+        int buckets = 1 << pw;
+
+        for (int b = 0; b < buckets; ++b) {
+            uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+            while (elem) {
+                if (!Zoltraak::IsReadable(elem)) break;
+
+                // 3.x Element: hash(4B)+pad(4B)+next(8B)+key(8B StringName)+value(8B MethodBind*)
+                uint64_t keyAddr   = elem + DynOff::ELEM_3X_KEY_OFF;
+                uint64_t valueAddr = elem + DynOff::ELEM_3X_VALUE_OFF;
+
+                std::string methodName = Flamme::Resolve(keyAddr);
+                if (!methodName.empty()) {
+                    MethodInfo mi;
+                    mi.name = methodName;
+                    mi.returnType = "";
+                    mi.argCount   = -1;
+
+                    uint64_t methodBind = Zoltraak::ReadSafe<uint64_t>(valueAddr, 0);
+                    (void)methodBind;
+
+                    result.push_back(std::move(mi));
+                }
+
+                uint64_t next = Zoltraak::ReadSafe<uint64_t>(
+                    elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                if (next == elem) break;
+                elem = next;
+            }
+        }
+        return result;
+    }
+
+    // 4.x: robin-hood HashMap with linked list
     // HashMap layout (inline in ClassInfo):
     //   +0x00: HashMapElement** elements
     //   +0x08: uint32_t* hashes
@@ -754,8 +961,6 @@ static std::vector<MethodInfo> ReadMethodMapRaw(uint64_t infoAddr) {
             // Try to read basic MethodBind info
             uint64_t methodBind = Zoltraak::ReadSafe<uint64_t>(valueAddr, 0);
             if (methodBind && Zoltraak::IsReadable(methodBind)) {
-                // MethodBind has argument_count at a known offset (typically around +0x30-0x40)
-                // For now, leave as -1. Full probing can be done later.
                 (void)methodBind;
             }
 
@@ -905,11 +1110,17 @@ void LogDiagnostics() {
 
     Solliter::Info("CLSDB", "=== DiAgolze Diagnostics ===");
     Solliter::Info("CLSDB", "ClassDB addr:   %p", reinterpret_cast<void*>(s_classDBAddr));
-    Solliter::Info("CLSDB", "Alloc offset:   %d (0x%X)", s_allocOffset, s_allocOffset);
-    Solliter::Info("CLSDB", "HashMap:        head=%p tail=%p capIdx=%u num=%u",
-        reinterpret_cast<void*>(s_headElement),
-        reinterpret_cast<void*>(s_tailElement),
-        s_capacityIndex, s_numElements);
+    Solliter::Info("CLSDB", "Mode:           %s", s_is3x ? "3.x bucket-chain" : "4.x robin-hood");
+    if (s_is3x) {
+        Solliter::Info("CLSDB", "3x HashMap:     hashTable=%p power=%u elements=%u",
+            reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
+    } else {
+        Solliter::Info("CLSDB", "Alloc offset:   %d (0x%X)", s_allocOffset, s_allocOffset);
+        Solliter::Info("CLSDB", "HashMap:        head=%p tail=%p capIdx=%u num=%u",
+            reinterpret_cast<void*>(s_headElement),
+            reinterpret_cast<void*>(s_tailElement),
+            s_capacityIndex, s_numElements);
+    }
     Solliter::Info("CLSDB", "Classes cached: %d", static_cast<int>(s_classMap.size()));
 
     // Show first 20 class names with their parent

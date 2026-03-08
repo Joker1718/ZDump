@@ -1,6 +1,11 @@
 // Ubel — 優貝爾 (Assassin Specialist — Variant/Property Reader)
 // Reads Godot Variant values and walks object instance properties.
 // Extracts field metadata from ClassDB and reads Variant values from memory.
+//
+// Version-aware Variant::Type handling:
+//   Godot 3.x: 27 types (0-26), different enum numbering from type 6+
+//   Godot 4.0-4.4: 38 types (0-37)
+//   Godot 4.5+: 39 types (0-38, added PackedVector4Array)
 
 #include "Ubel.h"
 #include "Zoltraak.h"
@@ -15,9 +20,9 @@
 namespace Zolt::Ubel {
 
 // ============================================================
-// Variant::Type enum to string mapping (full 39 types)
+// Godot 4.x Variant::Type enum to string mapping (39 types max)
 // ============================================================
-static const char* VariantTypeName(int type) {
+static const char* VariantTypeName4x(int type) {
     static const char* names[] = {
         "Nil",                  // 0
         "bool",                 // 1
@@ -65,10 +70,95 @@ static const char* VariantTypeName(int type) {
 }
 
 // ============================================================
-// Variant size table (in-memory size of the data portion)
+// Godot 3.x Variant::Type enum to string mapping (27 types)
 // ============================================================
-static int VariantDataSize(int type) {
-    switch (type) {
+static const char* VariantTypeName3x(int type) {
+    static const char* names[] = {
+        "Nil",                  // 0
+        "bool",                 // 1
+        "int",                  // 2
+        "real",                 // 3  (= float/double)
+        "String",               // 4
+        "Vector2",              // 5
+        "Rect2",                // 6
+        "Vector3",              // 7
+        "Transform2D",          // 8
+        "Plane",                // 9
+        "Quat",                 // 10
+        "AABB",                 // 11
+        "Basis",                // 12
+        "Transform",            // 13
+        "Color",                // 14
+        "NodePath",             // 15
+        "RID",                  // 16
+        "Object",               // 17
+        "Dictionary",           // 18
+        "Array",                // 19
+        "PoolByteArray",        // 20
+        "PoolIntArray",         // 21
+        "PoolRealArray",        // 22
+        "PoolStringArray",      // 23
+        "PoolVector2Array",     // 24
+        "PoolVector3Array",     // 25
+        "PoolColorArray",       // 26
+    };
+    if (type >= 0 && type < static_cast<int>(std::size(names)))
+        return names[type];
+    return "Unknown";
+}
+
+// Version-aware type name lookup
+static const char* VariantTypeName(int type) {
+    if (GodotVer::IsGodot3())
+        return VariantTypeName3x(type);
+    return VariantTypeName4x(type);
+}
+
+// ============================================================
+// Map Godot 3.x Variant::Type → 4.x equivalent for unified ReadVariant
+// Returns the 4.x type number so ReadVariant only needs one switch.
+// Returns -1 for invalid types.
+// ============================================================
+static int MapType3xTo4x(int type3) {
+    static const int mapping[] = {
+         0,  // 0:  NIL            → 0:  NIL
+         1,  // 1:  BOOL           → 1:  BOOL
+         2,  // 2:  INT            → 2:  INT
+         3,  // 3:  REAL           → 3:  FLOAT
+         4,  // 4:  STRING         → 4:  STRING
+         5,  // 5:  VECTOR2        → 5:  VECTOR2
+         7,  // 6:  RECT2          → 7:  RECT2
+         9,  // 7:  VECTOR3        → 9:  VECTOR3
+        11,  // 8:  TRANSFORM2D    → 11: TRANSFORM2D
+        14,  // 9:  PLANE          → 14: PLANE
+        15,  // 10: QUAT           → 15: QUATERNION
+        16,  // 11: AABB           → 16: AABB
+        17,  // 12: BASIS          → 17: BASIS
+        18,  // 13: TRANSFORM      → 18: TRANSFORM3D
+        20,  // 14: COLOR          → 20: COLOR
+        22,  // 15: NODE_PATH      → 22: NODE_PATH
+        23,  // 16: _RID           → 23: RID
+        24,  // 17: OBJECT         → 24: OBJECT
+        27,  // 18: DICTIONARY     → 27: DICTIONARY
+        28,  // 19: ARRAY          → 28: ARRAY
+        29,  // 20: POOL_BYTE_ARR  → 29: PACKED_BYTE_ARRAY
+        30,  // 21: POOL_INT_ARR   → 30: PACKED_INT32_ARRAY
+        32,  // 22: POOL_REAL_ARR  → 32: PACKED_FLOAT32_ARRAY
+        34,  // 23: POOL_STR_ARR   → 34: PACKED_STRING_ARRAY
+        35,  // 24: POOL_VEC2_ARR  → 35: PACKED_VECTOR2_ARRAY
+        36,  // 25: POOL_VEC3_ARR  → 36: PACKED_VECTOR3_ARRAY
+        37,  // 26: POOL_COL_ARR   → 37: PACKED_COLOR_ARRAY
+    };
+    if (type3 >= 0 && type3 < static_cast<int>(std::size(mapping)))
+        return mapping[type3];
+    return -1;
+}
+
+// ============================================================
+// Variant data size table (based on 4.x type numbers, works for both)
+// ============================================================
+static int VariantDataSize(int type4x) {
+    switch (type4x) {
         case 0:  return 0;    // Nil
         case 1:  return 4;    // bool (uint32_t)
         case 2:  return 8;    // int (int64_t)
@@ -117,6 +207,7 @@ static std::string FormatDouble(double v) {
 
 // ============================================================
 // ReadVariant — Read and decode a Variant at the given address
+// Uses 4.x type numbers internally via MapType3xTo4x for 3.x.
 // ============================================================
 VariantValue ReadVariant(uint64_t addr) {
     VariantValue result{};
@@ -125,15 +216,25 @@ VariantValue ReadVariant(uint64_t addr) {
     if (!addr || !Zoltraak::IsReadable(addr)) return result;
 
     // Read Variant::Type (int32 at offset 0)
-    int32_t type = Zoltraak::ReadSafe<int32_t>(addr + DynOff::VARIANT_TYPE, -1);
-    if (type < 0 || type > 38) return result;
+    int32_t rawType = Zoltraak::ReadSafe<int32_t>(addr + DynOff::VARIANT_TYPE, -1);
+    int maxType = GodotVer::VariantTypeMax();
+    if (rawType < 0 || rawType >= maxType) return result;
 
-    result.type     = type;
-    result.typeName = VariantTypeName(type);
+    // For display: use version-appropriate type name from the RAW type number
+    result.typeName = VariantTypeName(rawType);
+
+    // For decoding: map to 4.x type number so we use a single switch
+    int type4x = rawType;
+    if (GodotVer::IsGodot3()) {
+        type4x = MapType3xTo4x(rawType);
+        if (type4x < 0) return result;
+    }
+
+    result.type = rawType;  // Store the raw (version-specific) type number
 
     uint64_t data = addr + DynOff::VARIANT_DATA;
 
-    switch (type) {
+    switch (type4x) {
         case 0: // NIL
             result.value = "(null)";
             break;
@@ -146,15 +247,19 @@ VariantValue ReadVariant(uint64_t addr) {
             result.value = std::to_string(Zoltraak::ReadSafe<int64_t>(data, 0));
             break;
 
-        case 3: // FLOAT (double)
+        case 3: // FLOAT/REAL (double)
             result.value = FormatDouble(Zoltraak::ReadSafe<double>(data, 0.0));
             break;
 
-        case 4: { // STRING (CowData<char32_t>)
-            // String is stored inline as CowData which is essentially a pointer
+        case 4: { // STRING (CowData<char32_t> in 4.x, CowData<wchar_t> in 3.x)
             uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(data, 0);
             if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
+                // ReadGodotString handles CowData<char32_t> (4.x)
                 result.value = Zoltraak::ReadGodotString(cowPtr);
+                // If that fails and we're on 3.x, try wchar_t path
+                if (result.value.empty() && GodotVer::IsGodot3()) {
+                    result.value = Zoltraak::ReadChar32String(cowPtr, 256);
+                }
             } else {
                 result.value = "\"\"";
             }
@@ -168,7 +273,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 6: { // VECTOR2I (2 int32 inline)
+        case 6: { // VECTOR2I (2 int32 inline) — 4.x only
             int32_t x = Zoltraak::ReadSafe<int32_t>(data, 0);
             int32_t y = Zoltraak::ReadSafe<int32_t>(data + 4, 0);
             result.value = "(" + std::to_string(x) + ", " + std::to_string(y) + ")";
@@ -185,7 +290,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 8: { // RECT2I (4 int32)
+        case 8: { // RECT2I (4 int32) — 4.x only
             int32_t x = Zoltraak::ReadSafe<int32_t>(data, 0);
             int32_t y = Zoltraak::ReadSafe<int32_t>(data + 4, 0);
             int32_t w = Zoltraak::ReadSafe<int32_t>(data + 8, 0);
@@ -203,7 +308,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 10: { // VECTOR3I (3 int32)
+        case 10: { // VECTOR3I (3 int32) — 4.x only
             int32_t x = Zoltraak::ReadSafe<int32_t>(data, 0);
             int32_t y = Zoltraak::ReadSafe<int32_t>(data + 4, 0);
             int32_t z = Zoltraak::ReadSafe<int32_t>(data + 8, 0);
@@ -211,7 +316,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 12: { // VECTOR4 (4 floats inline)
+        case 12: { // VECTOR4 (4 floats inline) — 4.x only
             float x = Zoltraak::ReadSafe<float>(data, 0.0f);
             float y = Zoltraak::ReadSafe<float>(data + 4, 0.0f);
             float z = Zoltraak::ReadSafe<float>(data + 8, 0.0f);
@@ -221,7 +326,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 13: { // VECTOR4I (4 int32)
+        case 13: { // VECTOR4I (4 int32) — 4.x only
             int32_t x = Zoltraak::ReadSafe<int32_t>(data, 0);
             int32_t y = Zoltraak::ReadSafe<int32_t>(data + 4, 0);
             int32_t z = Zoltraak::ReadSafe<int32_t>(data + 8, 0);
@@ -241,7 +346,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 15: { // QUATERNION (4 floats)
+        case 15: { // QUATERNION/QUAT (4 floats)
             float x = Zoltraak::ReadSafe<float>(data, 0.0f);
             float y = Zoltraak::ReadSafe<float>(data + 4, 0.0f);
             float z = Zoltraak::ReadSafe<float>(data + 8, 0.0f);
@@ -261,8 +366,7 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 21: { // STRINGNAME
-            // StringName = _Data* pointer
+        case 21: { // STRINGNAME (4.x only — 3.x doesn't have this as a Variant type)
             result.value = Flamme::Resolve(data);
             if (result.value.empty()) result.value = "(empty StringName)";
             break;
@@ -288,10 +392,8 @@ VariantValue ReadVariant(uint64_t addr) {
         }
 
         default: {
-            // For unhandled types (Transform2D, Basis, Transform3D, Projection,
-            // AABB, NodePath, Callable, Signal, Dictionary, Array, PackedArrays):
-            // Show type name + raw hex of data portion
-            int dataSize = VariantDataSize(type);
+            // For unhandled types: show type name + raw hex
+            int dataSize = VariantDataSize(type4x);
             if (dataSize <= 0) dataSize = 8;
             if (dataSize > 24) dataSize = 24;
 
@@ -340,9 +442,6 @@ void WalkInstance(uint64_t objAddr,
         static_cast<int>(properties.size()));
 
     // Step 3: Build FieldEntry for each property
-    // Note: Godot ClassDB does not expose byte offsets for properties.
-    // We provide property metadata (name, type) without live values for now.
-    // Live value reading requires calling MethodBind getters (future work).
     for (auto& prop : properties) {
         FieldEntry entry;
         entry.name      = prop.name;
@@ -364,7 +463,6 @@ void WalkInstance(uint64_t objAddr,
 VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     if (!objAddr || !propertyName) return {};
 
-    // Look up the class and property
     std::string className = DiAgolze::GetObjectClass(objAddr);
     if (className.empty()) {
         Solliter::Debug("WALK", "GetFieldValue: unknown class for %p", reinterpret_cast<void*>(objAddr));
@@ -374,8 +472,6 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     auto properties = DiAgolze::GetPropertyList(className.c_str());
     for (auto& prop : properties) {
         if (prop.name == propertyName) {
-            // Found the property — return type metadata
-            // Live value reading requires MethodBind getter invocation (future)
             VariantValue result;
             result.type     = prop.type;
             result.typeName = VariantTypeName(prop.type);

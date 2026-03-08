@@ -22,13 +22,19 @@
 
 namespace Zolt::Ausetiese {
 
-// Cached ObjectDB state
+// Cached ObjectDB state (4.x sparse-set slot array)
 static uint64_t s_objectDBAddr   = 0;  // Address of object_slots pointer variable
 static uint64_t s_slotsArray     = 0;  // Dereferenced: heap pointer to ObjectSlot[]
 static int      s_slotMax        = 0;  // Max slot index
 static int      s_cachedCount    = -1; // Cached valid object count (-1 = dirty)
 static int      s_slotCountOff   = 0;  // Offset from objectDBAddr to slot_count
 static int      s_slotMaxOff     = 0;  // Offset from objectDBAddr to slot_max
+
+// 3.x ObjectDB state (bucket-chain HashMap<ObjectID, Object*>)
+static bool     s_is3x           = false;
+static uint64_t s_hashTable3x    = 0;
+static uint8_t  s_power3x        = 0;
+static uint32_t s_elements3x     = 0;
 
 // Module range for vtable validation
 static uint64_t s_moduleBase = 0;
@@ -106,9 +112,92 @@ static void RefreshState() {
     }
 }
 
+// ============================================================
+// 3.x ObjectDB support (bucket-chain HashMap<ObjectID, Object*>)
+// ============================================================
+
+// Read 3.x HashMap fields from objectDBAddr
+static bool ReadHashMapFields3x(uint64_t objectDBAddr) {
+    s_hashTable3x = Zoltraak::ReadSafe<uint64_t>(
+        objectDBAddr + DynOff::HASHMAP_3X_HASHTABLE_OFF, 0);
+    s_power3x     = Zoltraak::ReadSafe<uint8_t>(
+        objectDBAddr + DynOff::HASHMAP_3X_POWER_OFF, 0);
+    s_elements3x  = Zoltraak::ReadSafe<uint32_t>(
+        objectDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, 0);
+
+    if (!s_hashTable3x || !Zoltraak::IsReadable(s_hashTable3x)) {
+        Solliter::Warn("OBJDB", "3x: invalid hash_table pointer");
+        return false;
+    }
+    if (s_power3x < 4 || s_power3x > 20) {
+        Solliter::Warn("OBJDB", "3x: invalid power %u", s_power3x);
+        return false;
+    }
+
+    Solliter::Info("OBJDB", "3x HashMap: hashTable=%p power=%u elements=%u",
+        reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
+    return true;
+}
+
+// Iterate all objects in the 3.x bucket-chain HashMap
+static bool ForEachEx3x(const std::function<bool(int index, uint64_t objectAddr)>& callback) {
+    if (!s_hashTable3x) return false;
+
+    int bucketCount = 1 << s_power3x;
+    int index = 0;
+
+    for (int b = 0; b < bucketCount; ++b) {
+        uint64_t elem = Zoltraak::ReadSafe<uint64_t>(s_hashTable3x + b * 8, 0);
+
+        while (elem) {
+            if (!Zoltraak::IsReadable(elem)) break;
+
+            // 3.x HashMap<ObjectID, Object*>::Element:
+            //   hash(4B)+pad(4B)+next*(8B)+key(8B ObjectID)+value(8B Object*)
+            uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+                elem + DynOff::ELEM_3X_VALUE_OFF, 0);
+
+            if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                // Validate vtable
+                uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+                if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                    if (!callback(index, objPtr)) return false;
+                    index++;
+                }
+            }
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(
+                elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+            if (next == elem) break;
+            elem = next;
+        }
+    }
+    return true;
+}
+
+// Initialize 3.x ObjectDB
+static void Init3x(uint64_t objectDBAddr) {
+    if (!ReadHashMapFields3x(objectDBAddr)) {
+        Solliter::Warn("OBJDB", "3x: failed to read HashMap fields");
+        return;
+    }
+
+    // Count valid objects
+    int validCount = 0;
+    ForEachEx3x([&](int /*index*/, uint64_t /*addr*/) {
+        validCount++;
+        return true;
+    });
+    s_cachedCount = validCount;
+
+    Solliter::Info("OBJDB", "3x Init: %d valid objects (HashMap elements=%u, power=%u)",
+        s_cachedCount, s_elements3x, s_power3x);
+}
+
 void Init(uint64_t objectDBAddr) {
     s_objectDBAddr = objectDBAddr;
     s_cachedCount  = -1;
+    s_is3x = GodotVer::IsGodot3();
     EnsureModuleInfo();
 
     if (!objectDBAddr) {
@@ -116,6 +205,13 @@ void Init(uint64_t objectDBAddr) {
         return;
     }
 
+    if (s_is3x) {
+        // 3.x: HashMap<ObjectID, Object*> (16B bucket-chain)
+        Init3x(objectDBAddr);
+        return;
+    }
+
+    // 4.x: sparse-set slot array
     // Dereference to get the ObjectSlot array pointer
     s_slotsArray = Zoltraak::ReadSafe<uint64_t>(objectDBAddr, 0);
     if (!s_slotsArray || !Zoltraak::IsReadable(s_slotsArray)) {
@@ -177,12 +273,38 @@ int GetObjectCount() {
 }
 
 int GetSlotMax() {
+    if (s_is3x) {
+        // For 3.x, re-read the elements count from the HashMap
+        if (s_objectDBAddr) {
+            s_elements3x = Zoltraak::ReadSafe<uint32_t>(
+                s_objectDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, s_elements3x);
+        }
+        return static_cast<int>(s_elements3x);
+    }
     RefreshState();
     return s_slotMax;
 }
 
 uint64_t GetObjectByIndex(int index) {
-    if (!s_slotsArray || index < 0 || index >= s_slotMax) return 0;
+    if (index < 0) return 0;
+
+    if (s_is3x) {
+        // 3.x: iterate via ForEachEx3x and count to the requested index
+        uint64_t result = 0;
+        int current = 0;
+        ForEachEx3x([&](int /*idx*/, uint64_t objAddr) {
+            if (current == index) {
+                result = objAddr;
+                return false; // stop
+            }
+            current++;
+            return true;
+        });
+        return result;
+    }
+
+    // 4.x: direct slot array access
+    if (!s_slotsArray || index >= s_slotMax) return 0;
 
     uintptr_t slotAddr = static_cast<uintptr_t>(s_slotsArray) +
         static_cast<uintptr_t>(index) * DynOff::SLOT_STRIDE;
@@ -209,8 +331,14 @@ void ForEach(const std::function<void(int index, uint64_t objectAddr)>& callback
 }
 
 bool ForEachEx(const std::function<bool(int index, uint64_t objectAddr)>& callback) {
-    if (!s_slotsArray || s_slotMax <= 0) return false;
     EnsureModuleInfo();
+
+    if (s_is3x) {
+        return ForEachEx3x(callback);
+    }
+
+    // 4.x: sparse-set slot array
+    if (!s_slotsArray || s_slotMax <= 0) return false;
 
     for (int i = 0; i < s_slotMax; ++i) {
         uintptr_t slotAddr = static_cast<uintptr_t>(s_slotsArray) +
@@ -278,11 +406,18 @@ void LogDiagnostics() {
 
     Solliter::Info("OBJDB", "=== Ausetiese Diagnostics ===");
     Solliter::Info("OBJDB", "ObjectDB addr: %p", reinterpret_cast<void*>(s_objectDBAddr));
-    Solliter::Info("OBJDB", "Slots array:   %p", reinterpret_cast<void*>(s_slotsArray));
-    Solliter::Info("OBJDB", "Slot max:      %d", s_slotMax);
+    Solliter::Info("OBJDB", "Mode:          %s", s_is3x ? "3.x bucket-chain" : "4.x sparse-set");
+
+    if (s_is3x) {
+        Solliter::Info("OBJDB", "3x HashMap:    hashTable=%p power=%u elements=%u",
+            reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
+    } else {
+        Solliter::Info("OBJDB", "Slots array:   %p", reinterpret_cast<void*>(s_slotsArray));
+        Solliter::Info("OBJDB", "Slot max:      %d", s_slotMax);
+    }
     Solliter::Info("OBJDB", "Valid objects:  %d", GetObjectCount());
 
-    if (s_slotCountOff > 0) {
+    if (!s_is3x && s_slotCountOff > 0) {
         uint32_t count = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotCountOff, 0);
         uint32_t max   = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotMaxOff, 0);
         Solliter::Info("OBJDB", "Raw counters: slot_count=%u (at +0x%X), slot_max=%u (at +0x%X)",

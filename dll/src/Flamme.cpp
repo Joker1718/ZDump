@@ -1,21 +1,25 @@
 // Flamme — 芙拉梅 (Great Mage Master — StringName Resolver)
 // Resolves Godot StringName pointers to readable UTF-8 strings.
 //
-// StringName layout (Godot 4.0-4.4, stable across versions):
-//   StringName { _Data* _data; }            // 8 bytes
-//   _Data {
-//     SafeRefCount refcount;                // +0x00 (4 bytes, atomic u32)
-//     SafeNumeric<u32> static_count;        // +0x04 (4 bytes)
-//     const char* cname;                    // +0x08 (8 bytes — raw ASCII ptr to .rdata, for static names)
-//     String name;                          // +0x10 (8 bytes — CowData<char32_t>._ptr, for dynamic names)
-//     int idx;                              // +0x18 (4 bytes)
-//     uint32_t hash;                        // +0x1C (4 bytes)
-//     _Data* prev, *next;                   // +0x20, +0x28 (hash bucket chain)
-//   }
+// StringName _Data layout varies by version:
 //
-// Resolution strategy:
-//   1. Try cname at +0x08 — if non-null, read as ASCII string (fast path)
-//   2. Try name at +0x10 — if non-null, read CowData<char32_t> via ReadGodotString
+// Godot 3.x:
+//   _Data { SafeRefCount(4B), pad(4B), const char* cname(8B @+0x08),
+//           String name(CowData<wchar_t> on Win @+0x10), int idx, uint32_t hash, prev, next }
+//
+// Godot 4.0-4.4:
+//   _Data { SafeRefCount(4B), SafeNumeric<u32>(4B), const char* cname(8B @+0x08),
+//           String name(CowData<char32_t> @+0x10), int idx, uint32_t hash, prev, next }
+//
+// Godot 4.5+:
+//   _Data { SafeRefCount(4B), SafeNumeric<u32>(4B), String name(CowData<char32_t> @+0x08),
+//           uint32_t hash, prev, next }  — cname REMOVED, idx REMOVED
+//
+// Resolution strategy (version-adaptive):
+//   1. Try cname at SDATA_CNAME — read as ASCII const char* (3.x + 4.0-4.4)
+//   2. Try name at SDATA_CNAME as CowData<char32_t> via ReadChar32String (4.5+)
+//   3. Try name at SDATA_NAME — read CowData<char32_t> via ReadGodotString (4.0-4.4)
+//   4. Try name at SDATA_NAME as wchar_t CowData (3.x on Windows)
 
 #include "Flamme.h"
 #include "Zoltraak.h"
@@ -36,29 +40,93 @@ static bool IsPlausibleName(const std::string& s) {
     return true;
 }
 
-// Try to read a string from _Data using the cname field (const char32_t* in .rdata)
-static std::string TryCname(uint64_t dataPtr) {
-    uint64_t cnamePtr = Zoltraak::ReadSafe<uint64_t>(dataPtr + DynOff::SDATA_CNAME, 0);
-    if (!cnamePtr || !Zoltraak::IsReadable(cnamePtr)) return "";
+// Read a Godot 3.x String (CowData<wchar_t> on Windows, UTF-16) and convert to UTF-8.
+// cowDataPtr is the CowData._ptr value (pointer to wchar_t[] data).
+// CowData stores size at _ptr[-1] as int32_t (in element count, not bytes).
+static std::string ReadGodot3String(uint64_t cowDataPtr) {
+    if (!cowDataPtr || !Zoltraak::IsReadable(cowDataPtr)) return "";
 
-    // cname is const char32_t* (NOT const char*!) pointing to null-terminated
-    // UTF-32 data in .rdata section
-    std::string result = Zoltraak::ReadChar32String(cnamePtr, 256);
+    // CowData<wchar_t>._ptr points to the data. Size is at _ptr - 4 (one int32 before data).
+    int32_t size = Zoltraak::ReadSafe<int32_t>(cowDataPtr - 4, 0);
+    if (size <= 0 || size > 4096) return "";
+
+    // Read wchar_t data (2 bytes per char on Windows)
+    std::vector<uint16_t> wbuf(size);
+    Zoltraak::ReadSafe(cowDataPtr, wbuf.data(), size * sizeof(uint16_t));
+
+    // Convert UTF-16 to UTF-8
+    std::string result;
+    result.reserve(size);
+    for (int i = 0; i < size; ++i) {
+        uint16_t wc = wbuf[i];
+        if (wc == 0) break;
+        if (wc < 0x80) {
+            result += static_cast<char>(wc);
+        } else if (wc < 0x800) {
+            result += static_cast<char>(0xC0 | (wc >> 6));
+            result += static_cast<char>(0x80 | (wc & 0x3F));
+        } else {
+            result += static_cast<char>(0xE0 | (wc >> 12));
+            result += static_cast<char>(0x80 | ((wc >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (wc & 0x3F));
+        }
+    }
+    return result;
+}
+
+// Try to read a string from _Data at the cname offset.
+// Handles all versions:
+//   - 3.x & 4.0-4.4: cname is const char* (ASCII) → ReadString
+//   - 4.5+: cname offset now holds String name (CowData<char32_t>._ptr) → ReadChar32String
+//
+// IMPORTANT: For 4.5+, the ASCII path MUST be skipped.
+// char32_t data like "Object" = {0x4F,0x00,0x00,0x00, 0x62,...} looks like
+// single-char ASCII "O" (0x4F followed by 0x00 null terminator).
+static std::string TryCname(uint64_t dataPtr) {
+    uint64_t ptr = Zoltraak::ReadSafe<uint64_t>(dataPtr + DynOff::SDATA_CNAME, 0);
+    if (!ptr || !Zoltraak::IsReadable(ptr)) return "";
+
+    if (GodotVer::IsGodot45Plus()) {
+        // 4.5+: cname field removed — offset 0x08 holds CowData<char32_t>._ptr
+        // Reading as ASCII gives wrong single-char results, so ONLY try char32
+        std::string result = Zoltraak::ReadChar32String(ptr, 256);
+        if (IsPlausibleName(result)) return result;
+        return "";
+    }
+
+    // 3.x & 4.0-4.4: cname is const char* (ASCII pointer into .rdata)
+    std::string result = Zoltraak::ReadString(ptr, 256);
     if (IsPlausibleName(result)) return result;
+
+    // Fallback: try char32_t in case layout differs from expectation
+    result = Zoltraak::ReadChar32String(ptr, 256);
+    if (IsPlausibleName(result)) return result;
+
     return "";
 }
 
-// Try to read a string from _Data using the name field (CowData<char32_t>)
+// Try to read a string from _Data using the name field (CowData<char32_t> or CowData<wchar_t>)
 static std::string TryName(uint64_t dataPtr) {
     int nameOffset = DynOff::SDATA_NAME;
     if (nameOffset < 0) nameOffset = 0x10;
 
-    // Read CowData<char32_t>._ptr from _Data + nameOffset
+    // Read CowData._ptr from _Data + nameOffset
     uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(dataPtr + nameOffset, 0);
     if (!cowPtr || !Zoltraak::IsReadable(cowPtr)) return "";
 
-    // ReadGodotString handles both old and new CowData layouts
-    return Zoltraak::ReadGodotString(cowPtr);
+    // Try 1: ReadGodotString — CowData<char32_t> (Godot 4.x)
+    std::string result = Zoltraak::ReadGodotString(cowPtr);
+    if (IsPlausibleName(result)) return result;
+
+    // Try 2: ReadChar32String — null-terminated char32_t* (direct pointer)
+    result = Zoltraak::ReadChar32String(cowPtr, 256);
+    if (IsPlausibleName(result)) return result;
+
+    // Try 3: ReadGodot3String — CowData<wchar_t> (Godot 3.x on Windows)
+    result = ReadGodot3String(cowPtr);
+    if (IsPlausibleName(result)) return result;
+
+    return "";
 }
 
 std::string Resolve(uint64_t stringNameAddr) {
@@ -76,11 +144,11 @@ std::string Resolve(uint64_t stringNameAddr) {
 std::string ResolveAt(uint64_t dataPtr) {
     if (!dataPtr || !Zoltraak::IsReadable(dataPtr)) return "";
 
-    // Strategy 1: Try cname (raw ASCII pointer) — fast path for static names
+    // Strategy 1: Try cname offset — handles ASCII (3.x/4.0-4.4) and char32 (4.5+)
     std::string result = TryCname(dataPtr);
     if (!result.empty()) return result;
 
-    // Strategy 2: Try name (CowData<char32_t>) — for dynamic names
+    // Strategy 2: Try name offset — CowData<char32_t> (4.x) or CowData<wchar_t> (3.x)
     result = TryName(dataPtr);
     if (IsPlausibleName(result)) return result;
 
@@ -97,50 +165,75 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         return;
     }
 
-    // The _Data layout is stable across Godot 4.0-4.4:
-    //   +0x08 = cname (const char*)
-    //   +0x10 = name (String/CowData<char32_t>)
-    // Try cname first, then name. These are the known offsets.
+    Solliter::Info("FLAMME", "ProbeLayout: probing _Data at %p (Godot %u.%u)",
+        reinterpret_cast<void*>(sampleDataPtr), GodotVer::Major, GodotVer::Minor);
 
-    // Try cname at default offset (0x08)
-    std::string cname = TryCname(sampleDataPtr);
-    if (!cname.empty()) {
+    // If version is known, set expected offsets
+    if (GodotVer::IsGodot45Plus()) {
+        // 4.5+: no cname, name at +0x08
+        DynOff::SDATA_CNAME = 0x08; // Will read String name here (char32 path in TryCname)
+        DynOff::SDATA_NAME  = 0x08; // Same offset, String name
+        Solliter::Info("FLAMME", "ProbeLayout: Godot 4.5+ detected — name at +0x08, no cname");
+    }
+
+    // Try resolving with current offsets
+    std::string resolved = TryCname(sampleDataPtr);
+    if (!resolved.empty()) {
         Solliter::Info("FLAMME", "ProbeLayout: resolved via cname at +0x%X: '%s'",
-            DynOff::SDATA_CNAME, cname.c_str());
+            DynOff::SDATA_CNAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
     }
 
-    // Try name at default offset (0x10)
-    std::string name = TryName(sampleDataPtr);
-    if (IsPlausibleName(name)) {
+    resolved = TryName(sampleDataPtr);
+    if (IsPlausibleName(resolved)) {
         Solliter::Info("FLAMME", "ProbeLayout: resolved via name at +0x%X: '%s'",
-            DynOff::SDATA_NAME, name.c_str());
+            DynOff::SDATA_NAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
     }
 
-    // Fallback: try alternate offsets for both cname (char32_t*) and name (CowData)
-    static const int altOffsets[] = { 0x08, 0x10, 0x18, 0x20 };
+    // Fallback: scan offsets 0x04..0x28 trying all reading methods
+    static const int altOffsets[] = { 0x04, 0x08, 0x10, 0x18, 0x20, 0x28 };
     for (int offset : altOffsets) {
         uint64_t ptr = Zoltraak::ReadSafe<uint64_t>(sampleDataPtr + offset, 0);
         if (!ptr || !Zoltraak::IsReadable(ptr)) continue;
 
-        // Try as raw char32_t* (null-terminated)
-        std::string s = Zoltraak::ReadChar32String(ptr, 256);
+        // Try as ASCII const char* (cname in 3.x/4.0-4.4)
+        std::string s = Zoltraak::ReadString(ptr, 256);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_CNAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found cname at alternate +0x%X: '%s'",
+            Solliter::Info("FLAMME", "ProbeLayout: found ASCII cname at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
         }
 
-        // Try as CowData<char32_t>
+        // Try as null-terminated char32_t* (CowData._ptr for 4.5+, or raw char32 pointer)
+        s = Zoltraak::ReadChar32String(ptr, 256);
+        if (IsPlausibleName(s) && s.size() >= 2) {
+            DynOff::SDATA_CNAME = offset;
+            Solliter::Info("FLAMME", "ProbeLayout: found char32 string at +0x%X: '%s'",
+                offset, s.c_str());
+            DynOff::bStringNameProbed.store(true, std::memory_order_release);
+            return;
+        }
+
+        // Try as CowData<char32_t> (name field in 4.x)
         s = Zoltraak::ReadGodotString(ptr);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_NAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found name at alternate +0x%X: '%s'",
+            Solliter::Info("FLAMME", "ProbeLayout: found CowData name at +0x%X: '%s'",
+                offset, s.c_str());
+            DynOff::bStringNameProbed.store(true, std::memory_order_release);
+            return;
+        }
+
+        // Try as CowData<wchar_t> (name field in 3.x on Windows)
+        s = ReadGodot3String(ptr);
+        if (IsPlausibleName(s) && s.size() >= 2) {
+            DynOff::SDATA_NAME = offset;
+            Solliter::Info("FLAMME", "ProbeLayout: found wchar_t name at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
@@ -173,6 +266,7 @@ void LogDiagnostics(uint64_t sampleAddr) {
     if (s_done.exchange(true)) return;  // One-shot
 
     Solliter::Info("FLAMME", "=== Flamme Diagnostics ===");
+    Solliter::Info("FLAMME", "Godot version: %u.%u.%u", GodotVer::Major, GodotVer::Minor, GodotVer::Patch);
     Solliter::Info("FLAMME", "SDATA_CNAME offset: 0x%X", DynOff::SDATA_CNAME);
     Solliter::Info("FLAMME", "SDATA_NAME  offset: 0x%X", DynOff::SDATA_NAME);
     Solliter::Info("FLAMME", "Probed: %s", DynOff::bStringNameProbed.load() ? "yes" : "no");
@@ -209,20 +303,24 @@ void LogDiagnostics(uint64_t sampleAddr) {
         }
 
         // Show what we find at each relevant offset
-        uint64_t cnamePtr = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x08, 0);
-        uint64_t namePtr  = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x10, 0);
+        uint64_t ptr08 = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x08, 0);
+        uint64_t ptr10 = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x10, 0);
 
-        Solliter::Info("FLAMME", "  +0x08 cname: ptr=%p readable=%s str='%s'",
-            reinterpret_cast<void*>(cnamePtr),
-            (cnamePtr && Zoltraak::IsReadable(cnamePtr)) ? "yes" : "no",
-            (cnamePtr && Zoltraak::IsReadable(cnamePtr)) ?
-                Zoltraak::ReadChar32String(cnamePtr, 64).c_str() : "");
+        Solliter::Info("FLAMME", "  +0x08: ptr=%p readable=%s ascii='%s' char32='%s'",
+            reinterpret_cast<void*>(ptr08),
+            (ptr08 && Zoltraak::IsReadable(ptr08)) ? "yes" : "no",
+            (ptr08 && Zoltraak::IsReadable(ptr08)) ?
+                Zoltraak::ReadString(ptr08, 64).c_str() : "",
+            (ptr08 && Zoltraak::IsReadable(ptr08)) ?
+                Zoltraak::ReadChar32String(ptr08, 64).c_str() : "");
 
-        Solliter::Info("FLAMME", "  +0x10 name:  ptr=%p readable=%s str='%s'",
-            reinterpret_cast<void*>(namePtr),
-            (namePtr && Zoltraak::IsReadable(namePtr)) ? "yes" : "no",
-            (namePtr && Zoltraak::IsReadable(namePtr)) ?
-                Zoltraak::ReadGodotString(namePtr).c_str() : "");
+        Solliter::Info("FLAMME", "  +0x10: ptr=%p readable=%s godotStr='%s' char32='%s'",
+            reinterpret_cast<void*>(ptr10),
+            (ptr10 && Zoltraak::IsReadable(ptr10)) ? "yes" : "no",
+            (ptr10 && Zoltraak::IsReadable(ptr10)) ?
+                Zoltraak::ReadGodotString(ptr10).c_str() : "",
+            (ptr10 && Zoltraak::IsReadable(ptr10)) ?
+                Zoltraak::ReadChar32String(ptr10, 64).c_str() : "");
     }
 }
 
