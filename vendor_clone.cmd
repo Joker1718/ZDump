@@ -1,0 +1,13 @@
+git clone --depth 1 --branch 3.5-stable https://github.com/godotengine/godot.git vendor/godot-3.5
+git clone --depth 1 --branch 3.5.3-stable https://github.com/godotengine/godot.git vendor/godot-3.5.3
+git clone --depth 1 --branch 3.6.2-stable https://github.com/godotengine/godot.git vendor/godot-3.6.2
+git clone --depth 1 --branch 4.0.4-stable https://github.com/godotengine/godot.git vendor/godot-4.0.4
+git clone --depth 1 --branch 4.1.4-stable https://github.com/godotengine/godot.git vendor/godot-4.1.4
+git clone --depth 1 --branch 4.2.2-stable https://github.com/godotengine/godot.git vendor/godot-4.2.2
+git clone --depth 1 --branch 4.3-stable https://github.com/godotengine/godot.git vendor/godot-4.3
+git clone --depth 1 --branch 4.4.1-stable https://github.com/godotengine/godot.git vendor/godot-4.4.1
+git clone --depth 1 --branch 4.5.1-stable https://github.com/godotengine/godot.git vendor/godot-4.5.1
+git clone --depth 1 --branch 4.2-stable https://github.com/godotengine/godot.git vendor/godot-4.2
+git clone --depth 1 --branch 4.1-stable https://github.com/godotengine/godot.git vendor/godot-4.1
+git clone --depth 1 --branch 4.6.1-stable https://github.com/godotengine/godot.git vendor/godot-4.6.1
+git clone --depth 1 --branch 3.x https://github.com/godotengine/godot.git vendor/godot-3.x
