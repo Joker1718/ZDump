@@ -176,7 +176,7 @@ set_target_properties(ZoltDumper PROPERTIES
 #
 # PROXY_TARGET selects which system DLL to impersonate:
 #   "version" (default) — version.dll (17 exports)
-#   "winmm"             — winmm.dll  (18 exports)
+#   "winmm"             — winmm.dll  (180 exports via MASM trampolines)
 # ============================================================
 option(BUILD_PROXY_DLL "Build the proxy DLL target" OFF)
 set(PROXY_TARGET "version" CACHE STRING "Proxy DLL target: version or winmm")
@@ -216,12 +216,17 @@ if(BUILD_PROXY_DLL)
 
     # Target-specific configuration
     if(PROXY_TARGET STREQUAL "winmm")
+        # Enable MASM for winmm trampoline stubs
+        enable_language(ASM_MASM)
+        target_sources(ZoltDumper_Proxy PRIVATE
+            src/ProxyWinmmTrampoline.asm
+        )
         list(APPEND PROXY_DEFS ZOLT_PROXY_WINMM)
         set(PROXY_DEF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/ProxyWinmm.def")
         set(PROXY_OUTPUT_NAME "winmm")
         set(PROXY_DELAYLOAD_DLL "winmm.dll")
         set(PROXY_LINK_LIB "Winmm")
-        message(STATUS "Proxy target: winmm.dll")
+        message(STATUS "Proxy target: winmm.dll (180 exports via MASM trampolines)")
     else()
         set(PROXY_DEF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/ProxyVersion.def")
         set(PROXY_OUTPUT_NAME "version")
@@ -237,8 +242,9 @@ if(BUILD_PROXY_DLL)
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
         )
         string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        # Apply C/CXX flags only (not to MASM .asm files)
         target_compile_options(ZoltDumper_Proxy PRIVATE
-            /utf-8 /W4 /permissive- /EHa /arch:AVX2 /favor:blend
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8 /W4 /permissive- /EHa /arch:AVX2 /favor:blend>
         )
     endif()
 

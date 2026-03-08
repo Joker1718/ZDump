@@ -272,6 +272,71 @@ static constexpr GodotAobSig ENGINE_AOB3 = {
     "Singleton getter - mov rax,[rip+X]; ret; NOP*2 (MinGW/GCC)"
 };
 
+// ============================================================
+// Priority 54-56: Long getter patterns (Godot 4.0-4.2 and stripped builds)
+// Older Godot versions use lazy-init singleton getters that check for null:
+//   sub rsp, 28h; mov rax, [rip+X]; test rax, rax; jnz .ret
+//   or: mov rax, [rip+X]; test rax, rax; jnz .ret
+// These have many matches but MultiMatch + validator filters correctly.
+// ============================================================
+
+// Long getter with function prologue (more specific, tried first)
+static constexpr GodotAobSig ENGINE_AOB4 = {
+    "ENGINE_AOB4",
+    "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75",
+    GodotTarget::Engine, GodotResolve::MultiMatch,
+    4, 3, 7, 0,
+    54,
+    "Long getter - sub rsp,28h; mov rax,[rip+X]; test; jnz (Godot 4.0-4.2)"
+};
+
+static constexpr GodotAobSig STREE_AOB4 = {
+    "STREE_AOB4",
+    "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75",
+    GodotTarget::SceneTree, GodotResolve::MultiMatch,
+    4, 3, 7, 0,
+    54,
+    "Long getter - sub rsp,28h; mov rax,[rip+X]; test; jnz (Godot 4.0-4.2)"
+};
+
+// Long getter without prologue (generic null-check singleton getter)
+static constexpr GodotAobSig ENGINE_AOB5 = {
+    "ENGINE_AOB5",
+    "48 8B 05 ?? ?? ?? ?? 48 85 C0 75",
+    GodotTarget::Engine, GodotResolve::MultiMatch,
+    0, 3, 7, 0,
+    55,
+    "Long getter - mov rax,[rip+X]; test; jnz (generic null-check getter)"
+};
+
+static constexpr GodotAobSig STREE_AOB5 = {
+    "STREE_AOB5",
+    "48 8B 05 ?? ?? ?? ?? 48 85 C0 75",
+    GodotTarget::SceneTree, GodotResolve::MultiMatch,
+    0, 3, 7, 0,
+    55,
+    "Long getter - mov rax,[rip+X]; test; jnz (generic null-check getter)"
+};
+
+// Long getter with jz variant (inverted condition — jump if null to create)
+static constexpr GodotAobSig ENGINE_AOB6 = {
+    "ENGINE_AOB6",
+    "48 8B 05 ?? ?? ?? ?? 48 85 C0 74",
+    GodotTarget::Engine, GodotResolve::MultiMatch,
+    0, 3, 7, 0,
+    56,
+    "Long getter - mov rax,[rip+X]; test; jz (inverted null-check getter)"
+};
+
+static constexpr GodotAobSig STREE_AOB6 = {
+    "STREE_AOB6",
+    "48 8B 05 ?? ?? ?? ?? 48 85 C0 74",
+    GodotTarget::SceneTree, GodotResolve::MultiMatch,
+    0, 3, 7, 0,
+    56,
+    "Long getter - mov rax,[rip+X]; test; jz (inverted null-check getter)"
+};
+
 // ClassDB access pattern - lea rcx, [rip+disp] followed by call
 // In official builds, ClassDB methods load the HashMap address via LEA
 static constexpr GodotAobSig CLASSDB_AOB1 = {
@@ -332,6 +397,26 @@ static constexpr GodotAobSig VERSION_RDATA2 = {
     ".rdata scan for '4.?.?.stable' version string"
 };
 
+// "3.x.y.stable" version string pattern (Godot 3.x)
+static constexpr GodotAobSig VERSION_RDATA3 = {
+    "VERSION_RDATA3",
+    "33 2E ?? 2E ?? 2E 73 74 61 62 6C 65",
+    GodotTarget::Engine, GodotResolve::RdataScan,
+    0, 0, 0, 0,
+    82,
+    ".rdata scan for '3.?.?.stable' version string (Godot 3.x)"
+};
+
+// "3.x.dev" version string pattern (Godot 3.x dev/custom builds)
+static constexpr GodotAobSig VERSION_RDATA4 = {
+    "VERSION_RDATA4",
+    "33 2E ?? 2E 64 65 76",
+    GodotTarget::Engine, GodotResolve::RdataScan,
+    0, 0, 0, 0,
+    83,
+    ".rdata scan for '3.?.dev' version string (Godot 3.x dev builds)"
+};
+
 // ============================================================
 // Pattern arrays (null-terminated) sorted by priority
 // ============================================================
@@ -358,20 +443,28 @@ static constexpr const GodotAobSig* CLASSDB_PATTERNS[] = {
 static constexpr const GodotAobSig* SCENETREE_PATTERNS[] = {
     &STREE_SYM1,
     &STREE_SYM_P,
-    &STREE_AOB1,
-    &STREE_AOB2,
-    &STREE_AOB3,
+    &STREE_AOB4,     // long getter with prologue (priority 54)
+    &STREE_AOB5,     // long getter generic (priority 55)
+    &STREE_AOB6,     // long getter jz variant (priority 56)
+    &STREE_AOB1,     // simple getter NOP (priority 60)
+    &STREE_AOB2,     // simple getter int3 (priority 62)
+    &STREE_AOB3,     // simple getter NOP*2 (priority 64)
     nullptr
 };
 
 static constexpr const GodotAobSig* ENGINE_PATTERNS[] = {
     &ENGINE_SYM1,
     &ENGINE_SYM_P,
-    &ENGINE_AOB1,
-    &ENGINE_AOB2,
-    &ENGINE_AOB3,
-    &VERSION_RDATA1,
-    &VERSION_RDATA2,
+    &ENGINE_AOB4,    // long getter with prologue (priority 54)
+    &ENGINE_AOB5,    // long getter generic (priority 55)
+    &ENGINE_AOB6,    // long getter jz variant (priority 56)
+    &ENGINE_AOB1,    // simple getter NOP (priority 60)
+    &ENGINE_AOB2,    // simple getter int3 (priority 63)
+    &ENGINE_AOB3,    // simple getter NOP*2 (priority 65)
+    &VERSION_RDATA1, // "Godot Engine v" (priority 80)
+    &VERSION_RDATA2, // "4.?.?.stable" (priority 81)
+    &VERSION_RDATA3, // "3.?.?.stable" (priority 82)
+    &VERSION_RDATA4, // "3.?.dev" (priority 83)
     nullptr
 };
 

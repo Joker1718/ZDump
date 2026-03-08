@@ -141,19 +141,36 @@ static uintptr_t TrySymbolPrefix(const char* prefix) {
 // Validation functions
 // ============================================================
 
-// Validate ObjectDB: check that addr points to an ObjectSlot array
+// Validate ObjectDB: addr is the address of the object_slots pointer variable (.bss/.data).
+// Dereference to get the actual ObjectSlot array, then check for valid Object pointers.
 // Each slot is 16 bytes: 8B metadata + 8B Object*
-// A valid ObjectDB has several slots with valid Object pointers
 static bool ValidateObjectDB(uintptr_t addr) {
     if (!addr) return false;
     EnsureModuleInfo();
+
+    // addr = address of object_slots variable (a pointer in .bss)
+    // Dereference to get the actual slot array address
+    uint64_t arrayAddr = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+    if (!arrayAddr || !Zoltraak::IsReadable(arrayAddr)) {
+        Solliter::Debug("SCAN:ObjDB", "ValidateObjectDB: null or unreadable array ptr at %p",
+            reinterpret_cast<void*>(addr));
+        return false;
+    }
+
+    // Array should be in heap (not in module range)
+    if (arrayAddr >= s_moduleBase && arrayAddr < s_moduleBase + s_moduleSize) {
+        Solliter::Debug("SCAN:ObjDB", "ValidateObjectDB: array at %p is inside module",
+            reinterpret_cast<void*>(arrayAddr));
+        return false;
+    }
 
     int validCount = 0;
     int checked = 0;
 
     // Check up to 200 slots, looking for at least 3 valid Object pointers
     for (int i = 0; i < 200 && checked < 30; ++i) {
-        uintptr_t slotAddr = addr + static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
+        uintptr_t slotAddr = static_cast<uintptr_t>(arrayAddr) +
+            static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
 
         // Read Object* at offset 8 within the slot
         uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
@@ -171,9 +188,63 @@ static bool ValidateObjectDB(uintptr_t addr) {
         }
     }
 
-    Solliter::Info("SCAN:ObjDB", "ValidateObjectDB: %d/%d slots had valid vtables (need >= 3)",
-        validCount, checked);
+    Solliter::Info("SCAN:ObjDB", "ValidateObjectDB: array=%p %d/%d slots had valid vtables (need >= 3)",
+        reinterpret_cast<void*>(arrayAddr), validCount, checked);
     return validCount >= 3;
+}
+
+// Relaxed ObjectDB validator: accepts empty but allocated arrays.
+// Used during deferred retry when ObjectDB may be allocated but no objects created yet.
+static bool ValidateObjectDBRelaxed(uintptr_t addr) {
+    if (!addr) return false;
+    EnsureModuleInfo();
+
+    uint64_t arrayAddr = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+    if (!arrayAddr || !Zoltraak::IsReadable(arrayAddr)) return false;
+
+    // Array should be in heap (not in module)
+    if (arrayAddr >= s_moduleBase && arrayAddr < s_moduleBase + s_moduleSize) return false;
+
+    // Try strict validation first
+    int validCount = 0;
+    int checked = 0;
+    for (int i = 0; i < 200 && checked < 30; ++i) {
+        uintptr_t slotAddr = static_cast<uintptr_t>(arrayAddr) +
+            static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
+        uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+            slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
+        if (!objPtr) continue;
+        checked++;
+        uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+        if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+            validCount++;
+        }
+    }
+
+    if (validCount >= 3) {
+        Solliter::Info("SCAN:ObjDB", "ValidateObjectDBRelaxed: strict pass array=%p %d valid",
+            reinterpret_cast<void*>(arrayAddr), validCount);
+        return true;
+    }
+
+    // Relaxed: accept if array is readable and looks like a valid allocation
+    // Verify that multiple slot-stride-aligned reads are possible (array is large enough)
+    bool allReadable = true;
+    for (int i = 0; i < 8; ++i) {
+        if (!Zoltraak::IsReadable(arrayAddr + i * DynOff::SLOT_STRIDE)) {
+            allReadable = false;
+            break;
+        }
+    }
+
+    if (allReadable) {
+        Solliter::Warn("SCAN:ObjDB", "ValidateObjectDBRelaxed: accepting empty array at %p "
+            "(heap ptr readable, %d slots checked, %d valid)",
+            reinterpret_cast<void*>(arrayAddr), checked, validCount);
+        return true;
+    }
+
+    return false;
 }
 
 // Validate ClassDB: check HashMap structure
@@ -339,6 +410,77 @@ static uintptr_t ScanBssForClassDB() {
     } else {
         Solliter::Warn("SCAN:ClsDB", "Brute-force scan found no valid HashMap (%d candidates checked)",
             candidates);
+    }
+    return bestAddr;
+}
+
+// Brute-force .bss/.data scan for ObjectDB object_slots pointer.
+// Scans for an 8-byte value that is a heap pointer to a valid ObjectSlot array.
+// Returns the address of the pointer variable (in .bss/.data), consistent with AOB results.
+static uintptr_t ScanBssForObjectDB() {
+    auto bss = Zoltraak::GetBssSection();
+    auto data = Zoltraak::GetDataSection();
+
+    if (bss.size == 0 && data.size == 0) {
+        Solliter::Warn("SCAN:ObjDB", "No .bss or .data section found for ObjectDB brute-force scan");
+        return 0;
+    }
+
+    EnsureModuleInfo();
+    Solliter::Info("SCAN:ObjDB", "Brute-force scanning .bss + .data for ObjectDB");
+
+    uintptr_t bestAddr = 0;
+    int bestValidCount = 0;
+    int candidates = 0;
+
+    auto scanSection = [&](uint64_t base, uint64_t size) {
+        if (size < 8) return;
+
+        for (uint64_t offset = 0; offset + 8 <= size; offset += 8) {
+            uintptr_t varAddr = static_cast<uintptr_t>(base + offset);
+            uint64_t arrayPtr = Zoltraak::ReadSafe<uint64_t>(varAddr, 0);
+
+            // Must be non-null, not in module (heap), and readable
+            if (!arrayPtr || arrayPtr < 0x10000) continue;
+            if (arrayPtr >= s_moduleBase && arrayPtr < s_moduleBase + s_moduleSize) continue;
+            if (!Zoltraak::IsReadable(arrayPtr)) continue;
+
+            // Check if it looks like an ObjectSlot array (16-byte stride)
+            int validCount = 0;
+            int checkedNonNull = 0;
+            for (int i = 0; i < 200 && checkedNonNull < 30; ++i) {
+                uintptr_t slotAddr = static_cast<uintptr_t>(arrayPtr) +
+                    static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
+                uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+                    slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
+                if (!objPtr) continue;
+                checkedNonNull++;
+
+                uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+                if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                    validCount++;
+                }
+            }
+
+            if (validCount >= 3 && validCount > bestValidCount) {
+                bestValidCount = validCount;
+                bestAddr = varAddr;
+                candidates++;
+                Solliter::Debug("SCAN:ObjDB", "ObjectDB candidate at %p: array=%p %d valid objects",
+                    reinterpret_cast<void*>(varAddr),
+                    reinterpret_cast<void*>(arrayPtr), validCount);
+            }
+        }
+    };
+
+    if (bss.size > 0) scanSection(bss.baseAddr, bss.size);
+    if (data.size > 0) scanSection(data.baseAddr, data.size);
+
+    if (bestAddr) {
+        Solliter::Info("SCAN:ObjDB", "Brute-force found ObjectDB at %p with %d valid objects (%d candidates)",
+            reinterpret_cast<void*>(bestAddr), bestValidCount, candidates);
+    } else {
+        Solliter::Warn("SCAN:ObjDB", "Brute-force ObjectDB scan found no valid array");
     }
     return bestAddr;
 }
@@ -637,14 +779,14 @@ static std::string DetectVersionFromEngine(uintptr_t engineAddr) {
 
     // Scan nearby memory for a version string pattern
     // Engine stores version info as member String fields
-    // We look for "4.X" pattern (ASCII encoded from Godot String)
+    // We look for "X.Y" pattern where X is 1-9 (supports Godot 3.x and 4.x)
     for (int offset = 0x40; offset < 0x600; offset += 8) {
         uint64_t fieldPtr = Zoltraak::ReadSafe<uint64_t>(enginePtr + offset, 0);
         if (!fieldPtr || !Zoltraak::IsReadable(fieldPtr)) continue;
 
         // Try reading as a C string first
         std::string s = Zoltraak::ReadString(fieldPtr, 32);
-        if (s.size() >= 3 && s[0] >= '4' && s[0] <= '9' && s[1] == '.') {
+        if (s.size() >= 3 && s[0] >= '1' && s[0] <= '9' && s[1] == '.') {
             Solliter::Info("SCAN:Ver", "Found version string '%s' at Engine+0x%X",
                 s.c_str(), offset);
             return s;
@@ -652,7 +794,7 @@ static std::string DetectVersionFromEngine(uintptr_t engineAddr) {
 
         // Try reading as a Godot String (CowData<char32_t>)
         std::string gs = Zoltraak::ReadGodotString(fieldPtr);
-        if (gs.size() >= 3 && gs[0] >= '4' && gs[0] <= '9' && gs[1] == '.') {
+        if (gs.size() >= 3 && gs[0] >= '1' && gs[0] <= '9' && gs[1] == '.') {
             Solliter::Info("SCAN:Ver", "Found Godot String version '%s' at Engine+0x%X",
                 gs.c_str(), offset);
             return gs;
@@ -663,37 +805,70 @@ static std::string DetectVersionFromEngine(uintptr_t engineAddr) {
     return "";
 }
 
-// Scan .rdata for "Godot Engine v" string
+// Trim a version string at the first non-version character
+static std::string TrimVersionString(const std::string& raw) {
+    size_t end = 0;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        char c = raw[i];
+        if ((c >= '0' && c <= '9') || c == '.' ||
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
+            end = i + 1;
+        } else {
+            break;
+        }
+    }
+    return raw.substr(0, end);
+}
+
+// Scan .rdata for version strings (supports Godot 3.x and 4.x)
 static std::string DetectVersionFromRdata() {
     EnsureModuleInfo();
 
-    // Scan for "Godot Engine v" using AOBScan
+    // Try 1: "Godot Engine v" (works for both 3.x and 4.x when present)
     uint64_t match = Zoltraak::AOBScan(
         "47 6F 64 6F 74 20 45 6E 67 69 6E 65 20 76");
 
-    if (!match) {
-        Solliter::Debug("SCAN:Ver", "No 'Godot Engine v' string found in module");
-        return "";
+    if (match) {
+        // Read the version starting after "Godot Engine v" (14 bytes)
+        std::string version = TrimVersionString(Zoltraak::ReadString(match + 14, 32));
+        if (!version.empty()) {
+            Solliter::Info("SCAN:Ver", "Found .rdata version (Godot Engine v): '%s'", version.c_str());
+            return version;
+        }
     }
 
-    // Read the version starting after "Godot Engine v" (14 bytes)
-    std::string version = Zoltraak::ReadString(match + 14, 32);
-    if (!version.empty()) {
-        // Trim at first non-version character
-        size_t end = 0;
-        for (size_t i = 0; i < version.size(); ++i) {
-            char c = version[i];
-            if ((c >= '0' && c <= '9') || c == '.' ||
-                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
-                end = i + 1;
-            } else {
-                break;
-            }
+    // Try 2: "4.?.?.stable" pattern (Godot 4.x stripped builds)
+    match = Zoltraak::AOBScan("34 2E ?? 2E ?? 2E 73 74 61 62 6C 65");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
+        if (!version.empty() && version[0] == '4') {
+            Solliter::Info("SCAN:Ver", "Found .rdata version (4.x.stable): '%s'", version.c_str());
+            return version;
         }
-        version = version.substr(0, end);
-        Solliter::Info("SCAN:Ver", "Found .rdata version: '%s'", version.c_str());
     }
-    return version;
+
+    // Try 3: "3.?.?.stable" pattern (Godot 3.x stable builds)
+    match = Zoltraak::AOBScan("33 2E ?? 2E ?? 2E 73 74 61 62 6C 65");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
+        if (!version.empty() && version[0] == '3') {
+            Solliter::Info("SCAN:Ver", "Found .rdata version (3.x.stable): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 4: "3.?.dev" pattern (Godot 3.x development builds)
+    match = Zoltraak::AOBScan("33 2E ?? 2E 64 65 76");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
+        if (!version.empty() && version[0] == '3') {
+            Solliter::Info("SCAN:Ver", "Found .rdata version (3.x.dev): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    Solliter::Debug("SCAN:Ver", "No version string found in .rdata");
+    return "";
 }
 
 // ============================================================
@@ -819,12 +994,125 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         out.sceneTreePatternId ? out.sceneTreePatternId : "none",
         out.sceneTreePatternsTried);
 
-    // Phase 6: Validate and fix offsets
-    if (progress) progress(6, "Validating offsets...");
+    // ================================================================
+    // Phase 6: Deferred retry for missing singleton targets
+    // If Engine, SceneTree, or ObjectDB are missing, the game may not
+    // have initialized them yet. Wait and try again.
+    // ================================================================
+    {
+        int missingCount = (!out.Engine ? 1 : 0) +
+                           (!out.SceneTree ? 1 : 0) +
+                           (!out.ObjectDB ? 1 : 0);
+
+        if (missingCount > 0) {
+            Solliter::Summary("=== Deferred retry: %d targets missing, waiting 3s ===", missingCount);
+            if (progress) progress(6, "Waiting for game initialization...");
+            Sleep(3000);
+
+            // Retry Engine
+            if (!out.Engine) {
+                Solliter::Info("SCAN", "Retry: scanning for Engine...");
+                out.Engine = ScanForTarget(
+                    GodotSig::ENGINE_PATTERNS,
+                    hints.enginePatternId.c_str(),
+                    ValidateEngine,
+                    out.enginePatternsTried,
+                    out.enginePatternId,
+                    out.engineMethod);
+                if (out.Engine) {
+                    Solliter::Summary("  Retry Engine: found at %p",
+                        reinterpret_cast<void*>(out.Engine));
+                    // Also try version detection now
+                    if (out.godotVersion.empty()) {
+                        out.godotVersion = DetectVersionFromEngine(out.Engine);
+                        if (!out.godotVersion.empty()) {
+                            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor);
+                        }
+                    }
+                }
+            }
+
+            // Retry SceneTree (with Engine exclusion)
+            if (!out.SceneTree) {
+                Solliter::Info("SCAN", "Retry: scanning for SceneTree...");
+                uintptr_t streeExclude2[] = { out.Engine };
+                out.SceneTree = ScanForTarget(
+                    GodotSig::SCENETREE_PATTERNS,
+                    hints.sceneTreePatternId.c_str(),
+                    ValidateSceneTree,
+                    out.sceneTreePatternsTried,
+                    out.sceneTreePatternId,
+                    out.sceneTreeMethod,
+                    streeExclude2, out.Engine ? 1 : 0);
+                if (out.SceneTree) {
+                    Solliter::Summary("  Retry SceneTree: found at %p",
+                        reinterpret_cast<void*>(out.SceneTree));
+                }
+            }
+
+            // Retry ObjectDB (strict first, then relaxed)
+            if (!out.ObjectDB) {
+                Solliter::Info("SCAN", "Retry: scanning for ObjectDB (strict)...");
+                out.ObjectDB = ScanForTarget(
+                    GodotSig::OBJECTDB_PATTERNS,
+                    hints.objectDBPatternId.c_str(),
+                    ValidateObjectDB,
+                    out.objectDBPatternsTried,
+                    out.objectDBPatternId,
+                    out.objectDBMethod);
+
+                // Try brute-force .bss scan
+                if (!out.ObjectDB) {
+                    Solliter::Info("SCAN", "Retry: brute-force .bss scan for ObjectDB...");
+                    out.ObjectDB = ScanBssForObjectDB();
+                    if (out.ObjectDB) {
+                        out.objectDBPatternId = "BSS_SCAN";
+                        out.objectDBMethod = "bss_scan";
+                    }
+                }
+
+                // Last resort: relaxed validation (accept empty arrays)
+                if (!out.ObjectDB) {
+                    Solliter::Info("SCAN", "Retry: scanning for ObjectDB (relaxed)...");
+                    out.ObjectDB = ScanForTarget(
+                        GodotSig::OBJECTDB_PATTERNS,
+                        hints.objectDBPatternId.c_str(),
+                        ValidateObjectDBRelaxed,
+                        out.objectDBPatternsTried,
+                        out.objectDBPatternId,
+                        out.objectDBMethod);
+                    if (out.ObjectDB) {
+                        out.objectDBMethod = "aob_relaxed";
+                    }
+                }
+
+                if (out.ObjectDB) {
+                    Solliter::Summary("  Retry ObjectDB: found at %p (%s)",
+                        reinterpret_cast<void*>(out.ObjectDB), out.objectDBMethod);
+                }
+            }
+        }
+    }
+
+    // Phase 7: Validate and fix offsets
+    if (progress) progress(7, "Validating offsets...");
     ValidateAndFixOffsets();
 
-    // Phase 7: Save results to hint cache
-    if (progress) progress(7, "Saving hint cache...");
+    // Phase 8: Retry version detection if still unknown
+    if (out.godotVersion.empty()) {
+        if (out.Engine) {
+            out.godotVersion = DetectVersionFromEngine(out.Engine);
+        }
+        if (out.godotVersion.empty()) {
+            out.godotVersion = DetectVersionFromRdata();
+        }
+        if (!out.godotVersion.empty()) {
+            ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor);
+        }
+    }
+
+    // Phase 9: Save results to hint cache
+    if (progress) progress(8, "Saving hint cache...");
     wchar_t processPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, processPath, MAX_PATH);
     char procNameA[MAX_PATH] = {};
@@ -850,8 +1138,8 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     s_cachedPointers = out;
     s_scanned = true;
 
-    // Success requires at least ObjectDB
-    return out.ObjectDB != 0;
+    // Success if we found at least one useful pointer
+    return (out.ObjectDB != 0 || out.ClassDB != 0 || out.SceneTree != 0 || out.Engine != 0);
 }
 
 uintptr_t FindObjectDB(const char* hintPatternId) {
@@ -907,9 +1195,17 @@ bool ValidateAndFixOffsets() {
 
     // Step 1: Validate basic Object layout using ObjectDB
     if (s_cachedPointers.ObjectDB) {
+        // Dereference object_slots pointer to get array base
+        uint64_t arrayBase = Zoltraak::ReadSafe<uint64_t>(s_cachedPointers.ObjectDB, 0);
+        if (!arrayBase || !Zoltraak::IsReadable(arrayBase)) {
+            Solliter::Warn("OFFS", "ObjectDB pointer at %p is null/unreadable, skipping layout probing",
+                reinterpret_cast<void*>(s_cachedPointers.ObjectDB));
+            arrayBase = 0;
+        }
+
         // Find a valid Object to probe
-        for (int i = 0; i < 100; ++i) {
-            uintptr_t slotAddr = s_cachedPointers.ObjectDB +
+        for (int i = 0; arrayBase && i < 100; ++i) {
+            uintptr_t slotAddr = static_cast<uintptr_t>(arrayBase) +
                 static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
             uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
                 slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
