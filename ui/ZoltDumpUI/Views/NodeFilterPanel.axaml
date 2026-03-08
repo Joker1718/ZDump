@@ -34,6 +34,8 @@
                   ItemsSource="{Binding DisplayedClasses}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  HorizontalScrollBarVisibility="Auto"
                   Background="#1E1E1E"
                   Foreground="#D4D4D4"
                   FontFamily="Consolas"

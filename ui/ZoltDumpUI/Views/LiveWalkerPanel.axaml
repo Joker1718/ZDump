@@ -12,6 +12,10 @@
                 <Button Content="Back" Command="{Binding NavigateBackCommand}" Margin="0,0,4,0" />
                 <Button Content="Parent" Command="{Binding NavigateToParentCommand}" Margin="0,0,4,0" />
                 <Button Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
+                <Separator Width="1" Background="#3F3F46" Margin="4,2" />
+                <Button Content="Copy CE XML" Command="{Binding CopyCeXmlCommand}" Margin="0,0,4,0" FontSize="11" />
+                <Button Content="Export CSX" Command="{Binding ExportCsxCommand}" Margin="0,0,4,0" FontSize="11" />
+                <Button Content="Export SDK" Command="{Binding ExportSdkCommand}" Margin="0,0,8,0" FontSize="11" />
                 <CheckBox Content="Auto" IsChecked="{Binding IsAutoRefresh}"
                           Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
                 <NumericUpDown Value="{Binding AutoRefreshInterval}" Minimum="200" Maximum="10000"
@@ -29,9 +33,11 @@
             </DockPanel>
         </Border>
 
-        <!-- Breadcrumbs -->
+        <!-- Breadcrumbs (max 60px tall to prevent pushing fields DataGrid off-screen) -->
         <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526"
+                MaxHeight="60" ClipToBounds="True"
                 IsVisible="{Binding Breadcrumbs.Count}">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding Breadcrumbs}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
@@ -52,6 +58,7 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </ScrollViewer>
         </Border>
 
         <!-- Object Info Header -->
@@ -83,6 +90,8 @@
                   ItemsSource="{Binding Fields}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  HorizontalScrollBarVisibility="Auto"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   Background="#1E1E1E"
@@ -90,6 +99,21 @@
                   Foreground="#D4D4D4"
                   FontFamily="Consolas"
                   FontSize="12">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Copy CE XML" Command="{Binding CopyCeXmlCommand}" />
+                    <MenuItem Header="Copy CE Field" Command="{Binding CopyCeFieldCommand}"
+                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
+                    <Separator />
+                    <MenuItem Header="Export CSX" Command="{Binding ExportCsxCommand}" />
+                    <MenuItem Header="Export SDK" Command="{Binding ExportSdkCommand}" />
+                    <Separator />
+                    <MenuItem Header="Copy Address" Command="{Binding CopyFieldAddressCommand}"
+                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
+                    <MenuItem Header="Copy Name" Command="{Binding CopyFieldNameCommand}"
+                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
+                </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />

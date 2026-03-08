@@ -13,6 +13,7 @@
 #include "BuildInfo.h"
 
 #include <filesystem>
+#include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -105,6 +106,17 @@ int Zolt_AutoStart() {
     Zolt::Flamme::LogDiagnostics();
     Zolt::DiAgolze::LogDiagnostics();
     Zolt::Ausetiese::LogDiagnostics();
+
+    // Proactive RTTI scan: pre-seed the vtable→class cache by scanning ObjectDB
+    if (s_objectDBAddr && s_classDBAddr) {
+        std::vector<uint64_t> sampleAddrs;
+        sampleAddrs.reserve(200);
+        Zolt::Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+            sampleAddrs.push_back(objAddr);
+            return sampleAddrs.size() < 200;
+        });
+        Zolt::DiAgolze::ScanObjectVtables(sampleAddrs);
+    }
 
     // Start Fern pipe server for UI communication
     Zolt::Fern::Start();

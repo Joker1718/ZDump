@@ -64,6 +64,10 @@ static const CatMapping s_catMap[] = {
     { "WALK:Prop",    9, LF_Walk    },
     { "WALK:Inst",    9, LF_Walk    },
     { "SUMMARY",      7, LF_Init    },
+    { "FLAMME",       6, LF_Init    },
+    { "CLSDB",        5, LF_Init    },
+    { "OBJDB",        5, LF_Init    },
+    { "STREE",        5, LF_Init    },
     { "INIT",         4, LF_Init    },
     { "SCAN",         4, LF_Scan    },
     { "DYNO",         4, LF_Offsets },
@@ -186,21 +190,18 @@ static void OpenFiles() {
     fs::create_directories(s_logDir, ec);
     if (ec) return;
 
+    // Rotate ALL log files on each DLL start (fresh logs per session)
     for (int i = 0; i < LF_COUNT; ++i) {
         auto& f = s_files[i];
         f.baseName = s_fileNames[i];
         f.path = s_logDir / (f.baseName + "-0.log");
 
-        // Append to existing file if it exists and is under size limit
-        f.handle = _wfopen(f.path.c_str(), L"at");
-        if (f.handle) {
-            fseek(f.handle, 0, SEEK_END);
-            f.written = static_cast<size_t>(ftell(f.handle));
-
-            // If already over limit, rotate
-            if (f.written > Grimoire::LOG_MAX_SIZE) {
-                RotateFile(static_cast<LogFile>(i));
-            }
+        // If the file exists, rotate it so each DLL injection gets a fresh log
+        if (fs::exists(f.path, ec)) {
+            RotateFile(static_cast<LogFile>(i));
+        } else {
+            f.handle = _wfopen(f.path.c_str(), L"wt");
+            f.written = 0;
         }
     }
     s_filesOpen = true;
@@ -274,7 +275,12 @@ static void FormatAndWrite(const char* level, const char* cat, const char* fmt, 
 // ============================================================
 
 bool Init() {
-    if (s_initialized) return true;
+    // Allow re-initialization (supports DLL re-injection into same process)
+    if (s_initialized && s_filesOpen) {
+        // Already fully initialized — just log a restart marker
+        Info("INIT", "=== DLL re-injected (logger already initialized) ===");
+        return true;
+    }
     s_earlyBuffering = true;
     s_initialized = true;
     return true;

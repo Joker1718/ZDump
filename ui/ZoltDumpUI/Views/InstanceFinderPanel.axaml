@@ -4,6 +4,10 @@
              x:Class="ZoltDumpUI.Views.InstanceFinderPanel"
              x:DataType="vm:InstanceFinderViewModel">
 
+    <UserControl.KeyBindings>
+        <KeyBinding Gesture="Enter" Command="{Binding FindInstancesCommand}" />
+    </UserControl.KeyBindings>
+
     <DockPanel Background="#252526">
         <!-- Search Bar -->
         <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">
@@ -35,10 +39,21 @@
                       SelectedItem="{Binding SelectedInstance}"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
+                      CanUserResizeColumns="True"
+                      HorizontalScrollBarVisibility="Auto"
                       Background="#1E1E1E"
                       Foreground="#D4D4D4"
                       FontFamily="Consolas"
                       FontSize="12">
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Open in LiveWalker" Command="{Binding OpenInLiveWalkerCommand}"
+                                  CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
+                        <Separator />
+                        <MenuItem Header="Copy Address" Command="{Binding CopyAddressCommand}"
+                                  CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="140" />
                     <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
@@ -55,10 +70,18 @@
                       ItemsSource="{Binding SelectedFields}"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
+                      CanUserResizeColumns="True"
+                      HorizontalScrollBarVisibility="Auto"
                       Background="#1E1E1E"
                       Foreground="#D4D4D4"
                       FontFamily="Consolas"
                       FontSize="12">
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Copy CE XML" Command="{Binding CopyCeXmlCommand}" />
+                        <MenuItem Header="Export SDK" Command="{Binding ExportSdkCommand}" />
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="70" />
                     <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />

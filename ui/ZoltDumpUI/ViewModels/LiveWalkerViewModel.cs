@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ZoltDumpUI.Core;
 using ZoltDumpUI.Models;
+using ZoltDumpUI.Services;
 
 namespace ZoltDumpUI.ViewModels;
 
@@ -16,6 +17,9 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private readonly ILoggingService _log;
     private readonly IPlatformService _platform;
     private readonly IAobMakerBridge _aobMaker;
+    private readonly CeXmlExportService _ceXml;
+    private readonly CsxExportService _csx;
+    private readonly SdkExportService _sdk;
 
     public ObservableCollection<LiveFieldValue> Fields { get; } = [];
     public ObservableCollection<BreadcrumbItem> Breadcrumbs { get; } = [];
@@ -31,17 +35,33 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [ObservableProperty] private int _autoRefreshInterval = 1000;
     [ObservableProperty] private bool _isLoading;
 
+    /// <summary>Module name (process name) for CE XML export address formatting.</summary>
+    public string ModuleName { get; set; } = "";
+
     private CancellationTokenSource? _refreshCts;
 
-    public LiveWalkerViewModel(IDumpService dump, ILoggingService log, IPlatformService platform, IAobMakerBridge aobMaker)
+    public LiveWalkerViewModel(IDumpService dump, ILoggingService log, IPlatformService platform,
+        IAobMakerBridge aobMaker, CeXmlExportService ceXml, CsxExportService csx, SdkExportService sdk)
     {
         _dump = dump;
         _log = log;
         _platform = platform;
         _aobMaker = aobMaker;
+        _ceXml = ceXml;
+        _csx = csx;
+        _sdk = sdk;
     }
 
     public async Task NavigateToAddressAsync(string address)
+    {
+        await FetchAndShowAsync(address);
+        // Add breadcrumb only on navigation (not refresh)
+        if (!string.IsNullOrEmpty(CurrentAddress))
+            Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName));
+    }
+
+    /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
+    private async Task FetchAndShowAsync(string address)
     {
         try
         {
@@ -57,9 +77,6 @@ public partial class LiveWalkerViewModel : ViewModelBase
             Fields.Clear();
             foreach (var f in result.Fields)
                 Fields.Add(f);
-
-            // Update breadcrumbs
-            Breadcrumbs.Add(new BreadcrumbItem(result.Address, result.Name, result.ClassName));
 
             AddressInput = address;
             _log.Debug("view", $"Walked instance {result.Name} @ {result.Address}");
@@ -121,8 +138,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         if (Breadcrumbs.Count <= 1) return;
         Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
         var prev = Breadcrumbs[^1];
-        Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1); // Will be re-added by NavigateToAddress
-        await NavigateToAddressAsync(prev.Address);
+        await FetchAndShowAsync(prev.Address);
     }
 
     [RelayCommand]
@@ -136,7 +152,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task RefreshAsync()
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
-        await NavigateToAddressAsync(CurrentAddress);
+        await FetchAndShowAsync(CurrentAddress);
     }
 
     [RelayCommand]
@@ -173,16 +189,16 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [RelayCommand]
     private async Task NavigateToBreadcrumbAsync(BreadcrumbItem crumb)
     {
-        // Remove all breadcrumbs after this one
+        // Remove all breadcrumbs after this one (keep the clicked one)
         var idx = -1;
         for (var i = 0; i < Breadcrumbs.Count; i++)
         {
             if (Breadcrumbs[i].Address == crumb.Address) { idx = i; break; }
         }
         if (idx < 0) return;
-        while (Breadcrumbs.Count > idx)
+        while (Breadcrumbs.Count > idx + 1)
             Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
-        await NavigateToAddressAsync(crumb.Address);
+        await FetchAndShowAsync(crumb.Address);
     }
 
     [RelayCommand]
@@ -190,6 +206,103 @@ public partial class LiveWalkerViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
         await _aobMaker.NavigateHexViewAsync(CurrentAddress);
+    }
+
+    // ============================================================
+    // Export commands
+    // ============================================================
+
+    [RelayCommand]
+    private async Task CopyCeXmlAsync()
+    {
+        if (Fields.Count == 0) return;
+        try
+        {
+            // Build BreadcrumbEntry list from UI breadcrumbs
+            var entries = Breadcrumbs.Select(b => new BreadcrumbEntry
+            {
+                Address = b.Address,
+                Name = b.Name,
+                ClassName = b.ClassName,
+                Offset = 0,
+                IsPointer = true
+            }).ToList();
+
+            var fields = Fields.ToList();
+            var xml = _ceXml.GenerateHierarchicalXml(entries, fields, ModuleName, AddressFormat.HexNoPrefix);
+            if (!string.IsNullOrEmpty(xml))
+            {
+                await _platform.CopyToClipboardAsync(xml);
+                _log.Info("view", "Copied CE XML to clipboard");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"CE XML export failed: {ex.Message}");
+            _log.Error("view", "CE XML export failed", ex);
+        }
+    }
+
+    [RelayCommand]
+    private async Task CopyCeFieldAsync(LiveFieldValue? field)
+    {
+        if (field is null) return;
+        try
+        {
+            var xml = _ceXml.GenerateFieldXml(field);
+            if (!string.IsNullOrEmpty(xml))
+            {
+                await _platform.CopyToClipboardAsync(xml);
+                _log.Info("view", $"Copied CE field '{field.Name}' to clipboard");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"CE field export failed: {ex.Message}");
+            _log.Error("view", "CE field export failed", ex);
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportCsxAsync()
+    {
+        if (Fields.Count == 0 || string.IsNullOrEmpty(CurrentClassName)) return;
+        try
+        {
+            var fields = Fields.ToList();
+            var csx = await _csx.GenerateCsxAsync(CurrentClassName, fields);
+            if (!string.IsNullOrEmpty(csx))
+            {
+                await _platform.CopyToClipboardAsync(csx);
+                _log.Info("view", $"Copied CSX for '{CurrentClassName}' to clipboard");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"CSX export failed: {ex.Message}");
+            _log.Error("view", "CSX export failed", ex);
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportSdkAsync()
+    {
+        if (Fields.Count == 0 || string.IsNullOrEmpty(CurrentClassName)) return;
+        try
+        {
+            var fields = Fields.ToList();
+            var header = _sdk.GenerateClassHeader(CurrentClassName, "", fields);
+            if (!string.IsNullOrEmpty(header))
+            {
+                await _platform.CopyToClipboardAsync(header);
+                _log.Info("view", $"Copied SDK header for '{CurrentClassName}' to clipboard");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"SDK export failed: {ex.Message}");
+            _log.Error("view", "SDK export failed", ex);
+        }
     }
 
     partial void OnIsAutoRefreshChanged(bool value)

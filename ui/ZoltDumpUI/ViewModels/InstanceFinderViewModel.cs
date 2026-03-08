@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ZoltDumpUI.Core;
 using ZoltDumpUI.Models;
+using ZoltDumpUI.Services;
 
 namespace ZoltDumpUI.ViewModels;
 
@@ -12,6 +13,8 @@ public partial class InstanceFinderViewModel : ViewModelBase
     private readonly IDumpService _dump;
     private readonly ILoggingService _log;
     private readonly IPlatformService _platform;
+    private readonly CeXmlExportService _ceXml;
+    private readonly SdkExportService _sdk;
 
     public ObservableCollection<ObjectEntry> Instances { get; } = [];
     public ObservableCollection<LiveFieldValue> SelectedFields { get; } = [];
@@ -24,13 +27,19 @@ public partial class InstanceFinderViewModel : ViewModelBase
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _statusText = "";
 
+    /// <summary>Module name (process name) for CE XML export address formatting.</summary>
+    public string ModuleName { get; set; } = "";
+
     public event Action<string>? NavigateToLiveWalker;
 
-    public InstanceFinderViewModel(IDumpService dump, ILoggingService log, IPlatformService platform)
+    public InstanceFinderViewModel(IDumpService dump, ILoggingService log, IPlatformService platform,
+        CeXmlExportService ceXml, SdkExportService sdk)
     {
         _dump = dump;
         _log = log;
         _platform = platform;
+        _ceXml = ceXml;
+        _sdk = sdk;
     }
 
     partial void OnSelectedInstanceChanged(ObjectEntry? value)
@@ -124,6 +133,56 @@ public partial class InstanceFinderViewModel : ViewModelBase
     private async Task CopyAddressAsync(ObjectEntry entry)
     {
         await _platform.CopyToClipboardAsync(entry.Address);
+    }
+
+    // ============================================================
+    // Export commands
+    // ============================================================
+
+    [RelayCommand]
+    private async Task CopyCeXmlAsync()
+    {
+        if (SelectedInstance is null || SelectedFields.Count == 0) return;
+        try
+        {
+            var fields = SelectedFields.ToList();
+            var xml = _ceXml.GenerateInstanceXml(
+                SelectedInstance.Address,
+                $"{SelectedInstance.Name} ({SelectedInstance.ClassName})",
+                fields,
+                ModuleName);
+            if (!string.IsNullOrEmpty(xml))
+            {
+                await _platform.CopyToClipboardAsync(xml);
+                _log.Info("view", "Copied CE XML to clipboard (InstanceFinder)");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"CE XML export failed: {ex.Message}");
+            _log.Error("view", "CE XML export failed (InstanceFinder)", ex);
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportSdkAsync()
+    {
+        if (SelectedInstance is null || SelectedFields.Count == 0) return;
+        try
+        {
+            var fields = SelectedFields.ToList();
+            var header = _sdk.GenerateClassHeader(SelectedInstance.ClassName, "", fields);
+            if (!string.IsNullOrEmpty(header))
+            {
+                await _platform.CopyToClipboardAsync(header);
+                _log.Info("view", $"Copied SDK header for '{SelectedInstance.ClassName}' (InstanceFinder)");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"SDK export failed: {ex.Message}");
+            _log.Error("view", "SDK export failed (InstanceFinder)", ex);
+        }
     }
 
     private async Task LoadInstanceFieldsAsync(string address)

@@ -4,6 +4,10 @@
              x:Class="ZoltDumpUI.Views.PropertySearchPanel"
              x:DataType="vm:PropertySearchViewModel">
 
+    <UserControl.KeyBindings>
+        <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
+    </UserControl.KeyBindings>
+
     <DockPanel Background="#252526">
         <!-- Search -->
         <Border DockPanel.Dock="Top" Padding="4" Background="#2D2D30">

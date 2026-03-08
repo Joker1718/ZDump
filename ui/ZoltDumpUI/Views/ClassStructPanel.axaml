@@ -30,7 +30,7 @@
 
         <!-- No class selected -->
         <TextBlock Text="Select an object to view its class structure"
-                   IsVisible="{Binding !ClassName, Converter={x:Static StringConverters.IsNullOrEmpty}}"
+                   IsVisible="{Binding ClassName, Converter={x:Static StringConverters.IsNullOrEmpty}}"
                    Foreground="#808080" HorizontalAlignment="Center" VerticalAlignment="Center"
                    DockPanel.Dock="Top" Margin="0,8" />
 
@@ -39,6 +39,8 @@
                   ItemsSource="{Binding Properties}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  HorizontalScrollBarVisibility="Auto"
                   GridLinesVisibility="Horizontal"
                   Background="#1E1E1E"
                   RowBackground="#1E1E1E"
