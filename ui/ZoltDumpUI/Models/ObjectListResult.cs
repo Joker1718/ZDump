@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Models;
 
 /// <summary>Paginated object list from "get_object_list" command.</summary>
@@ -10,6 +12,7 @@ public sealed class ObjectListResult
 }
 
 /// <summary>Single object in the object list.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class ObjectEntry
 {
     public string Address { get; init; } = "";

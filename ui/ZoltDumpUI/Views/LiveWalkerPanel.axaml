@@ -39,7 +39,7 @@
                     </ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
-                    <DataTemplate>
+                    <DataTemplate x:DataType="vm:BreadcrumbItem">
                         <StackPanel Orientation="Horizontal">
                             <Button Content="{Binding Display}" Classes="breadcrumb"
                                     Command="{Binding $parent[ItemsControl].((vm:LiveWalkerViewModel)DataContext).NavigateToBreadcrumbCommand}"

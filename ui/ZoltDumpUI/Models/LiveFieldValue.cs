@@ -1,6 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace ZoltDumpUI.Models;
 
 /// <summary>Single live field value for instance inspection.</summary>
+[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
 public sealed class LiveFieldValue
 {
     public string Name { get; init; } = "";
