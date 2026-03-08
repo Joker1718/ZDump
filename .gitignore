@@ -441,3 +441,7 @@ nul
 
 # Claude Code
 .claude/
+
+# Test binary downloads
+test/godot/*.zip
+test/godot/Godot_v*.exe
