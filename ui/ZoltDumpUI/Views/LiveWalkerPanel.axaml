@@ -90,6 +90,8 @@
                   ItemsSource="{Binding Fields}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  HorizontalScrollBarVisibility="Auto"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   Background="#1E1E1E"

@@ -39,6 +39,8 @@
                   ItemsSource="{Binding Properties}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  HorizontalScrollBarVisibility="Auto"
                   GridLinesVisibility="Horizontal"
                   Background="#1E1E1E"
                   RowBackground="#1E1E1E"

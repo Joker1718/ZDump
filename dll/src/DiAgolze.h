@@ -63,4 +63,8 @@ std::string GetObjectClass(uint64_t objectAddr);
 // One-shot diagnostics dump
 void LogDiagnostics();
 
+// Proactive RTTI scan: scan object addresses and pre-seed the vtable→class cache.
+// Call after ObjectDB init to identify classes before any UI requests.
+void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs);
+
 } // namespace Zolt::DiAgolze

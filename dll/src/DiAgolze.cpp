@@ -1014,7 +1014,7 @@ std::vector<MethodInfo> GetMethodList(const char* className) {
 // Extract class name from MSVC RTTI data associated with a vtable pointer.
 // MSVC stores RTTICompleteObjectLocator at vtable[-1] (or vtable[-8] in bytes).
 // This allows us to recover the C++ class name without calling any game code.
-static std::string GetClassFromRTTI(uint64_t vtablePtr) {
+static std::string GetClassFromMSVC_RTTI(uint64_t vtablePtr, std::string* rawNameOut = nullptr) {
     if (!vtablePtr || !s_moduleBase) return "";
 
     // MSVC RTTI: vtable[-1] = RTTICompleteObjectLocator*
@@ -1046,6 +1046,7 @@ static std::string GetClassFromRTTI(uint64_t vtablePtr) {
     Zoltraak::ReadSafe(typeDesc + 0x10, decorated, sizeof(decorated) - 1);
 
     std::string raw(decorated);
+    if (rawNameOut) *rawNameOut = raw;
     if (raw.size() < 7) return ""; // Minimum: ".?AVX@@"
 
     // Parse MSVC decorated name: ".?AV<class>@@" or ".?AV<class>@<namespace>@@"
@@ -1075,56 +1076,101 @@ static std::string GetClassFromRTTI(uint64_t vtablePtr) {
     return "";
 }
 
+// Extract class name from Itanium ABI RTTI (GCC/Clang/MinGW on Windows).
+// Itanium ABI: vtable[-1] = std::type_info* which has:
+//   +0x00: void* __vptr (type_info vtable)
+//   +0x08: const char* __name (mangled name)
+// Name format: "N5Godot6Node2DE" or just "6Node2D" for non-namespaced
+static std::string GetClassFromItanium_RTTI(uint64_t vtablePtr, std::string* rawNameOut = nullptr) {
+    if (!vtablePtr) return "";
+
+    // Itanium: typeinfo ptr at vtable[-1] (i.e., vtable - 8 bytes)
+    uint64_t typeInfoPtr = Zoltraak::ReadSafe<uint64_t>(vtablePtr - 8, 0);
+    if (!typeInfoPtr || !Zoltraak::IsReadable(typeInfoPtr)) return "";
+
+    // Read the __name pointer (at +0x08)
+    uint64_t namePtr = Zoltraak::ReadSafe<uint64_t>(typeInfoPtr + 8, 0);
+    if (!namePtr || !Zoltraak::IsReadable(namePtr)) return "";
+
+    char mangledName[256] = {};
+    Zoltraak::ReadSafe(namePtr, mangledName, sizeof(mangledName) - 1);
+
+    std::string raw(mangledName);
+    if (rawNameOut) *rawNameOut = raw;
+    if (raw.empty()) return "";
+
+    // Try to demangle simple Itanium names:
+    // "6Node2D" → extract length-prefixed name
+    // "N5Godot6Node2DE" → nested name, extract last segment
+    std::string className;
+    size_t pos = 0;
+
+    if (raw[0] == 'N') {
+        // Nested name: skip 'N', read length-prefixed segments, last one before 'E'
+        pos = 1;
+        std::string last;
+        while (pos < raw.size() && raw[pos] != 'E') {
+            int len = 0;
+            while (pos < raw.size() && raw[pos] >= '0' && raw[pos] <= '9') {
+                len = len * 10 + (raw[pos] - '0');
+                pos++;
+            }
+            if (len <= 0 || pos + len > raw.size()) break;
+            last = raw.substr(pos, len);
+            pos += len;
+        }
+        className = last;
+    } else if (raw[0] >= '1' && raw[0] <= '9') {
+        // Simple name: length-prefixed
+        int len = 0;
+        while (pos < raw.size() && raw[pos] >= '0' && raw[pos] <= '9') {
+            len = len * 10 + (raw[pos] - '0');
+            pos++;
+        }
+        if (len > 0 && pos + len <= raw.size()) {
+            className = raw.substr(pos, len);
+        }
+    }
+
+    if (className.empty()) return "";
+
+    // Validate against ClassDB
+    if (s_classMap.count(className)) {
+        return className;
+    }
+    return "";
+}
+
+// Try both MSVC and Itanium RTTI
+static std::string GetClassFromRTTI(uint64_t vtablePtr) {
+    // Try MSVC first (most common on Windows)
+    std::string result = GetClassFromMSVC_RTTI(vtablePtr);
+    if (!result.empty()) return result;
+
+    // Fallback to Itanium ABI (MinGW/GCC/Clang builds)
+    return GetClassFromItanium_RTTI(vtablePtr);
+}
+
 std::string GetObjectClass(uint64_t objectAddr) {
     if (!objectAddr) return "";
     EnsureModuleInfo();
 
-    static std::atomic<int> s_diagCount{0};
-
     // Read vtable from object
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objectAddr, 0);
     if (!vtable || vtable < s_moduleBase || vtable >= s_moduleBase + s_moduleSize) {
-        if (s_diagCount.load() < 5 && vtable) {
-            s_diagCount++;
-            Solliter::Debug("CLSDB", "GetObjectClass: vtable %p out of module [%p..+%llX] for obj %p",
-                reinterpret_cast<void*>(vtable),
-                reinterpret_cast<void*>(s_moduleBase),
-                static_cast<unsigned long long>(s_moduleSize),
-                reinterpret_cast<void*>(objectAddr));
-        }
         return "";
     }
 
-    // Check vtable cache first
+    // Check vtable cache first (populated by ScanObjectVtables at init)
     auto it = s_vtableMap.find(vtable);
     if (it != s_vtableMap.end()) {
         return it->second;
     }
 
-    // Try MSVC RTTI to extract class name from vtable
+    // Cache miss — try RTTI (both MSVC and Itanium)
     std::string className = GetClassFromRTTI(vtable);
-    if (!className.empty()) {
-        s_vtableMap[vtable] = className;
-        return className;
-    }
-
-    // RTTI not available or class not in ClassDB — cache empty result
-    // to avoid repeated RTTI lookups for the same vtable
-    if (s_diagCount.load() < 5) {
-        s_diagCount++;
-        // Read RTTI decorated name for diagnostic
-        uint64_t locator = Zoltraak::ReadSafe<uint64_t>(vtable - 8, 0);
-        uint32_t sig = locator ? Zoltraak::ReadSafe<uint32_t>(locator, 0xFFFF) : 0xFFFF;
-        uint32_t rva = (locator && sig == 1) ? Zoltraak::ReadSafe<uint32_t>(locator + 0x0C, 0) : 0;
-        char deco[128] = {};
-        if (rva) Zoltraak::ReadSafe(s_moduleBase + rva + 0x10, deco, 127);
-        Solliter::Debug("CLSDB", "GetObjectClass: RTTI miss — vtable=%p sig=%u rva=0x%X deco='%s' classMap=%d obj=%p",
-            reinterpret_cast<void*>(vtable), sig, rva, deco,
-            static_cast<int>(s_classMap.size()),
-            reinterpret_cast<void*>(objectAddr));
-    }
-    s_vtableMap[vtable] = "";
-    return "";
+    s_vtableMap[vtable] = className;
+    return className;
 }
 
 void LogDiagnostics() {
@@ -1145,6 +1191,9 @@ void LogDiagnostics() {
             s_capacityIndex, s_numElements);
     }
     Solliter::Info("CLSDB", "Classes cached: %d", static_cast<int>(s_classMap.size()));
+    Solliter::Info("CLSDB", "Module range:   %p..+%llX",
+        reinterpret_cast<void*>(s_moduleBase),
+        static_cast<unsigned long long>(s_moduleSize));
 
     // Show first 20 class names with their parent
     int shown = 0;
@@ -1169,6 +1218,82 @@ void LogDiagnostics() {
     }
     Solliter::Info("CLSDB", "Known class check: %d/%d found",
         foundExpected, static_cast<int>(sizeof(EXPECTED) / sizeof(EXPECTED[0])));
+}
+
+// Proactive RTTI scan: scan a list of object addresses and try to identify their classes.
+// This builds the vtable→class cache and logs diagnostic info about RTTI availability.
+// Call this after ObjectDB init to pre-seed the vtable map.
+void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
+    EnsureModuleInfo();
+
+    Solliter::Info("CLSDB", "=== RTTI Vtable Scan ===");
+
+    int scanned = 0;
+    int identified = 0;
+    int msvcHits = 0;
+    int itaniumHits = 0;
+    int misses = 0;
+    int maxDetailLog = 10;
+    int detailLogged = 0;
+
+    std::unordered_map<uint64_t, bool> seenVtables;
+
+    for (uint64_t objAddr : objectAddrs) {
+        scanned++;
+
+        uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objAddr, 0);
+        if (!vtable) continue;
+
+        // Skip already-seen vtables
+        if (seenVtables.count(vtable)) continue;
+        seenVtables[vtable] = true;
+
+        // Check vtable range
+        bool inModule = (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize);
+
+        // Try MSVC RTTI
+        std::string msvcRaw;
+        std::string msvcResult = inModule ? GetClassFromMSVC_RTTI(vtable, &msvcRaw) : "";
+
+        // Try Itanium RTTI
+        std::string itaniumRaw;
+        std::string itaniumResult = inModule ? GetClassFromItanium_RTTI(vtable, &itaniumRaw) : "";
+
+        std::string finalClass = !msvcResult.empty() ? msvcResult :
+                                 !itaniumResult.empty() ? itaniumResult : "";
+
+        if (!finalClass.empty()) {
+            identified++;
+            if (!msvcResult.empty()) msvcHits++;
+            else itaniumHits++;
+            s_vtableMap[vtable] = finalClass;
+        } else {
+            misses++;
+            s_vtableMap[vtable] = "";
+        }
+
+        // Log details for first N unique vtables
+        if (detailLogged < maxDetailLog) {
+            detailLogged++;
+            uint64_t locPtr = inModule ? Zoltraak::ReadSafe<uint64_t>(vtable - 8, 0) : 0;
+            uint32_t sig = (locPtr && Zoltraak::IsReadable(locPtr)) ?
+                           Zoltraak::ReadSafe<uint32_t>(locPtr, 0xFFFF) : 0xFFFF;
+
+            Solliter::Info("CLSDB", "  vtable=%p obj=%p inMod=%d loc=%p sig=%u msvc='%s' ita='%s' -> %s",
+                reinterpret_cast<void*>(vtable),
+                reinterpret_cast<void*>(objAddr),
+                inModule ? 1 : 0,
+                reinterpret_cast<void*>(locPtr),
+                sig,
+                msvcRaw.empty() ? "(none)" : msvcRaw.c_str(),
+                itaniumRaw.empty() ? "(none)" : itaniumRaw.c_str(),
+                finalClass.empty() ? "(FAILED)" : finalClass.c_str());
+        }
+    }
+
+    Solliter::Info("CLSDB", "  Scanned %d objects, %d unique vtables, %d identified (MSVC=%d Itanium=%d), %d misses",
+        scanned, static_cast<int>(seenVtables.size()), identified, msvcHits, itaniumHits, misses);
+    Solliter::Info("CLSDB", "=== RTTI Vtable Scan Complete ===");
 }
 
 } // namespace Zolt::DiAgolze
