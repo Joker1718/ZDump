@@ -69,8 +69,8 @@ int Zolt_AutoStart() {
     Zolt::DiAgolze::LogDiagnostics();
     Zolt::Ausetiese::LogDiagnostics();
 
-    // TODO: Start Fern pipe server (Phase 4)
-    // Zolt::Fern::Start();
+    // Start Fern pipe server for UI communication
+    Zolt::Fern::Start();
 
     s_initialized = true;
 
@@ -152,6 +152,21 @@ const char* Zolt_GetClassName(uint64_t objectAddr) {
 
 uint64_t Zolt_GetRootNode() {
     return Zolt::Serie::GetRoot();
+}
+
+// ----- Phase 3: Pipe Server exports -----
+
+int Zolt_StartPipeServer() {
+    Zolt::Fern::Start();
+    return 0;
+}
+
+void Zolt_StopPipeServer() {
+    Zolt::Fern::Stop();
+}
+
+int Zolt_IsPipeConnected() {
+    return Zolt::Fern::IsConnected() ? 1 : 0;
 }
 
 } // extern "C"
