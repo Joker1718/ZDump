@@ -11,12 +11,14 @@
 
 #include "Solliter.h"
 #include "Grimoire.h"
+#include "Zoltraak.h"
 
 #include <ShlObj.h>       // SHGetKnownFolderPath
 #include <cstdio>
 #include <cstdarg>
 #include <chrono>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <filesystem>
@@ -358,6 +360,97 @@ void Summary(const char* fmt, ...) {
     va_start(args, fmt);
     FormatAndWrite("INFO", "SUMMARY", fmt, args);
     va_end(args);
+}
+
+// ============================================================
+// HexDump — dump memory block to log
+// ============================================================
+void HexDump(const char* cat, uint64_t baseAddr, size_t maxBytes) {
+    if (!baseAddr || maxBytes == 0) return;
+
+    constexpr size_t LINE_BYTES = 16;
+    uint8_t buf[LINE_BYTES];
+
+    for (size_t off = 0; off < maxBytes; off += LINE_BYTES) {
+        size_t chunk = (off + LINE_BYTES <= maxBytes) ? LINE_BYTES : (maxBytes - off);
+
+        // Read memory safely
+        bool ok = true;
+        for (size_t i = 0; i < chunk; ++i) {
+            buf[i] = Zoltraak::ReadSafe<uint8_t>(baseAddr + off + i, 0);
+            if (!Zoltraak::IsReadable(baseAddr + off + i)) { ok = false; break; }
+        }
+        if (!ok) {
+            Info(cat, "  +0x%04X: (unreadable)", static_cast<int>(off));
+            continue;
+        }
+
+        // Format hex part
+        char hex[64], ascii[20];
+        int hpos = 0;
+        for (size_t i = 0; i < LINE_BYTES; ++i) {
+            if (i == 8) hex[hpos++] = ' ';
+            if (i < chunk) {
+                hpos += snprintf(hex + hpos, sizeof(hex) - hpos, "%02X ", buf[i]);
+                ascii[i] = (buf[i] >= 0x20 && buf[i] < 0x7F) ? static_cast<char>(buf[i]) : '.';
+            } else {
+                hpos += snprintf(hex + hpos, sizeof(hex) - hpos, "   ");
+                ascii[i] = ' ';
+            }
+        }
+        ascii[LINE_BYTES] = '\0';
+
+        // Check if any 8-byte aligned value looks like a pointer
+        const char* annotation = "";
+        if (chunk >= 8) {
+            uint64_t val = 0;
+            memcpy(&val, buf, 8);
+            if (val > 0x10000 && Zoltraak::IsReadable(val))
+                annotation = " <- ptr";
+        }
+
+        Info(cat, "  +0x%04X: %s |%s|%s",
+            static_cast<int>(off), hex, ascii, annotation);
+    }
+}
+
+// ============================================================
+// Throttle — rate-limited logging
+// ============================================================
+static std::unordered_map<std::string, std::chrono::steady_clock::time_point> s_throttleMap;
+
+bool Throttle(const char* key, int intervalMs, const char* cat, const char* fmt, ...) {
+    auto now = std::chrono::steady_clock::now();
+
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_throttleMap.find(key);
+        if (it != s_throttleMap.end()) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - it->second).count();
+            if (elapsed < intervalMs) return false;
+        }
+        s_throttleMap[key] = now;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    FormatAndWrite("INFO", cat, fmt, args);
+    va_end(args);
+    return true;
+}
+
+// ============================================================
+// ScopedTimer destructor
+// ============================================================
+ScopedTimer::~ScopedTimer() {
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    if (elapsed >= 1000) {
+        Info(cat, "[TIMER] %s: %.1f ms", label, elapsed / 1000.0);
+    } else {
+        Info(cat, "[TIMER] %s: %lld us", label, static_cast<long long>(elapsed));
+    }
 }
 
 // Legacy API wrappers

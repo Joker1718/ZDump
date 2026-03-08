@@ -24,6 +24,9 @@ struct FieldEntry {
     std::string  name;
     std::string  className;  // owning class
     VariantValue value;
+    int          hint = 0;       // PropertyHint enum value
+    std::string  hintString;     // hint parameter string
+    uint32_t     usage = 0;      // PROPERTY_USAGE_* flags
 };
 
 // Read and decode a Variant at the given address
