@@ -461,3 +461,5 @@ nul
 # Test binary downloads
 test/godot/*.zip
 test/godot/Godot_v*.exe
+test/kill_*
+test/run_*
