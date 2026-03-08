@@ -7,7 +7,7 @@
 #   .\test_all_versions.ps1 -Only games      # Only real games
 
 param(
-    [int]$TimeoutSeconds = 15,
+    [int]$TimeoutSeconds = 20,
     [ValidateSet("all","editors","games")]
     [string]$Only = "all"
 )
@@ -34,10 +34,12 @@ $editors = @(
 )
 
 $games = @(
-    @{ Name="Brotato (3.7dev)";          Exe="D:\SteamLibrary\steamapps\common\Brotato\Brotato.exe";                       Args=$null; LogDir="Brotato";          ProxyDir="D:\SteamLibrary\steamapps\common\Brotato" },
-    @{ Name="20 Small Mazes (3.5.3)";    Exe="D:\SteamLibrary\steamapps\common\20 Small Mazes\20SM.exe";                   Args=$null; LogDir="20SM";             ProxyDir="D:\SteamLibrary\steamapps\common\20 Small Mazes" },
-    @{ Name="Magic Archery (4.2.2)";     Exe="D:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";           Args=$null; LogDir="Magic Archery";    ProxyDir="D:\SteamLibrary\steamapps\common\Magic Archery" },
-    @{ Name="One Potion Please (4.3)";   Exe="D:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";     Args=$null; LogDir="OnePotionPlease";  ProxyDir="D:\SteamLibrary\steamapps\common\One Potion Please" }
+    @{ Name="Brotato (3.7dev)";          Exe="D:\SteamLibrary\steamapps\common\Brotato\Brotato.exe";                         Args=$null; LogDir="Brotato";                   ProxyDir="D:\SteamLibrary\steamapps\common\Brotato" },
+    @{ Name="20 Small Mazes (3.5.3)";    Exe="D:\SteamLibrary\steamapps\common\20 Small Mazes\20SM.exe";                     Args=$null; LogDir="20SM";                      ProxyDir="D:\SteamLibrary\steamapps\common\20 Small Mazes" },
+    @{ Name="Magic Archery (4.2.2)";     Exe="D:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";             Args=$null; LogDir="Magic Archery";             ProxyDir="D:\SteamLibrary\steamapps\common\Magic Archery" },
+    @{ Name="One Potion Please (4.3)";   Exe="D:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="D:\SteamLibrary\steamapps\common\One Potion Please" },
+    @{ Name="Virtual Cottage";           Exe="D:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="D:\SteamLibrary\steamapps\common\Virtual Cottage" },
+    @{ Name="Upload Labs";               Exe="D:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="D:\SteamLibrary\steamapps\common\Upload Labs" }
 )
 
 # Select which targets to test
