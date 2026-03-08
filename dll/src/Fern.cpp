@@ -645,7 +645,7 @@ static json HandleWriteMem(int id, const json& req) {
 static json HandleListClasses(int id, const json& /*req*/) {
     json classes = json::array();
 
-    DiAgolze::EnumerateClasses([&](const std::string& name, uint64_t infoAddr) {
+    DiAgolze::EnumerateClasses([&](const std::string& name, uint64_t /*infoAddr*/) {
         auto info = DiAgolze::GetClassInfo(name.c_str());
 
         json cls;
@@ -669,7 +669,8 @@ static json HandleSearchProperties(int id, const json& req) {
 
     // Convert query to lowercase for case-insensitive search
     std::string queryLower = query;
-    std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(), ::tolower);
+    std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     json hits = json::array();
     int maxHits = 200;
@@ -682,7 +683,8 @@ static json HandleSearchProperties(int id, const json& req) {
             if (static_cast<int>(hits.size()) >= maxHits) return;
 
             std::string propLower = prop.name;
-            std::transform(propLower.begin(), propLower.end(), propLower.begin(), ::tolower);
+            std::transform(propLower.begin(), propLower.end(), propLower.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
             if (propLower.find(queryLower) != std::string::npos) {
                 json hit;
