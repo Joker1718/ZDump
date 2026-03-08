@@ -87,10 +87,12 @@ static std::string ProbeNodeName(uint64_t nodeAddr) {
 
 // Probe for the root Window node within SceneTree
 // SceneTree inherits Object → MainLoop → SceneTree, so the root pointer
-// can be at a large offset (0x100-0x600+) depending on version.
+// can be at a large offset (0x100-0xC00+) depending on version.
+// Godot 4.3+ has ProcessGroup, PagedAllocator, CallQueue, etc. before root.
 static uint64_t ProbeRootNode(uint64_t sceneTree) {
     if (!sceneTree) return 0;
     EnsureModuleInfo();
+    LOG_TIMED("STREE", "ProbeRootNode");
 
     // If we already know the offset, use it
     if (DynOff::STREE_ROOT_OFFSET >= 0) {
@@ -99,16 +101,22 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         if (IsValidObject(root)) return root;
     }
 
-    // Scan SceneTree memory for a pointer to an Object named "root"
-    Solliter::Debug("STREE", "Probing for root node in SceneTree at %p",
-        reinterpret_cast<void*>(sceneTree));
+    Solliter::Debug("STREE", "Probing for root node in SceneTree at %p (range 0x40-0x%X)",
+        reinterpret_cast<void*>(sceneTree), Grimoire::STREE_PROBE_MAX);
 
-    // Collect all Object pointers found — log first few for diagnostics
+    // Diagnostic hexdump: dump key memory regions of SceneTree
+    Solliter::Info("STREE", "SceneTree hexdump (first 0x80 bytes at %p):",
+        reinterpret_cast<void*>(sceneTree));
+    Solliter::HexDump("STREE", sceneTree, 0x80);
+    Solliter::Info("STREE", "SceneTree hexdump (0x700-0x900, likely root area):");
+    Solliter::HexDump("STREE", sceneTree + 0x700, 0x200);
+
+    // Collect all Object pointers found
     struct ObjCandidate { int offset; uint64_t addr; std::string name; };
     std::vector<ObjCandidate> candidates;
 
-    // Extended range: SceneTree is large (Object base + MainLoop + many SceneTree fields)
-    for (int off = 0x40; off <= 0x800; off += 8) {
+    // Extended range: SceneTree has large fields before root (ProcessGroup, CallQueue, etc.)
+    for (int off = 0x40; off <= Grimoire::STREE_PROBE_MAX; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(sceneTree + off, 0);
         if (!IsValidObject(candidate)) continue;
 
@@ -124,17 +132,18 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
             return candidate;
         }
 
-        if (candidates.size() < 10) {
+        if (candidates.size() < 25) {
             candidates.push_back({ off, candidate, name });
         }
     }
 
     // Log all Object candidates found for debugging
     if (!candidates.empty()) {
-        Solliter::Debug("STREE", "No 'root' name found. Object candidates in SceneTree:");
+        Solliter::Info("STREE", "No 'root' name found. %d Object candidates in SceneTree:",
+            static_cast<int>(candidates.size()));
         for (auto& c : candidates) {
             std::string cls = DiAgolze::GetObjectClass(c.addr);
-            Solliter::Debug("STREE", "  +0x%03X: %p name='%s' class='%s'",
+            Solliter::Info("STREE", "  +0x%04X: %p name='%s' class='%s'",
                 c.offset, reinterpret_cast<void*>(c.addr), c.name.c_str(), cls.c_str());
         }
 
@@ -157,7 +166,8 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         return candidates[0].addr;
     }
 
-    Solliter::Warn("STREE", "Could not find any Object pointers in SceneTree (probed 0x40-0x800)");
+    Solliter::Warn("STREE", "Could not find any Object pointers in SceneTree (probed 0x40-0x%X)",
+        Grimoire::STREE_PROBE_MAX);
     return 0;
 }
 

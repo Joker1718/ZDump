@@ -7,6 +7,7 @@
 // Ported from UE5CEDumper Logger with Zolt-Dump adaptations.
 
 #include <Windows.h>
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -36,6 +37,25 @@ void Debug(const char* cat, const char* fmt, ...);
 // Summary level - routed to init.log, no category tag
 void Summary(const char* fmt, ...);
 
+// Hex-dump a block of memory to the specified log category.
+// Reads from the process address space via Zoltraak::ReadSafe.
+// Formats as: "+0xNNNN: XX XX XX XX  XX XX XX XX  |........|"
+void HexDump(const char* cat, uint64_t baseAddr, size_t maxBytes = 256);
+
+// Log a message at most once every intervalMs milliseconds for a given key.
+// Returns true if the message was logged, false if throttled.
+bool Throttle(const char* key, int intervalMs, const char* cat, const char* fmt, ...);
+
+// RAII scoped timer — logs elapsed time on destruction.
+struct ScopedTimer {
+    const char* cat;
+    const char* label;
+    std::chrono::steady_clock::time_point start;
+    ScopedTimer(const char* c, const char* l)
+        : cat(c), label(l), start(std::chrono::steady_clock::now()) {}
+    ~ScopedTimer();
+};
+
 // Legacy API (backward compatible, delegates to new functions)
 void LogInit(const char* msg);
 void LogScan(const char* msg);
@@ -44,6 +64,10 @@ void LogPipe(const char* msg);
 void LogWalk(const char* msg);
 
 } // namespace Zolt::Solliter
+
+// Timing macro: creates a scoped timer that logs on scope exit
+#define LOG_TIMED(cat, label) \
+    Zolt::Solliter::ScopedTimer _logTimer_##__LINE__(cat, label)
 
 // ============================================================
 // Convenience macros (same pattern as UE5CEDumper)

@@ -315,7 +315,7 @@ public sealed class DumpService : IDumpService
                     Type = obj["type"]?.GetValue<string>() ?? "",
                     Offset = obj["offset"]?.GetValue<int>() ?? 0,
                     Size = obj["size"]?.GetValue<int>() ?? 0,
-                    Hint = obj["hint"]?.GetValue<string>() ?? "",
+                    Hint = obj["hint"]?.GetValue<int>() ?? 0,
                     HintString = obj["hint_string"]?.GetValue<string>() ?? "",
                     Usage = obj["usage"]?.GetValue<int>() ?? 0
                 });
@@ -419,6 +419,9 @@ public sealed class DumpService : IDumpService
             ElementType = obj["element_type"]?.GetValue<string>() ?? "",
             KeyType = obj["key_type"]?.GetValue<string>() ?? "",
             VariantType = obj["variant_type"]?.GetValue<int>() ?? 0,
+            Hint = obj["hint"]?.GetValue<int>() ?? 0,
+            HintString = obj["hint_string"]?.GetValue<string>() ?? "",
+            Usage = obj["usage"]?.GetValue<int>() ?? 0,
             EnumName = obj["enum_name"]?.GetValue<string>() ?? "",
             EnumValues = enumValues,
             SubFields = subFields

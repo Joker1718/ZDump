@@ -489,6 +489,36 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                     }
                 }
 
+                // Derive hint and usage offsets from the known PropertyInfo layout.
+                // PropertyInfo { type(8B), name(8B), class_name(8B), hint(8B), hint_string(8B), usage(8B) }
+                // So: hint = nameOff + 16, usage = nameOff + 32
+                if (s_elemNextOffset >= 0) {
+                    int hintOff  = nameOff + 16; // name(8B) + class_name(8B)
+                    int usageOff = nameOff + 32; // + hint(8B) + hint_string(8B)
+
+                    // Validate hint offset: PropertyHint is an int32 enum, values 0-52
+                    int32_t hintVal = Zoltraak::ReadSafe<int32_t>(first + hintOff, -1);
+                    if (hintVal >= 0 && hintVal <= 60) {
+                        s_propHintOffset = hintOff;
+                        Solliter::Info("CLSDB", "  PropertyInfo.hint offset = 0x%X (value=%d)",
+                            hintOff, hintVal);
+                    } else {
+                        Solliter::Warn("CLSDB", "  PropertyInfo.hint validation failed: value=%d at +0x%X",
+                            hintVal, hintOff);
+                    }
+
+                    // Validate usage offset: usage is a uint32 bitmask
+                    uint32_t usageVal = Zoltraak::ReadSafe<uint32_t>(first + usageOff, 0);
+                    if (usageVal > 0 && usageVal < 0x10000) {
+                        s_propUsageOffset = usageOff;
+                        Solliter::Info("CLSDB", "  PropertyInfo.usage offset = 0x%X (value=0x%X)",
+                            usageOff, usageVal);
+                    } else {
+                        Solliter::Warn("CLSDB", "  PropertyInfo.usage validation failed: value=0x%X at +0x%X",
+                            usageVal, usageOff);
+                    }
+                }
+
                 // If we found name but not next_ptr, still partial success
                 if (s_elemNextOffset < 0) {
                     Solliter::Warn("CLSDB", "  Found name offset but could not determine Element.next");
@@ -673,14 +703,16 @@ static void ProbeClassInfoLayout() {
     DynOff::CLASSINFO_PROPLIST_OFFSET  = s_propListOffset;
     DynOff::CLASSINFO_METHODMAP_OFFSET = s_methodMapOffset;
     DynOff::PROPINFO_NAME_OFFSET       = s_propNameOffset;
+    DynOff::PROPINFO_HINT_OFFSET       = s_propHintOffset;
+    DynOff::PROPINFO_USAGE_OFFSET      = s_propUsageOffset;
     DynOff::ELEMENT_NEXT_OFFSET        = s_elemNextOffset;
     DynOff::PROPINFO_TOTAL_SIZE        = s_propTotalSize;
 
     Solliter::Info("CLSDB", "=== ClassInfo probe complete ===");
     Solliter::Info("CLSDB", "  name=+0x%X inherits=+0x%X propList=+0x%X methodMap=+0x%X",
         s_nameOffset, s_inheritsOffset, s_propListOffset, s_methodMapOffset);
-    Solliter::Info("CLSDB", "  propNameOff=+0x%X elemNextOff=+0x%X propSize=%d",
-        s_propNameOffset, s_elemNextOffset, s_propTotalSize);
+    Solliter::Info("CLSDB", "  propNameOff=+0x%X hintOff=+0x%X usageOff=+0x%X elemNextOff=+0x%X propSize=%d",
+        s_propNameOffset, s_propHintOffset, s_propUsageOffset, s_elemNextOffset, s_propTotalSize);
 }
 
 void Init(uint64_t classDBAddr) {
@@ -829,7 +861,26 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
             pi.className = owningClass;
             pi.type      = propType;
             pi.offset    = -1; // Godot doesn't expose byte offsets via ClassDB
-            // TODO: Read hint and hint_string if offsets are probed
+
+            // Read hint (PropertyHint enum, int32)
+            if (s_propHintOffset >= 0) {
+                pi.hint = Zoltraak::ReadSafe<int32_t>(elem + s_propHintOffset, 0);
+            }
+
+            // Read hint_string (Godot String = CowData pointer)
+            if (s_propHintOffset >= 0) {
+                int hintStrOff = s_propHintOffset + 8;
+                uint64_t hintStrPtr = Zoltraak::ReadSafe<uint64_t>(elem + hintStrOff, 0);
+                if (hintStrPtr && Zoltraak::IsReadable(hintStrPtr)) {
+                    pi.hintString = Zoltraak::ReadGodotString(hintStrPtr);
+                }
+            }
+
+            // Read usage (uint32_t bitmask)
+            if (s_propUsageOffset >= 0) {
+                pi.usage = Zoltraak::ReadSafe<uint32_t>(elem + s_propUsageOffset, 0);
+            }
+
             result.push_back(std::move(pi));
         }
 

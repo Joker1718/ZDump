@@ -10,6 +10,7 @@
 #include "Flamme.h"
 #include "Fern.h"
 #include "Solliter.h"
+#include "Grimoire.h"
 #include "BuildInfo.h"
 
 #include <filesystem>
@@ -88,7 +89,11 @@ int Zolt_AutoStart() {
 
     // Run Frieren scan (discovers all Godot globals)
     Zolt::Frieren::EnginePointers ptrs;
-    bool success = Zolt::Frieren::FindAll(ptrs);
+    bool success;
+    {
+        LOG_TIMED("INIT", "Frieren::FindAll (AOB scan)");
+        success = Zolt::Frieren::FindAll(ptrs);
+    }
 
     // Store results for C ABI getters
     s_objectDBAddr  = ptrs.ObjectDB;
@@ -98,9 +103,18 @@ int Zolt_AutoStart() {
     s_godotVersion  = ptrs.godotVersion;
 
     // Initialize subsystems with discovered addresses
-    if (s_classDBAddr)   Zolt::DiAgolze::Init(s_classDBAddr);
-    if (s_objectDBAddr)  Zolt::Ausetiese::Init(s_objectDBAddr);
-    if (s_sceneTreeAddr) Zolt::Serie::Init(s_sceneTreeAddr);
+    if (s_classDBAddr) {
+        LOG_TIMED("INIT", "DiAgolze::Init (ClassDB)");
+        Zolt::DiAgolze::Init(s_classDBAddr);
+    }
+    if (s_objectDBAddr) {
+        LOG_TIMED("INIT", "Ausetiese::Init (ObjectDB)");
+        Zolt::Ausetiese::Init(s_objectDBAddr);
+    }
+    if (s_sceneTreeAddr) {
+        LOG_TIMED("INIT", "Serie::Init (SceneTree)");
+        Zolt::Serie::Init(s_sceneTreeAddr);
+    }
 
     // Log diagnostics for each subsystem
     Zolt::Flamme::LogDiagnostics();
@@ -109,6 +123,7 @@ int Zolt_AutoStart() {
 
     // Proactive RTTI scan: pre-seed the vtable→class cache by scanning ObjectDB
     if (s_objectDBAddr && s_classDBAddr) {
+        LOG_TIMED("INIT", "ScanObjectVtables (RTTI)");
         std::vector<uint64_t> sampleAddrs;
         sampleAddrs.reserve(200);
         Zolt::Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
@@ -131,12 +146,26 @@ int Zolt_AutoStart() {
 
     s_initialized = true;
 
-    Zolt::Solliter::Summary("Zolt_AutoStart %s (ObjDB=%p ClassDB=%p STree=%p Engine=%p)",
-        success ? "succeeded" : "partial",
+    // Condensed init summary
+    Zolt::Solliter::Summary("=============== Zolt-Dump %s Init Complete ===============", ZOLT_VERSION_STRING);
+    Zolt::Solliter::Summary("  Godot:     %s", s_godotVersion.empty() ? "(unknown)" : s_godotVersion.c_str());
+    Zolt::Solliter::Summary("  ObjectDB:  %p (%d objects, %d slots)",
         reinterpret_cast<void*>(s_objectDBAddr),
+        Zolt::Ausetiese::GetObjectCount(), Zolt::Ausetiese::GetSlotMax());
+    Zolt::Solliter::Summary("  ClassDB:   %p (%d classes)",
         reinterpret_cast<void*>(s_classDBAddr),
+        Zolt::DiAgolze::GetClassCount());
+    Zolt::Solliter::Summary("  SceneTree: %p (root=%s)",
         reinterpret_cast<void*>(s_sceneTreeAddr),
-        reinterpret_cast<void*>(s_engineAddr));
+        Zolt::Serie::GetRoot() ? "found" : "NULL");
+    Zolt::Solliter::Summary("  Engine:    %p", reinterpret_cast<void*>(s_engineAddr));
+    Zolt::Solliter::Summary("  PropInfo:  nameOff=+0x%X hintOff=+0x%X usageOff=+0x%X size=%d",
+        Zolt::DynOff::PROPINFO_NAME_OFFSET,
+        Zolt::DynOff::PROPINFO_HINT_OFFSET,
+        Zolt::DynOff::PROPINFO_USAGE_OFFSET,
+        Zolt::DynOff::PROPINFO_TOTAL_SIZE);
+    Zolt::Solliter::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
+    Zolt::Solliter::Summary("==========================================================");
 
     return success ? 0 : 1;
 }

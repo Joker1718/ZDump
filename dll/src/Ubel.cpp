@@ -444,13 +444,16 @@ void WalkInstance(uint64_t objAddr,
     // Step 3: Build FieldEntry for each property
     for (auto& prop : properties) {
         FieldEntry entry;
-        entry.name      = prop.name;
-        entry.className = prop.className;
+        entry.name       = prop.name;
+        entry.className  = prop.className;
+        entry.hint       = prop.hint;
+        entry.hintString = prop.hintString;
+        entry.usage      = prop.usage;
 
         // Set up VariantValue with type metadata but no live value
         entry.value.type     = prop.type;
         entry.value.typeName = VariantTypeName(prop.type);
-        entry.value.value    = "";      // No live value (would need getter call)
+        entry.value.value    = "";      // No live value (would need getter call via Heiter)
         entry.value.rawAddr  = 0;       // No address (offset unknown)
 
         callback(entry);

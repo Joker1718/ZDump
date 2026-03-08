@@ -22,7 +22,7 @@ public sealed class FieldInfoModel
     public string Type { get; init; } = "";
     public int Offset { get; init; }
     public int Size { get; init; }
-    public string Hint { get; init; } = "";
+    public int Hint { get; init; }
     public string HintString { get; init; } = "";
     public int Usage { get; init; }
 }

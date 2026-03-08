@@ -454,11 +454,13 @@ static json HandleWalkClass(int id, const json& req) {
     json properties = json::array();
     for (auto& prop : classInfo.properties) {
         json f;
-        f["name"]   = prop.name;
-        f["type"]   = VariantTypeName(prop.type);
-        f["offset"] = prop.offset;
-        f["size"]   = 0; // Not tracked in DiAgolze yet
-        if (!prop.hint.empty()) f["hint"] = prop.hint;
+        f["name"]        = prop.name;
+        f["type"]        = VariantTypeName(prop.type);
+        f["offset"]      = prop.offset;
+        f["size"]        = 0;
+        f["hint"]        = prop.hint;
+        f["hint_string"] = prop.hintString;
+        f["usage"]       = static_cast<int>(prop.usage);
         properties.push_back(std::move(f));
     }
 
@@ -597,6 +599,9 @@ static json HandleWalkInstance(int id, const json& req) {
         f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
         f["offset"]       = -1;  // Godot doesn't expose byte offsets via ClassDB
         f["size"]         = VariantTypeSize(entry.value.type);
+        f["hint"]         = entry.hint;
+        f["hint_string"]  = entry.hintString;
+        f["usage"]        = static_cast<int>(entry.usage);
         f["is_pointer"]   = IsPointerType(entry.value.type);
         f["is_struct"]    = IsStructType(entry.value.type);
         f["is_container"] = IsContainerType(entry.value.type);

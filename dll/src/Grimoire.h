@@ -43,6 +43,9 @@ namespace Grimoire {
 
     // ----- Pipe constants -----
     constexpr int            PIPE_BUF_SIZE   = 65536;                // 64 KB pipe buffer
+
+    // ----- SceneTree probe constants -----
+    constexpr int            STREE_PROBE_MAX = 0x2000;               // Max offset to scan for root Window*
 }
 
 // ============================================================

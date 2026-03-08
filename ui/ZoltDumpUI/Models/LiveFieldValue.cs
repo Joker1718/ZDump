@@ -30,6 +30,11 @@ public sealed class LiveFieldValue
     // Variant info
     public int VariantType { get; init; }
 
+    // PropertyInfo metadata
+    public int Hint { get; init; }
+    public string HintString { get; init; } = "";
+    public int Usage { get; init; }
+
     // Enum info
     public string EnumName { get; init; } = "";
     public List<string> EnumValues { get; init; } = [];

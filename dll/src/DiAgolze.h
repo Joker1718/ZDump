@@ -17,8 +17,10 @@ struct PropertyInfo {
     std::string name;
     std::string className;   // owning class
     int         type;        // Variant::Type
-    int         offset;      // memory offset within instance
-    std::string hint;        // property hint string
+    int         offset;      // memory offset within instance (-1: Godot has no byte offsets)
+    int         hint = 0;    // PropertyHint enum value
+    std::string hintString;  // hint parameter string (e.g., "0,100,1" for Range)
+    uint32_t    usage = 0;   // PROPERTY_USAGE_* flags
 };
 
 // Method descriptor
