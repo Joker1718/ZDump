@@ -1,10 +1,14 @@
-// Eisen - Iron Warrior (ProxyVersion)
-// version.dll forwarding layer for proxy DLL deployment.
+// Eisen — 艾乍 (Iron Warrior — Proxy DLL Forwarding)
+// Common proxy infrastructure + target-specific forwarding.
 // Only compiled when ZOLT_PROXY_BUILD is defined.
 //
-// Loads the real version.dll from System32 and forwards all 17 exports.
-// Internal functions use a Proxy_ prefix; ProxyVersion.def maps them
-// to the real export names (GetFileVersionInfoA, etc.).
+// Supports multiple proxy targets:
+//   ZOLT_PROXY_WINMM   — winmm.dll proxy (for games importing WINMM)
+//   default             — version.dll proxy (for games importing VERSION)
+//
+// The real system DLL is loaded lazily on first forwarded call.
+// Internal functions use a Proxy_ prefix; the DEF file maps them
+// to the real export names to avoid compile-time conflicts.
 
 #ifdef ZOLT_PROXY_BUILD
 
@@ -14,56 +18,69 @@
 
 namespace Zolt::Eisen {
 
-// Real version.dll handle - loaded on first call
-static HMODULE g_realVersion = nullptr;
+// ============================================================
+// Common proxy infrastructure
+// ============================================================
 
-static HMODULE LoadRealVersion()
+// Real system DLL handle — loaded on first forwarded call
+static HMODULE g_realDll = nullptr;
+
+// Name of the real system DLL to load from System32
+#if defined(ZOLT_PROXY_WINMM)
+static const wchar_t* const kRealDllName = L"winmm.dll";
+static const char*    const kRealDllTag  = "winmm.dll";
+#else // default: version.dll
+static const wchar_t* const kRealDllName = L"version.dll";
+static const char*    const kRealDllTag  = "version.dll";
+#endif
+
+static HMODULE LoadRealDll()
 {
-    if (g_realVersion) return g_realVersion;
+    if (g_realDll) return g_realDll;
 
-    // Build path to the real version.dll in System32
+    // Build full path to the real DLL in System32
     wchar_t systemDir[MAX_PATH] = {};
     GetSystemDirectoryW(systemDir, MAX_PATH);
 
     wchar_t realPath[MAX_PATH] = {};
-    wsprintfW(realPath, L"%s\\version.dll", systemDir);
+    wsprintfW(realPath, L"%s\\%s", systemDir, kRealDllName);
 
-    g_realVersion = LoadLibraryW(realPath);
-    if (!g_realVersion) {
-        Solliter::LogInit("Eisen: Failed to load real version.dll");
+    g_realDll = LoadLibraryW(realPath);
+    if (!g_realDll) {
+        Solliter::Info("INIT", "Eisen: Failed to load real %s", kRealDllTag);
     } else {
-        Solliter::LogInit("Eisen: Loaded real version.dll from System32");
+        Solliter::Info("INIT", "Eisen: Loaded real %s from System32", kRealDllTag);
     }
-    return g_realVersion;
+    return g_realDll;
 }
 
-// Helper: resolve a function from the real version.dll
-static FARPROC RealProc(const char* name)
+FARPROC RealProc(const char* name)
 {
-    HMODULE real = LoadRealVersion();
+    HMODULE real = LoadRealDll();
     return real ? GetProcAddress(real, name) : nullptr;
 }
 
 bool InitProxy() {
-    return LoadRealVersion() != nullptr;
+    return LoadRealDll() != nullptr;
 }
 
 void ShutdownProxy() {
-    if (g_realVersion) {
-        FreeLibrary(g_realVersion);
-        g_realVersion = nullptr;
+    if (g_realDll) {
+        FreeLibrary(g_realDll);
+        g_realDll = nullptr;
     }
 }
 
 } // namespace Zolt::Eisen
 
+using namespace Zolt::Eisen;
+
 // ============================================================
-// Forwarded exports (17 total)
-// Internal names use Proxy_ prefix; ProxyVersion.def maps them
-// to the real export names (GetFileVersionInfoA, etc.).
+// version.dll forwarding exports (17 total)
+// Only compiled when building as version.dll proxy.
 // ============================================================
 
-using namespace Zolt::Eisen;
+#if !defined(ZOLT_PROXY_WINMM)
 
 // --- GetFileVersionInfo family ---
 
@@ -218,5 +235,161 @@ extern "C" DWORD WINAPI Proxy_VerLanguageNameW(DWORD wLang, LPWSTR szLang, DWORD
     static auto fn = reinterpret_cast<Fn>(RealProc("VerLanguageNameW"));
     return fn ? fn(wLang, szLang, cchLang) : 0;
 }
+
+#endif // !ZOLT_PROXY_WINMM
+
+// ============================================================
+// winmm.dll forwarding exports
+// Only compiled when building as winmm.dll proxy.
+// Covers the most commonly imported WINMM functions.
+// ============================================================
+
+#if defined(ZOLT_PROXY_WINMM)
+
+// MMRESULT is UINT
+typedef UINT MMRESULT;
+
+// --- Timer functions ---
+
+extern "C" MMRESULT WINAPI Proxy_timeBeginPeriod(UINT uPeriod)
+{
+    using Fn = MMRESULT(WINAPI*)(UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("timeBeginPeriod"));
+    return fn ? fn(uPeriod) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_timeEndPeriod(UINT uPeriod)
+{
+    using Fn = MMRESULT(WINAPI*)(UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("timeEndPeriod"));
+    return fn ? fn(uPeriod) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_timeGetDevCaps(void* ptc, UINT cbtc)
+{
+    using Fn = MMRESULT(WINAPI*)(void*, UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("timeGetDevCaps"));
+    return fn ? fn(ptc, cbtc) : 0;
+}
+
+extern "C" DWORD WINAPI Proxy_timeGetTime()
+{
+    using Fn = DWORD(WINAPI*)();
+    static auto fn = reinterpret_cast<Fn>(RealProc("timeGetTime"));
+    return fn ? fn() : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_timeGetSystemTime(void* pmmt, UINT cbmmt)
+{
+    using Fn = MMRESULT(WINAPI*)(void*, UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("timeGetSystemTime"));
+    return fn ? fn(pmmt, cbmmt) : 0;
+}
+
+// --- MIDI In functions ---
+
+extern "C" MMRESULT WINAPI Proxy_midiInClose(HANDLE hMidiIn)
+{
+    using Fn = MMRESULT(WINAPI*)(HANDLE);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInClose"));
+    return fn ? fn(hMidiIn) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInGetDevCapsA(
+    UINT_PTR uDeviceID, void* pmic, UINT cbmic)
+{
+    using Fn = MMRESULT(WINAPI*)(UINT_PTR, void*, UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInGetDevCapsA"));
+    return fn ? fn(uDeviceID, pmic, cbmic) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInGetDevCapsW(
+    UINT_PTR uDeviceID, void* pmic, UINT cbmic)
+{
+    using Fn = MMRESULT(WINAPI*)(UINT_PTR, void*, UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInGetDevCapsW"));
+    return fn ? fn(uDeviceID, pmic, cbmic) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInGetErrorTextA(
+    MMRESULT mmrError, LPSTR pszText, UINT cchText)
+{
+    using Fn = MMRESULT(WINAPI*)(MMRESULT, LPSTR, UINT);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInGetErrorTextA"));
+    return fn ? fn(mmrError, pszText, cchText) : 0;
+}
+
+extern "C" UINT WINAPI Proxy_midiInGetNumDevs()
+{
+    using Fn = UINT(WINAPI*)();
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInGetNumDevs"));
+    return fn ? fn() : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInOpen(
+    void* phMidiIn, UINT uDeviceID, DWORD_PTR dwCallback,
+    DWORD_PTR dwInstance, DWORD fdwOpen)
+{
+    using Fn = MMRESULT(WINAPI*)(void*, UINT, DWORD_PTR, DWORD_PTR, DWORD);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInOpen"));
+    return fn ? fn(phMidiIn, uDeviceID, dwCallback, dwInstance, fdwOpen) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInStart(HANDLE hMidiIn)
+{
+    using Fn = MMRESULT(WINAPI*)(HANDLE);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInStart"));
+    return fn ? fn(hMidiIn) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_midiInStop(HANDLE hMidiIn)
+{
+    using Fn = MMRESULT(WINAPI*)(HANDLE);
+    static auto fn = reinterpret_cast<Fn>(RealProc("midiInStop"));
+    return fn ? fn(hMidiIn) : 0;
+}
+
+// --- Wave Out functions ---
+
+extern "C" UINT WINAPI Proxy_waveOutGetNumDevs()
+{
+    using Fn = UINT(WINAPI*)();
+    static auto fn = reinterpret_cast<Fn>(RealProc("waveOutGetNumDevs"));
+    return fn ? fn() : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_waveOutOpen(
+    void* phwo, UINT uDeviceID, void* pwfx,
+    DWORD_PTR dwCallback, DWORD_PTR dwInstance, DWORD fdwOpen)
+{
+    using Fn = MMRESULT(WINAPI*)(void*, UINT, void*, DWORD_PTR, DWORD_PTR, DWORD);
+    static auto fn = reinterpret_cast<Fn>(RealProc("waveOutOpen"));
+    return fn ? fn(phwo, uDeviceID, pwfx, dwCallback, dwInstance, fdwOpen) : 0;
+}
+
+extern "C" MMRESULT WINAPI Proxy_waveOutClose(HANDLE hwo)
+{
+    using Fn = MMRESULT(WINAPI*)(HANDLE);
+    static auto fn = reinterpret_cast<Fn>(RealProc("waveOutClose"));
+    return fn ? fn(hwo) : 0;
+}
+
+// --- PlaySound ---
+
+extern "C" BOOL WINAPI Proxy_PlaySoundA(LPCSTR pszSound, HMODULE hmod, DWORD fdwSound)
+{
+    using Fn = BOOL(WINAPI*)(LPCSTR, HMODULE, DWORD);
+    static auto fn = reinterpret_cast<Fn>(RealProc("PlaySoundA"));
+    return fn ? fn(pszSound, hmod, fdwSound) : FALSE;
+}
+
+extern "C" BOOL WINAPI Proxy_PlaySoundW(LPCWSTR pszSound, HMODULE hmod, DWORD fdwSound)
+{
+    using Fn = BOOL(WINAPI*)(LPCWSTR, HMODULE, DWORD);
+    static auto fn = reinterpret_cast<Fn>(RealProc("PlaySoundW"));
+    return fn ? fn(pszSound, hmod, fdwSound) : FALSE;
+}
+
+#endif // ZOLT_PROXY_WINMM
 
 #endif // ZOLT_PROXY_BUILD

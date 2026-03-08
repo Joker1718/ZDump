@@ -55,6 +55,63 @@ static bool ParsePattern(const char* pattern, std::vector<uint8_t>& bytes, std::
     return !bytes.empty();
 }
 
+// ============================================================
+// PE section parsing helpers
+// ============================================================
+
+struct SectionCacheEntry {
+    SectionInfo text, data, bss, rdata;
+    bool initialized = false;
+};
+
+static SectionCacheEntry s_sectionCache;
+
+static void InitSectionCache() {
+    if (s_sectionCache.initialized) return;
+
+    uint64_t base = GetModuleBase();
+    if (!base) return;
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        char name[9] = {};
+        memcpy(name, section[i].Name, 8);
+
+        SectionInfo info;
+        info.baseAddr = base + section[i].VirtualAddress;
+        info.size = section[i].Misc.VirtualSize;
+
+        if (strcmp(name, ".text") == 0) s_sectionCache.text = info;
+        else if (strcmp(name, ".data") == 0) s_sectionCache.data = info;
+        else if (strcmp(name, ".bss") == 0) s_sectionCache.bss = info;
+        else if (strcmp(name, ".rdata") == 0) s_sectionCache.rdata = info;
+    }
+    s_sectionCache.initialized = true;
+}
+
+SectionInfo GetTextSection() { InitSectionCache(); return s_sectionCache.text; }
+SectionInfo GetDataSection() { InitSectionCache(); return s_sectionCache.data; }
+SectionInfo GetBssSection() { InitSectionCache(); return s_sectionCache.bss; }
+SectionInfo GetRdataSection() { InitSectionCache(); return s_sectionCache.rdata; }
+
+bool IsInWritableSection(uint64_t addr) {
+    InitSectionCache();
+    auto& d = s_sectionCache.data;
+    auto& b = s_sectionCache.bss;
+    return (d.size > 0 && addr >= d.baseAddr && addr < d.baseAddr + d.size) ||
+           (b.size > 0 && addr >= b.baseAddr && addr < b.baseAddr + b.size);
+}
+
+// ============================================================
+// AOB scanning
+// ============================================================
+
 uint64_t AOBScan(const char* pattern) {
     uint64_t base = GetModuleBase();
     uint64_t size = GetModuleSize();
@@ -84,6 +141,35 @@ uint64_t AOBScanRange(const char* pattern, uint64_t start, uint64_t size) {
         }
     }
     return 0;
+}
+
+std::vector<uint64_t> AOBScanAll(const char* pattern, size_t maxResults) {
+    std::vector<uint64_t> results;
+
+    std::vector<uint8_t> patBytes;
+    std::vector<bool> patMask;
+    if (!ParsePattern(pattern, patBytes, patMask)) return results;
+
+    uint64_t base = GetModuleBase();
+    uint64_t size = GetModuleSize();
+    if (!base || !size) return results;
+
+    const uint8_t* mem = reinterpret_cast<const uint8_t*>(base);
+    const size_t patLen = patBytes.size();
+
+    for (size_t i = 0; i <= size - patLen && results.size() < maxResults; ++i) {
+        bool found = true;
+        for (size_t j = 0; j < patLen; ++j) {
+            if (patMask[j] && mem[i + j] != patBytes[j]) {
+                found = false;
+                break;
+            }
+        }
+        if (found) {
+            results.push_back(base + i);
+        }
+    }
+    return results;
 }
 
 uint64_t ResolveRIP(uint64_t matchAddr, int instrOffset, int opcodeLen, int totalLen) {
