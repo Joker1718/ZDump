@@ -75,14 +75,24 @@ namespace DynOff {
     inline int VARIANT_TYPE        = 0x00;  // Variant::Type (4 bytes)
     inline int VARIANT_DATA        = 0x08;  // Union data start (after padding)
 
-    // ----- StringName layout -----
-    inline int STRINGNAME_DATA_PTR = 0x00;  // _Data* pointer
-    inline int SDATA_NAME          = -1;    // String name within _Data (probe required)
-    inline int SDATA_HASH          = -1;    // uint32_t hash within _Data
+    // ----- StringName _Data layout (stable across Godot 4.0-4.4) -----
+    // _Data { SafeRefCount(4B), SafeNumeric(4B), const char* cname(8B), String name(8B), int idx(4B), uint32_t hash(4B), ... }
+    inline int STRINGNAME_DATA_PTR = 0x00;  // _Data* pointer within StringName
+    inline int SDATA_CNAME         = 0x08;  // const char* cname within _Data (raw ASCII, .rdata pointer)
+    inline int SDATA_NAME          = 0x10;  // String name within _Data (CowData<char32_t>._ptr, heap pointer)
+    inline int SDATA_HASH          = 0x1C;  // uint32_t hash within _Data
+
+    // ----- ClassDB HashMap layout -----
+    inline int CLASSDB_ALLOC_OFFSET = 0x28; // PagedAllocator size before HashMap core fields (probed by Frieren)
+
+    // ----- SceneTree layout -----
+    inline int STREE_ROOT_OFFSET   = -1;    // Window* root within SceneTree (probe required)
+    inline int STREE_SCENE_OFFSET  = -1;    // Node* current_scene within SceneTree (probe required)
 
     // ----- Validation state -----
     inline std::atomic<bool> bOffsetsValidated{false};
     inline std::atomic<bool> bNodeOffsetsValidated{false};
+    inline std::atomic<bool> bStringNameProbed{false};
 }
 
 } // namespace Zolt

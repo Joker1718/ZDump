@@ -15,13 +15,16 @@
 #include "Zoltraak.h"
 #include "Solliter.h"
 #include "Himmel.h"
+#include "Flamme.h"
 #include "Grimoire.h"
 #include "GodotSig.h"
 
 #include <Windows.h>
 #include <Psapi.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -313,6 +316,8 @@ static bool ValidateClassDB(uintptr_t addr) {
 
     for (int i = 0; ALLOC_SIZES[i] >= 0; ++i) {
         if (ValidateClassDBAtLayout(addr, ALLOC_SIZES[i])) {
+            // Store the working allocator offset for DiAgolze to use
+            DynOff::CLASSDB_ALLOC_OFFSET = ALLOC_SIZES[i];
             return true;
         }
     }
@@ -327,6 +332,51 @@ static bool ValidateClassDB(uintptr_t addr) {
 // Looking for the distinct pattern of 4 consecutive readable pointers
 // followed by a small capacity_index and a large num_elements.
 // ClassDB::classes is the largest HashMap in Godot (~800-1500 elements).
+// Check if a resolved name looks like a Godot CamelCase class name.
+// Class names: start with uppercase, contain lowercase letters (e.g. "Node2D", "Sprite2D").
+// Reject ALL_CAPS_UNDERSCORED names (e.g. "SIDE_LEFT", "VERTICAL_ALIGNMENT_TOP").
+static bool LooksLikeClassName(const std::string& s) {
+    if (s.size() < 2 || s.size() > 128) return false;
+    if (s[0] < 'A' || s[0] > 'Z') return false;  // Must start uppercase
+
+    bool hasLower = false;
+    for (char c : s) {
+        if (c >= 'a' && c <= 'z') hasLower = true;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_')) return false;
+    }
+    return hasLower;  // Must have at least one lowercase (CamelCase, not ALL_CAPS)
+}
+
+// Sample StringName keys from a HashMap's linked list.
+// Returns count of keys that look like CamelCase Godot class names.
+static int SampleHashMapClassNames(uint64_t headElem, int maxSamples) {
+    int classLike = 0;
+    uint64_t current = headElem;
+    int count = 0;
+
+    while (current && count < maxSamples) {
+        if (!Zoltraak::IsReadable(current)) break;
+
+        // HashMapElement: next(8B) + prev(8B) + KeyValue { StringName key(8B), ... }
+        uint64_t keyAddr = current + 0x10;
+        uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(keyAddr, 0);
+
+        if (dataPtr && Zoltraak::IsReadable(dataPtr)) {
+            std::string name = Flamme::ResolveAt(dataPtr);
+            if (LooksLikeClassName(name)) {
+                classLike++;
+            }
+        }
+
+        uint64_t next = Zoltraak::ReadSafe<uint64_t>(current, 0);
+        if (next == current) break;
+        current = next;
+        count++;
+    }
+    return classLike;
+}
+
 static uintptr_t ScanBssForClassDB() {
     auto bss = Zoltraak::GetBssSection();
     auto data = Zoltraak::GetDataSection();
@@ -339,79 +389,84 @@ static uintptr_t ScanBssForClassDB() {
     Solliter::Info("SCAN:ClsDB", "Brute-force scanning .bss (0x%llX bytes) + .data (0x%llX bytes) for ClassDB HashMap",
         bss.size, data.size);
 
-    uintptr_t bestAddr = 0;
-    uint32_t bestElements = 0;
-    int candidates = 0;
+    // Collect all valid HashMap candidates
+    struct Candidate {
+        uintptr_t addr;
+        uint32_t  numElems;
+        uint64_t  headElem;
+    };
+    std::vector<Candidate> candidateList;
 
     // Scan for the HashMap internal pattern:
     //   [ptr][ptr][ptr][ptr][u32 capIdx][u32 numElems]
     // This is the latter half of HashMap (after PagedAllocator).
-    // We find this pattern and then report the address MINUS the allocator size
-    // so callers can access the full struct.
     auto scanSection = [&](uint64_t base, uint64_t size) {
-        // We need at least 0x28 bytes (4 ptrs + 2 u32)
         if (size < 0x28) return;
 
         for (uint64_t offset = 0; offset + 0x28 <= size; offset += 8) {
             uintptr_t probeAddr = static_cast<uintptr_t>(base + offset);
 
-            // Read the 4 pointers
             uint64_t elements  = Zoltraak::ReadSafe<uint64_t>(probeAddr, 0);
             uint64_t hashes    = Zoltraak::ReadSafe<uint64_t>(probeAddr + 0x08, 0);
             uint64_t headElem  = Zoltraak::ReadSafe<uint64_t>(probeAddr + 0x10, 0);
             uint64_t tailElem  = Zoltraak::ReadSafe<uint64_t>(probeAddr + 0x18, 0);
 
-            // Quick filter: all 4 must be non-null
             if (!elements || !hashes || !headElem || !tailElem) continue;
 
-            // Read capacity_index and num_elements (at +0x20 and +0x24)
             uint32_t capIndex  = Zoltraak::ReadSafe<uint32_t>(probeAddr + 0x20, 0xFFFFFFFF);
             uint32_t numElems  = Zoltraak::ReadSafe<uint32_t>(probeAddr + 0x24, 0);
 
-            // capacity_index must be small (0-25, index into primes table)
             if (capIndex > 25) continue;
-
-            // num_elements must be large for ClassDB
             if (numElems < 100 || numElems > 10000) continue;
 
-            // Verify capacity from primes table
             uint32_t actualCap = HASH_TABLE_PRIMES[capIndex];
             if (actualCap == 0 || numElems > actualCap) continue;
 
-            // Verify pointers are readable
             if (!Zoltraak::IsReadable(elements) || !Zoltraak::IsReadable(hashes)) continue;
             if (!Zoltraak::IsReadable(headElem) || !Zoltraak::IsReadable(tailElem)) continue;
 
-            candidates++;
             Solliter::Debug("SCAN:ClsDB", "HashMap at %p: capIdx=%u cap=%u num=%u elements=%p hashes=%p",
                 reinterpret_cast<void*>(probeAddr), capIndex, actualCap, numElems,
                 reinterpret_cast<void*>(elements), reinterpret_cast<void*>(hashes));
 
-            if (numElems > bestElements) {
-                bestElements = numElems;
-                // Store the address of the elements pointer (start of the
-                // HashMap core fields, after the PagedAllocator).
-                // The caller (ClassDB users) will need to add the allocator
-                // offset, but we store the full struct address.
-                // To find the struct start, subtract the allocator size.
-                // However, we don't know the exact allocator size, so we
-                // store the probe address and let callers figure out the layout.
-                bestAddr = probeAddr;
-            }
+            candidateList.push_back({ probeAddr, numElems, headElem });
         }
     };
 
     if (bss.size > 0) scanSection(bss.baseAddr, bss.size);
     if (data.size > 0) scanSection(data.baseAddr, data.size);
 
-    if (bestAddr) {
-        Solliter::Info("SCAN:ClsDB", "Brute-force found ClassDB at %p with %u elements (%d candidates total)",
-            reinterpret_cast<void*>(bestAddr), bestElements, candidates);
-    } else {
-        Solliter::Warn("SCAN:ClsDB", "Brute-force scan found no valid HashMap (%d candidates checked)",
-            candidates);
+    if (candidateList.empty()) {
+        Solliter::Warn("SCAN:ClsDB", "Brute-force scan found no valid HashMap candidates");
+        return 0;
     }
-    return bestAddr;
+
+    // Sort candidates by element count descending
+    std::sort(candidateList.begin(), candidateList.end(),
+        [](const Candidate& a, const Candidate& b) { return a.numElems > b.numElems; });
+
+    // Try each candidate: sample StringName keys and check for CamelCase class names.
+    // ClassDB keys are CamelCase (Object, Node2D, Sprite2D), not ALL_CAPS enums.
+    for (auto& c : candidateList) {
+        int classLike = SampleHashMapClassNames(c.headElem, 10);
+        Solliter::Debug("SCAN:ClsDB", "  Candidate %p (%u elems): %d/10 CamelCase class names",
+            reinterpret_cast<void*>(c.addr), c.numElems, classLike);
+
+        if (classLike >= 5) {
+            Solliter::Info("SCAN:ClsDB", "Brute-force found ClassDB at %p with %u elements (%d/%d candidates, %d/10 class names)",
+                reinterpret_cast<void*>(c.addr), c.numElems,
+                static_cast<int>(&c - &candidateList[0]) + 1,
+                static_cast<int>(candidateList.size()), classLike);
+            return c.addr;
+        }
+    }
+
+    // Fallback: pick the largest HashMap (no class name validation passed)
+    auto& best = candidateList[0];
+    Solliter::Warn("SCAN:ClsDB", "No candidate passed class name validation, using largest: %p (%u elements, %d candidates)",
+        reinterpret_cast<void*>(best.addr), best.numElems,
+        static_cast<int>(candidateList.size()));
+    return best.addr;
 }
 
 // Brute-force .bss/.data scan for ObjectDB object_slots pointer.
@@ -966,6 +1021,9 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         if (out.ClassDB) {
             out.classDBPatternId = "BSS_SCAN";
             out.classDBMethod = "bss_scan";
+            // Brute-force returns the address of core HashMap fields directly
+            // (without PagedAllocator prefix), so set alloc offset to 0
+            DynOff::CLASSDB_ALLOC_OFFSET = 0;
         }
     }
 
@@ -1093,6 +1151,9 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
             }
         }
     }
+
+    // Cache results early so ValidateAndFixOffsets can access them
+    s_cachedPointers = out;
 
     // Phase 7: Validate and fix offsets
     if (progress) progress(7, "Validating offsets...");
@@ -1240,16 +1301,26 @@ bool ValidateAndFixOffsets() {
         }
     }
 
-    // Step 2: Probe StringName layout
-    // We'll validate StringName resolution in Flamme module (Phase 2)
-    // For now, set reasonable defaults
-    if (DynOff::SDATA_NAME == -1) {
-        // Common layout: _Data has refcount at +0, hash at +4, String name at +8 or +0x10
-        // This will be refined when Flamme is implemented
-        DynOff::SDATA_NAME = 0x08;
-        DynOff::SDATA_HASH = 0x04;
-        Solliter::Info("OFFS", "StringName defaults: SDATA_NAME=0x%X, SDATA_HASH=0x%X",
-            DynOff::SDATA_NAME, DynOff::SDATA_HASH);
+    // Step 2: Probe StringName layout via Flamme
+    // Get a sample _Data* from ClassDB's head element to auto-detect SDATA_NAME offset
+    if (s_cachedPointers.ClassDB && !DynOff::bStringNameProbed.load(std::memory_order_acquire)) {
+        int allocOff = DynOff::CLASSDB_ALLOC_OFFSET;
+        uint64_t headElem = Zoltraak::ReadSafe<uint64_t>(s_cachedPointers.ClassDB + allocOff + 0x10, 0);
+        if (headElem && Zoltraak::IsReadable(headElem)) {
+            // HashMapElement layout: next(8B) + prev(8B) + KeyValue at +0x10
+            // Key is StringName (8B = _Data* pointer)
+            uint64_t sampleDataPtr = Zoltraak::ReadSafe<uint64_t>(headElem + 0x10, 0);
+            if (sampleDataPtr && Zoltraak::IsReadable(sampleDataPtr)) {
+                Flamme::ProbeLayout(sampleDataPtr);
+                Solliter::Info("OFFS", "StringName probed via ClassDB: SDATA_NAME=0x%X",
+                    DynOff::SDATA_NAME);
+            } else {
+                Solliter::Warn("OFFS", "ClassDB head element has no valid StringName _Data*");
+            }
+        } else {
+            Solliter::Warn("OFFS", "ClassDB head element not readable, using default SDATA_NAME=0x%X",
+                DynOff::SDATA_NAME);
+        }
     }
 
     // Step 3: Node layout probing

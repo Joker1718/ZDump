@@ -73,6 +73,11 @@ bool IsReadable(uint64_t addr);
 std::string ReadString(uint64_t addr, size_t maxLen = 256);
 
 // Read a UTF-32 Godot String from its CowData pointer
+// Handles both old (uint32_t size at -4) and new (uint64_t size at -0x10) CowData layouts.
 std::string ReadGodotString(uint64_t cowDataPtr);
+
+// Read a null-terminated char32_t string from memory (no CowData header)
+// Used for StringName::_Data::cname which is a raw const char32_t* pointer.
+std::string ReadChar32String(uint64_t addr, size_t maxChars = 256);
 
 } // namespace Zolt::Zoltraak

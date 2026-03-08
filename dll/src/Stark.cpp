@@ -7,6 +7,7 @@
 #include "Ausetiese.h"
 #include "DiAgolze.h"
 #include "Serie.h"
+#include "Flamme.h"
 #include "Fern.h"
 #include "Solliter.h"
 #include "BuildInfo.h"
@@ -59,9 +60,14 @@ int Zolt_AutoStart() {
     s_godotVersion  = ptrs.godotVersion;
 
     // Initialize subsystems with discovered addresses
-    if (s_objectDBAddr)  Zolt::Ausetiese::Init(s_objectDBAddr);
     if (s_classDBAddr)   Zolt::DiAgolze::Init(s_classDBAddr);
+    if (s_objectDBAddr)  Zolt::Ausetiese::Init(s_objectDBAddr);
     if (s_sceneTreeAddr) Zolt::Serie::Init(s_sceneTreeAddr);
+
+    // Log diagnostics for each subsystem
+    Zolt::Flamme::LogDiagnostics();
+    Zolt::DiAgolze::LogDiagnostics();
+    Zolt::Ausetiese::LogDiagnostics();
 
     // TODO: Start Fern pipe server (Phase 4)
     // Zolt::Fern::Start();
@@ -111,6 +117,41 @@ const char* Zolt_GetGodotVersion() {
 
 int Zolt_GetObjectCount() {
     return Zolt::Ausetiese::GetObjectCount();
+}
+
+// ----- Phase 2: Object Enumeration exports -----
+
+int Zolt_GetSlotMax() {
+    return Zolt::Ausetiese::GetSlotMax();
+}
+
+uint64_t Zolt_GetObjectByIndex(int index) {
+    return Zolt::Ausetiese::GetObjectByIndex(index);
+}
+
+int Zolt_FindObjectByAddress(uint64_t addr) {
+    return Zolt::Ausetiese::FindByAddress(addr);
+}
+
+int Zolt_GetClassCount() {
+    return Zolt::DiAgolze::GetClassCount();
+}
+
+// Static buffer for class name return (C ABI requires stable pointer)
+static char s_classNameBuf[256] = {};
+
+const char* Zolt_GetClassName(uint64_t objectAddr) {
+    std::string name = Zolt::DiAgolze::GetObjectClass(objectAddr);
+    if (name.empty()) {
+        s_classNameBuf[0] = '\0';
+    } else {
+        strncpy_s(s_classNameBuf, name.c_str(), sizeof(s_classNameBuf) - 1);
+    }
+    return s_classNameBuf;
+}
+
+uint64_t Zolt_GetRootNode() {
+    return Zolt::Serie::GetRoot();
 }
 
 } // extern "C"
