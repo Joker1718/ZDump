@@ -343,6 +343,9 @@ static json HandleGetObject(int id, const json& req) {
         addr + DynOff::OBJECT_INSTANCE_ID, 0);
     int slotIndex = Ausetiese::FindByAddress(addr);
 
+    Solliter::Debug("PIPE:cmd", "get_object: addr=%s name='%s' class='%s' slot=%d",
+        addrStr.c_str(), name.c_str(), className.c_str(), slotIndex);
+
     json resp = OkResponse(id);
     resp["address"]    = AddrToHex(addr);
     resp["name"]       = name;
@@ -581,6 +584,9 @@ static json HandleWalkInstance(int id, const json& req) {
     std::string name      = ReadObjectName(addr);
     std::string className = DiAgolze::GetObjectClass(addr);
 
+    Solliter::Debug("PIPE:cmd", "walk_instance: addr=%s name='%s' class='%s'",
+        addrStr.c_str(), name.c_str(), className.c_str());
+
     json fields = json::array();
     Ubel::WalkInstance(addr, [&](const Ubel::FieldEntry& entry) {
         json f;
@@ -600,10 +606,22 @@ static json HandleWalkInstance(int id, const json& req) {
         fields.push_back(std::move(f));
     });
 
+    Solliter::Debug("PIPE:cmd", "walk_instance: %d fields returned for '%s' (%s)",
+        static_cast<int>(fields.size()), name.c_str(), className.c_str());
+
+    // Read parent address (for Node objects)
+    std::string parentAddr;
+    if (DynOff::NODE_PARENT >= 0) {
+        uint64_t pa = Zoltraak::ReadSafe<uint64_t>(addr + DynOff::NODE_PARENT, 0);
+        if (pa && Zoltraak::IsReadable(pa))
+            parentAddr = AddrToHex(pa);
+    }
+
     json resp = OkResponse(id);
     resp["address"]    = AddrToHex(addr);
     resp["name"]       = name;
     resp["class_name"] = className;
+    resp["parent_addr"] = parentAddr;
     resp["fields"]     = std::move(fields);
     return resp;
 }
@@ -657,14 +675,34 @@ static json HandleWalkTree(int id, const json& req) {
     return resp;
 }
 
-// cmd: find_instances
-static json HandleFindInstances(int id, const json& req) {
-    std::string className = req.value("class_name", std::string{});
-    if (className.empty()) return ErrorResponse(id, "Missing 'class_name' field");
+// Case-insensitive substring search helper
+static bool ContainsCaseInsensitive(const std::string& haystack, const std::string& needleLower) {
+    if (needleLower.empty()) return true;
+    if (haystack.size() < needleLower.size()) return false;
+    return std::search(
+        haystack.begin(), haystack.end(),
+        needleLower.begin(), needleLower.end(),
+        [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) ==
+                                     static_cast<unsigned char>(b); }
+    ) != haystack.end();
+}
 
+// cmd: find_instances
+// Supports partial, case-insensitive matching on both object name and class name.
+// When "exact"=true, reverts to exact class name match for backward compatibility.
+static json HandleFindInstances(int id, const json& req) {
+    std::string query = req.value("class_name", std::string{});
+    if (query.empty()) return ErrorResponse(id, "Missing 'class_name' field");
+
+    bool exact = req.value("exact", false);
     int limit = req.value("limit", 100);
     if (limit <= 0) limit = 100;
     if (limit > 10000) limit = 10000;
+
+    // Pre-compute lowercase query for partial matching
+    std::string queryLower = query;
+    std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     json instances = json::array();
     int found = 0;
@@ -672,10 +710,20 @@ static json HandleFindInstances(int id, const json& req) {
     Ausetiese::ForEachEx([&](int index, uint64_t objAddr) {
         if (found >= limit) return false;
 
-        std::string cls = DiAgolze::GetObjectClass(objAddr);
-        if (cls == className) {
-            std::string name = ReadObjectName(objAddr);
+        std::string cls  = DiAgolze::GetObjectClass(objAddr);
+        std::string name = ReadObjectName(objAddr);
 
+        bool match = false;
+        if (exact) {
+            // Exact class name match (legacy behavior)
+            match = (cls == query);
+        } else {
+            // Partial, case-insensitive match on class name OR object name
+            match = ContainsCaseInsensitive(cls, queryLower) ||
+                    ContainsCaseInsensitive(name, queryLower);
+        }
+
+        if (match) {
             json obj;
             obj["address"]    = AddrToHex(objAddr);
             obj["name"]       = name;
@@ -688,7 +736,7 @@ static json HandleFindInstances(int id, const json& req) {
     });
 
     json resp = OkResponse(id);
-    resp["class_name"] = className;
+    resp["class_name"] = query;
     resp["count"]      = found;
     resp["instances"]  = std::move(instances);
     return resp;

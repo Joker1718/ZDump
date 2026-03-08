@@ -50,10 +50,14 @@ public partial class MainWindowViewModel : ViewModelBase
         _log = log;
         _platform = platform;
 
+        var ceXml = new CeXmlExportService(dump);
+        var csx = new CsxExportService(dump);
+        var sdk = new SdkExportService();
+
         NodeTree = new NodeTreeViewModel(dump, log, platform);
-        LiveWalker = new LiveWalkerViewModel(dump, log, platform, aobMaker);
+        LiveWalker = new LiveWalkerViewModel(dump, log, platform, aobMaker, ceXml, csx, sdk);
         ClassStruct = new ClassStructViewModel(dump, log);
-        InstanceFinder = new InstanceFinderViewModel(dump, log, platform);
+        InstanceFinder = new InstanceFinderViewModel(dump, log, platform, ceXml, sdk);
         Pointers = new PointerPanelViewModel(dump, log, platform, aobMaker);
         PropertySearch = new PropertySearchViewModel(dump, log, platform);
         NodeFilter = new NodeFilterViewModel(dump, log);
@@ -92,6 +96,8 @@ public partial class MainWindowViewModel : ViewModelBase
             GodotVersion = state.GodotVersion;
             WindowTitle = $"Zolt-Dump — {state.ProcessName} (PID {state.Pid})";
             StatusText = $"Connected — Godot {state.GodotVersion}";
+            LiveWalker.ModuleName = state.ProcessName;
+            InstanceFinder.ModuleName = state.ProcessName;
             _log.Info("Connected to game process");
 
             // Load pointers

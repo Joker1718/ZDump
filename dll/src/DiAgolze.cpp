@@ -1079,9 +1079,19 @@ std::string GetObjectClass(uint64_t objectAddr) {
     if (!objectAddr) return "";
     EnsureModuleInfo();
 
+    static std::atomic<int> s_diagCount{0};
+
     // Read vtable from object
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objectAddr, 0);
     if (!vtable || vtable < s_moduleBase || vtable >= s_moduleBase + s_moduleSize) {
+        if (s_diagCount.load() < 5 && vtable) {
+            s_diagCount++;
+            Solliter::Debug("CLSDB", "GetObjectClass: vtable %p out of module [%p..+%llX] for obj %p",
+                reinterpret_cast<void*>(vtable),
+                reinterpret_cast<void*>(s_moduleBase),
+                static_cast<unsigned long long>(s_moduleSize),
+                reinterpret_cast<void*>(objectAddr));
+        }
         return "";
     }
 
@@ -1100,6 +1110,19 @@ std::string GetObjectClass(uint64_t objectAddr) {
 
     // RTTI not available or class not in ClassDB — cache empty result
     // to avoid repeated RTTI lookups for the same vtable
+    if (s_diagCount.load() < 5) {
+        s_diagCount++;
+        // Read RTTI decorated name for diagnostic
+        uint64_t locator = Zoltraak::ReadSafe<uint64_t>(vtable - 8, 0);
+        uint32_t sig = locator ? Zoltraak::ReadSafe<uint32_t>(locator, 0xFFFF) : 0xFFFF;
+        uint32_t rva = (locator && sig == 1) ? Zoltraak::ReadSafe<uint32_t>(locator + 0x0C, 0) : 0;
+        char deco[128] = {};
+        if (rva) Zoltraak::ReadSafe(s_moduleBase + rva + 0x10, deco, 127);
+        Solliter::Debug("CLSDB", "GetObjectClass: RTTI miss — vtable=%p sig=%u rva=0x%X deco='%s' classMap=%d obj=%p",
+            reinterpret_cast<void*>(vtable), sig, rva, deco,
+            static_cast<int>(s_classMap.size()),
+            reinterpret_cast<void*>(objectAddr));
+    }
     s_vtableMap[vtable] = "";
     return "";
 }
