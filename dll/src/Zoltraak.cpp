@@ -240,7 +240,11 @@ static std::string ConvertChar32ToUtf8(uint64_t dataAddr, uint32_t maxChars) {
         uint32_t ch = ReadSafe<uint32_t>(dataAddr + i * 4, 0);
         if (ch == 0) break;
 
-        // Simple UTF-32 to UTF-8 conversion
+        // Skip invalid Unicode codepoints (surrogates, out of range)
+        if (ch > 0x10FFFF || (ch >= 0xD800 && ch <= 0xDFFF))
+            continue;
+
+        // UTF-32 to UTF-8 conversion
         if (ch < 0x80) {
             result.push_back(static_cast<char>(ch));
         } else if (ch < 0x800) {
