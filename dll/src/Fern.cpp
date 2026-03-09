@@ -494,7 +494,7 @@ static json HandleWalkClass(int id, const json& req) {
         f["name"]        = SafeStr(prop.name);
         f["type"]        = VariantTypeName(prop.type);
         f["offset"]      = prop.offset;
-        f["size"]        = 0;
+        f["size"]        = prop.nativeSize > 0 ? prop.nativeSize : 0;
         f["hint"]        = prop.hint;
         f["hint_string"] = SafeStr(prop.hintString);
         f["usage"]       = static_cast<int>(prop.usage);
@@ -634,8 +634,8 @@ static json HandleWalkInstance(int id, const json& req) {
         f["variant_type"] = entry.value.type;
         f["value"]        = SafeStr(entry.value.value);
         f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
-        f["offset"]       = -1;  // Godot doesn't expose byte offsets via ClassDB
-        f["size"]         = VariantTypeSize(entry.value.type);
+        f["offset"]       = entry.offset;
+        f["size"]         = entry.nativeSize > 0 ? entry.nativeSize : VariantTypeSize(entry.value.type);
         f["hint"]         = entry.hint;
         f["hint_string"]  = SafeStr(entry.hintString);
         f["usage"]        = static_cast<int>(entry.usage);

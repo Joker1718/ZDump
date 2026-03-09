@@ -24,6 +24,8 @@ struct FieldEntry {
     std::string  name;
     std::string  className;  // owning class
     VariantValue value;
+    int          offset = -1;    // byte offset within object (-1 if unknown)
+    int          nativeSize = 0; // native access size (1, 4, 8)
     int          hint = 0;       // PropertyHint enum value
     std::string  hintString;     // hint parameter string
     uint32_t     usage = 0;      // PROPERTY_USAGE_* flags

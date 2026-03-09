@@ -34,6 +34,7 @@
         <DataGrid x:CompileBindings="False"
                   ItemsSource="{Binding Games}"
                   AutoGenerateColumns="False"
+                  CanUserResizeColumns="True"
                   Background="#1E1E1E"
                   Foreground="#D4D4D4"
                   FontSize="12">

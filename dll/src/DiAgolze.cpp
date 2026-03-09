@@ -231,12 +231,53 @@ static void BuildClassCache3x() {
     int bucketCount = 1 << s_power3x;
     int totalFound = 0;
     int emptyNames = 0;
+    int chainBreaks = 0;  // Chains that stopped due to non-readable next pointer
+    int occupiedBuckets = 0;
+    int maxChainLen = 0;
+
+    // Diagnostic: auto-detect element layout by testing the first few elements
+    // Try two layouts: { hash(8), next(8), key(8), value } vs { next(8), hash(8), key(8), value }
+    if (bucketCount > 0) {
+        // Find the first non-null bucket entry for layout probing
+        for (int b = 0; b < bucketCount; ++b) {
+            uint64_t elem = Zoltraak::ReadSafe<uint64_t>(s_hashTable3x + b * 8, 0);
+            if (!elem || !Zoltraak::IsReadable(elem)) continue;
+
+            // Hex dump the first element for diagnostics
+            uint8_t ebuf[64] = {};
+            Zoltraak::ReadSafe(elem, ebuf, sizeof(ebuf));
+            Solliter::Info("CLSDB", "3x Element[0] layout probe at %p:",
+                reinterpret_cast<void*>(elem));
+            for (int i = 0; i < 64; i += 16) {
+                char line[200];
+                snprintf(line, sizeof(line),
+                    "  +0x%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
+                    i, ebuf[i+0], ebuf[i+1], ebuf[i+2], ebuf[i+3],
+                    ebuf[i+4], ebuf[i+5], ebuf[i+6], ebuf[i+7],
+                    ebuf[i+8], ebuf[i+9], ebuf[i+10], ebuf[i+11],
+                    ebuf[i+12], ebuf[i+13], ebuf[i+14], ebuf[i+15]);
+                Solliter::Info("CLSDB", "%s", line);
+            }
+
+            // Try resolving StringName at multiple offsets to identify key position
+            for (int tryOff : {0x08, 0x10, 0x18, 0x20}) {
+                std::string name = Flamme::Resolve(elem + tryOff);
+                if (!name.empty()) {
+                    Solliter::Info("CLSDB", "  StringName at elem+0x%X: '%s'", tryOff, name.c_str());
+                }
+            }
+            break;
+        }
+    }
 
     for (int b = 0; b < bucketCount; ++b) {
         uint64_t elem = Zoltraak::ReadSafe<uint64_t>(s_hashTable3x + b * 8, 0);
+        if (!elem) continue;
+        occupiedBuckets++;
 
+        int chainLen = 0;
         while (elem) {
-            if (!Zoltraak::IsReadable(elem)) break;
+            if (!Zoltraak::IsReadable(elem)) { chainBreaks++; break; }
 
             // 3.x Element: hash(4B)+pad(4B)+next(8B)+key(8B StringName)+value(ClassInfo...)
             uint64_t keyAddr   = elem + DynOff::ELEM_3X_KEY_OFF;   // StringName (8B = _Data*)
@@ -262,16 +303,20 @@ static void BuildClassCache3x() {
             }
 
             totalFound++;
+            chainLen++;
 
             uint64_t next = Zoltraak::ReadSafe<uint64_t>(
                 elem + DynOff::ELEM_3X_NEXT_OFF, 0);
             if (next == elem) break; // Self-loop protection
             elem = next;
         }
+        if (chainLen > maxChainLen) maxChainLen = chainLen;
     }
 
     Solliter::Info("CLSDB", "3x: Built class cache: %d classes found (%u expected, %d empty names)",
         static_cast<int>(s_classMap.size()), s_elements3x, emptyNames);
+    Solliter::Info("CLSDB", "3x: %d occupied buckets / %d total, max chain=%d, %d chain breaks, %d walked",
+        occupiedBuckets, bucketCount, maxChainLen, chainBreaks, totalFound);
 }
 
 // Enumerate classes by walking 3.x bucket chains (deterministic order not guaranteed)
@@ -370,6 +415,8 @@ static int s_nameOffset       = -1;
 static int s_inheritsOffset   = -1;
 static int s_propListOffset   = -1;
 static int s_methodMapOffset  = -1;
+static int s_propSetGetOffset = -1;  // HashMap<StringName, PropertySetGet>
+static bool s_isItaniumABI    = false; // Detected ABI (for vtable indexing)
 
 // PropertyInfo layout within List::Element (probed)
 static int s_propNameOffset   = -1;   // String name offset within PropertyInfo
@@ -478,6 +525,35 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                 if (walked == count) {
                                     Solliter::Info("CLSDB", "  Chain validation: walked %d == count %d ✓",
                                         walked, count);
+
+                                    // Derive hint and usage offsets from the known PropertyInfo layout.
+                                    // PropertyInfo { type(8B), name(8B), class_name(8B), hint(8B), hint_string(8B), usage(8B) }
+                                    // So: hint = nameOff + 16, usage = nameOff + 32
+                                    int hintOff  = nameOff + 16; // name(8B) + class_name(8B)
+                                    int usageOff = nameOff + 32; // + hint(8B) + hint_string(8B)
+
+                                    // Validate hint offset: PropertyHint is an int32 enum, values 0-52
+                                    int32_t hintVal = Zoltraak::ReadSafe<int32_t>(first + hintOff, -1);
+                                    if (hintVal >= 0 && hintVal <= 60) {
+                                        s_propHintOffset = hintOff;
+                                        Solliter::Info("CLSDB", "  PropertyInfo.hint offset = 0x%X (value=%d)",
+                                            hintOff, hintVal);
+                                    } else {
+                                        Solliter::Warn("CLSDB", "  PropertyInfo.hint validation failed: value=%d at +0x%X",
+                                            hintVal, hintOff);
+                                    }
+
+                                    // Validate usage offset: usage is a uint32 bitmask
+                                    uint32_t usageVal = Zoltraak::ReadSafe<uint32_t>(first + usageOff, 0);
+                                    if (usageVal > 0 && usageVal < 0x10000) {
+                                        s_propUsageOffset = usageOff;
+                                        Solliter::Info("CLSDB", "  PropertyInfo.usage offset = 0x%X (value=0x%X)",
+                                            usageOff, usageVal);
+                                    } else {
+                                        Solliter::Warn("CLSDB", "  PropertyInfo.usage validation failed: value=0x%X at +0x%X",
+                                            usageVal, usageOff);
+                                    }
+
                                     return true;
                                 } else {
                                     Solliter::Debug("CLSDB", "  Chain validation: walked %d != count %d, trying next offset",
@@ -486,36 +562,6 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                 }
                             }
                         }
-                    }
-                }
-
-                // Derive hint and usage offsets from the known PropertyInfo layout.
-                // PropertyInfo { type(8B), name(8B), class_name(8B), hint(8B), hint_string(8B), usage(8B) }
-                // So: hint = nameOff + 16, usage = nameOff + 32
-                if (s_elemNextOffset >= 0) {
-                    int hintOff  = nameOff + 16; // name(8B) + class_name(8B)
-                    int usageOff = nameOff + 32; // + hint(8B) + hint_string(8B)
-
-                    // Validate hint offset: PropertyHint is an int32 enum, values 0-52
-                    int32_t hintVal = Zoltraak::ReadSafe<int32_t>(first + hintOff, -1);
-                    if (hintVal >= 0 && hintVal <= 60) {
-                        s_propHintOffset = hintOff;
-                        Solliter::Info("CLSDB", "  PropertyInfo.hint offset = 0x%X (value=%d)",
-                            hintOff, hintVal);
-                    } else {
-                        Solliter::Warn("CLSDB", "  PropertyInfo.hint validation failed: value=%d at +0x%X",
-                            hintVal, hintOff);
-                    }
-
-                    // Validate usage offset: usage is a uint32 bitmask
-                    uint32_t usageVal = Zoltraak::ReadSafe<uint32_t>(first + usageOff, 0);
-                    if (usageVal > 0 && usageVal < 0x10000) {
-                        s_propUsageOffset = usageOff;
-                        Solliter::Info("CLSDB", "  PropertyInfo.usage offset = 0x%X (value=0x%X)",
-                            usageOff, usageVal);
-                    } else {
-                        Solliter::Warn("CLSDB", "  PropertyInfo.usage validation failed: value=0x%X at +0x%X",
-                            usageVal, usageOff);
                     }
                 }
 
@@ -530,6 +576,178 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
 
     Solliter::Warn("CLSDB", "  Could not probe PropertyInfo layout");
     return false;
+}
+
+// ============================================================
+// PropertySetGet lookup — find getter MethodBind* for a property
+// ============================================================
+
+// PropertySetGet layout within HashMap element (4.x):
+//   Element+0x00: next(8B), +0x08: prev(8B)
+//   +0x10: StringName key (property name)
+//   +0x18: int index (4B) + pad(4B)
+//   +0x20: StringName setter (8B)
+//   +0x28: StringName getter (8B)
+//   +0x30: MethodBind* _setptr (8B)
+//   +0x38: MethodBind* _getptr (8B)
+//   +0x40: Variant::Type type (4B) + pad(4B)
+
+static uint64_t LookupGetterMethodBind(uint64_t infoAddr, const std::string& propName) {
+    if (s_propSetGetOffset < 0 || propName.empty()) return 0;
+
+    if (s_is3x) {
+        // 3.x: bucket-chain HashMap
+        uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_propSetGetOffset, 0);
+        uint8_t  power = Zoltraak::ReadSafe<uint8_t>(infoAddr + s_propSetGetOffset + 8, 0);
+        if (!ht || power < 1 || power > 15) return 0;
+
+        int buckets = 1 << power;
+        for (int b = 0; b < buckets; b++) {
+            uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+            while (elem && Zoltraak::IsReadable(elem)) {
+                // 3.x Element: hash(4B)+pad(4B)+next(8B)+key(8B)+value
+                std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                if (name == propName) {
+                    // PropertySetGet at ELEM_3X_VALUE_OFF
+                    // Layout: index(8B), setter(8B), getter(8B), _setptr(8B), _getptr(8B), type(8B)
+                    uint64_t getptr = Zoltraak::ReadSafe<uint64_t>(
+                        elem + DynOff::ELEM_3X_VALUE_OFF + 0x20, 0); // _getptr
+                    return getptr;
+                }
+                uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                if (next == elem) break;
+                elem = next;
+            }
+        }
+    } else {
+        // 4.x: robin-hood HashMap with linked list
+        uint64_t head = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_propSetGetOffset + 0x10, 0);
+        uint32_t num  = Zoltraak::ReadSafe<uint32_t>(infoAddr + s_propSetGetOffset + 0x24, 0);
+        if (!head || num == 0) return 0;
+
+        uint64_t current = head;
+        int walked = 0;
+        while (current && walked < static_cast<int>(num) + 10) {
+            if (!Zoltraak::IsReadable(current)) break;
+
+            std::string name = Flamme::Resolve(current + 0x10);
+            if (name == propName) {
+                return Zoltraak::ReadSafe<uint64_t>(current + 0x38, 0); // _getptr
+            }
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(current, 0);
+            if (next == current) break;
+            current = next;
+            walked++;
+        }
+    }
+    return 0;
+}
+
+// ============================================================
+// ExtractMemberOffset — analyze getter ptrcall code to find member offset
+// ============================================================
+// Searches the first N bytes of ptrcall for memory access patterns:
+//   [rdx + imm32] (MSVC: rdx = Object*, or GCC: same on Windows)
+//
+// Returns { offset, accessSize } or { -1, 0 } if not found.
+struct MemberAccess {
+    int offset = -1;   // byte offset within object
+    int size   = 0;    // native access size: 1 (bool), 4 (int32/float), 8 (int64/double/ptr)
+};
+
+static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
+    MemberAccess result;
+    if (!methodBindAddr || !Zoltraak::IsReadable(methodBindAddr)) return result;
+
+    // Read MethodBind vtable
+    uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(methodBindAddr, 0);
+    if (!vtable || !Zoltraak::IsReadable(vtable)) return result;
+
+    // ptrcall is at vtable[2] for MSVC, vtable[3] for Itanium (GCC)
+    int ptrcallIdx = s_isItaniumABI ? 3 : 2;
+    uint64_t ptrcallAddr = Zoltraak::ReadSafe<uint64_t>(vtable + ptrcallIdx * 8, 0);
+    if (!ptrcallAddr || !Zoltraak::IsReadable(ptrcallAddr)) return result;
+
+    // Read first 64 bytes of ptrcall code
+    uint8_t code[64] = {};
+    Zoltraak::ReadSafe(ptrcallAddr, code, sizeof(code));
+
+    // Scan for common x86-64 memory access patterns:
+    // Pattern 1: REX.W MOV reg, [rdx + imm32] → 8-byte read (ptr/int64/double)
+    //   48 8B ?2 XX XX XX XX  (ModRM: mod=10, r/m=010=rdx)
+    // Pattern 2: MOV eax, [rdx + imm32] → 4-byte read (int32)
+    //   8B ?2 XX XX XX XX     (ModRM: mod=10, r/m=010=rdx)
+    // Pattern 3: REX.W MOV reg, [rdx + imm8] → 8-byte read
+    //   48 8B 42 XX           (ModRM: mod=01, r/m=010=rdx, reg=000=rax)
+    // Pattern 4: MOV eax, [rdx + imm8] → 4-byte read
+    //   8B 42 XX
+    // Pattern 5: MOVSS xmm, [rdx + imm32] → 4-byte float read
+    //   F3 0F 10 ?2 XX XX XX XX
+    // Pattern 6: MOVSD xmm, [rdx + imm32] → 8-byte double read
+    //   F2 0F 10 ?2 XX XX XX XX
+    // Pattern 7: MOVZX eax, byte [rdx + imm32] → 1-byte read (bool)
+    //   0F B6 82 XX XX XX XX
+    // Pattern 8: MOVSXD reg, [rdx + imm32] → 4-byte sign-extended to 8 (int32)
+    //   48 63 ?2 XX XX XX XX
+
+    for (int i = 0; i < 56; i++) {
+        // MOVSXD: 48 63 ?2 → sign-extend int32 to int64 (4-byte member)
+        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x63 &&
+            (code[i+2] & 0x07) == 0x02 && (code[i+2] & 0xC0) == 0x80) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+        }
+        // REX.W + MOV reg, [rdx + imm32]: 48 8B ?2 → 8-byte read
+        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
+            (code[i+2] & 0x07) == 0x02 && (code[i+2] & 0xC0) == 0x80) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 8; return result; }
+        }
+        // MOV eax, [rdx + imm32]: 8B ?2 → 4-byte read
+        if (i + 6 <= 64 && code[i] == 0x8B &&
+            (code[i+1] & 0x07) == 0x02 && (code[i+1] & 0xC0) == 0x80) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+2]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+        }
+        // REX.W + MOV reg, [rdx + imm8]: 48 8B 42 XX → 8-byte read
+        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
+            code[i+2] == 0x42) {
+            int8_t off = static_cast<int8_t>(code[i+3]);
+            if (off > 0) { result.offset = off; result.size = 8; return result; }
+        }
+        // MOV eax, [rdx + imm8]: 8B 42 XX → 4-byte read
+        if (i + 3 <= 64 && code[i] == 0x8B && code[i+1] == 0x42) {
+            int8_t off = static_cast<int8_t>(code[i+2]);
+            if (off > 0) { result.offset = off; result.size = 4; return result; }
+        }
+        // MOVSS xmm, [rdx + imm32]: F3 0F 10 ?2 → 4-byte float
+        if (i + 8 <= 64 && code[i] == 0xF3 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            (code[i+3] & 0x07) == 0x02 && (code[i+3] & 0xC0) == 0x80) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+        }
+        // MOVSD xmm, [rdx + imm32]: F2 0F 10 ?2 → 8-byte double
+        if (i + 8 <= 64 && code[i] == 0xF2 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            (code[i+3] & 0x07) == 0x02 && (code[i+3] & 0xC0) == 0x80) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 8; return result; }
+        }
+        // MOVZX eax, byte [rdx + imm32]: 0F B6 82 → 1-byte read (bool)
+        if (i + 7 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
+            code[i+2] == 0x82) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 1; return result; }
+        }
+        // MOVZX eax, byte [rdx + imm8]: 0F B6 42 XX → 1-byte read
+        if (i + 4 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
+            code[i+2] == 0x42) {
+            int8_t off = static_cast<int8_t>(code[i+3]);
+            if (off > 0) { result.offset = off; result.size = 1; return result; }
+        }
+    }
+
+    return result;
 }
 
 static void ProbeClassInfoLayout() {
@@ -697,6 +915,75 @@ static void ProbeClassInfoLayout() {
         Solliter::Warn("CLSDB", "  Could not find 'method_map' in ClassInfo");
     }
 
+    // Step 5: Find 'property_setget' — HashMap<StringName, PropertySetGet>
+    // Located after property_list in ClassInfo struct.
+    // PropertySetGet contains getter/setter MethodBind* pointers.
+    s_propSetGetOffset = -1;
+    if (s_propListOffset > 0) {
+        int psgSearchStart = s_propListOffset + 8; // After property_list (8B _Data*)
+        int psgSearchEnd   = s_nameOffset;         // Don't go past 'name'
+
+        if (s_is3x) {
+            // 3.x: bucket-chain HashMap (16B)
+            for (int off = psgSearchStart; off < psgSearchEnd; off += 8) {
+                uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
+                uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(infoAddr + off + 0x08, 0);
+                uint32_t count = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x0C, 0);
+
+                if (!ht || !Zoltraak::IsReadable(ht)) continue;
+                if (pw < 2 || pw > 15 || count < 3 || count > 500) continue;
+
+                // Validate: key should be a property name
+                int buckets = 1 << pw;
+                for (int b = 0; b < buckets; ++b) {
+                    uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                    if (!elem || !Zoltraak::IsReadable(elem)) continue;
+                    std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                    if (!name.empty() && name.size() <= 64 &&
+                        off != s_methodMapOffset) { // Don't confuse with method_map
+                        s_propSetGetOffset = off;
+                        Solliter::Info("CLSDB", "  Found 3.x 'property_setget' at ClassInfo+0x%X "
+                            "(power=%u, num=%u, first='%s')", off, pw, count, name.c_str());
+                        break;
+                    }
+                }
+                if (s_propSetGetOffset >= 0) break;
+            }
+        } else {
+            // 4.x: robin-hood HashMap (40B)
+            for (int off = psgSearchStart; off < psgSearchEnd; off += 8) {
+                if (off == s_methodMapOffset) continue; // Skip method_map
+
+                uint64_t head = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x10, 0);
+                uint32_t num  = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x24, 0);
+                if (!head || num < 3 || num > 500) continue;
+                if (!Zoltraak::IsReadable(head)) continue;
+
+                // Read key from head element
+                std::string name = Flamme::Resolve(head + 0x10);
+                if (name.empty() || name.size() > 64) continue;
+
+                // Validate: try to read PropertySetGet fields
+                // At element+0x28: getter StringName should resolve to "get_xxx"
+                std::string getter = Flamme::Resolve(head + 0x28);
+                uint64_t getptr = Zoltraak::ReadSafe<uint64_t>(head + 0x38, 0);
+
+                if (!getter.empty() && getptr && Zoltraak::IsReadable(getptr)) {
+                    s_propSetGetOffset = off;
+                    Solliter::Info("CLSDB", "  Found 'property_setget' at ClassInfo+0x%X "
+                        "(num=%u, first='%s', getter='%s', _getptr=%p)",
+                        off, num, name.c_str(), getter.c_str(),
+                        reinterpret_cast<void*>(getptr));
+                    break;
+                }
+            }
+        }
+
+        if (s_propSetGetOffset < 0) {
+            Solliter::Info("CLSDB", "  Could not find 'property_setget' in ClassInfo (offset extraction unavailable)");
+        }
+    }
+
     // Store results in DynOff for global access
     DynOff::CLASSINFO_NAME_OFFSET      = s_nameOffset;
     DynOff::CLASSINFO_INHERITS_OFFSET  = s_inheritsOffset;
@@ -709,8 +996,8 @@ static void ProbeClassInfoLayout() {
     DynOff::PROPINFO_TOTAL_SIZE        = s_propTotalSize;
 
     Solliter::Info("CLSDB", "=== ClassInfo probe complete ===");
-    Solliter::Info("CLSDB", "  name=+0x%X inherits=+0x%X propList=+0x%X methodMap=+0x%X",
-        s_nameOffset, s_inheritsOffset, s_propListOffset, s_methodMapOffset);
+    Solliter::Info("CLSDB", "  name=+0x%X inherits=+0x%X propList=+0x%X methodMap=+0x%X propSetGet=+0x%X",
+        s_nameOffset, s_inheritsOffset, s_propListOffset, s_methodMapOffset, s_propSetGetOffset);
     Solliter::Info("CLSDB", "  propNameOff=+0x%X hintOff=+0x%X usageOff=+0x%X elemNextOff=+0x%X propSize=%d",
         s_propNameOffset, s_propHintOffset, s_propUsageOffset, s_elemNextOffset, s_propTotalSize);
 }
@@ -860,7 +1147,20 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
             pi.name      = propName;
             pi.className = owningClass;
             pi.type      = propType;
-            pi.offset    = -1; // Godot doesn't expose byte offsets via ClassDB
+            pi.offset    = -1;
+            pi.nativeSize = 0;
+
+            // Try to extract byte offset via ptrcall analysis
+            if (s_propSetGetOffset >= 0) {
+                uint64_t getptr = LookupGetterMethodBind(infoAddr, propName);
+                if (getptr) {
+                    MemberAccess ma = ExtractMemberAccess(getptr);
+                    if (ma.offset >= 0) {
+                        pi.offset     = ma.offset;
+                        pi.nativeSize = ma.size;
+                    }
+                }
+            }
 
             // Read hint (PropertyHint enum, int32)
             if (s_propHintOffset >= 0) {
@@ -1340,6 +1640,13 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
                 itaniumRaw.empty() ? "(none)" : itaniumRaw.c_str(),
                 finalClass.empty() ? "(FAILED)" : finalClass.c_str());
         }
+    }
+
+    // Set global ABI flag based on which RTTI had more hits
+    if (itaniumHits > 0 || msvcHits > 0) {
+        s_isItaniumABI = (itaniumHits >= msvcHits);
+        Solliter::Info("CLSDB", "  ABI detected: %s (MSVC=%d, Itanium=%d)",
+            s_isItaniumABI ? "Itanium" : "MSVC", msvcHits, itaniumHits);
     }
 
     Solliter::Info("CLSDB", "  Scanned %d objects, %d unique vtables, %d identified (MSVC=%d Itanium=%d), %d misses",

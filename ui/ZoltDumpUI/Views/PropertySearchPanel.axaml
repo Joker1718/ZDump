@@ -26,6 +26,7 @@
                   ItemsSource="{Binding Results}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
+                  CanUserResizeColumns="True"
                   Background="#1E1E1E"
                   Foreground="#D4D4D4"
                   FontFamily="Consolas"
