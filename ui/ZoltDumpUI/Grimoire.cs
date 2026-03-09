@@ -77,4 +77,29 @@ public static class Grimoire
 
     /// <summary>Proxy DLL filename (version.dll)</summary>
     public const string ProxyDllFileName = "version.dll";
+
+    /// <summary>PE ProductName embedded in proxy DLL for identification</summary>
+    public const string ProxyProductName = "Zolt-Dump";
+
+    // ============================================================
+    // Steam Detection — paths and registry keys
+    // ============================================================
+
+    /// <summary>Steam registry key path (HKLM)</summary>
+    public const string SteamRegistryPath = @"SOFTWARE\Valve\Steam";
+
+    /// <summary>Steam registry value name for install path</summary>
+    public const string SteamRegistryKey = "InstallPath";
+
+    /// <summary>Default Steam installation path</summary>
+    public const string SteamDefaultPath = @"C:\Program Files (x86)\Steam";
+
+    /// <summary>Relative path to libraryfolders.vdf from Steam root</summary>
+    public const string SteamLibraryFoldersVdf = @"steamapps\libraryfolders.vdf";
+
+    /// <summary>Relative path to common games directory from Steam library root</summary>
+    public const string SteamAppsCommon = @"steamapps\common";
+
+    /// <summary>Godot .pck data file extension</summary>
+    public const string GodotPckExtension = ".pck";
 }
