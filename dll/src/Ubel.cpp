@@ -16,6 +16,13 @@
 
 #include <cstdio>
 #include <iterator>
+#include <unordered_map>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
 
 namespace Zolt::Ubel {
 
@@ -254,12 +261,8 @@ VariantValue ReadVariant(uint64_t addr) {
         case 4: { // STRING (CowData<char32_t> in 4.x, CowData<wchar_t> in 3.x)
             uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(data, 0);
             if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
-                // ReadGodotString handles CowData<char32_t> (4.x)
+                // ReadGodotString auto-detects 3.x wchar_t vs 4.x char32_t
                 result.value = Zoltraak::ReadGodotString(cowPtr);
-                // If that fails and we're on 3.x, try wchar_t path
-                if (result.value.empty() && GodotVer::IsGodot3()) {
-                    result.value = Zoltraak::ReadChar32String(cowPtr, 256);
-                }
             } else {
                 result.value = "\"\"";
             }
@@ -416,6 +419,410 @@ VariantValue ReadVariant(uint64_t addr) {
 }
 
 // ============================================================
+// ReadNativeValue — Read a native member value from object memory
+// ============================================================
+// Reads directly from object memory at the given offset, using the
+// Variant type and native access size to determine how to interpret.
+// This bypasses Variant boxing — reads the raw native member value.
+static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int nativeSize) {
+    VariantValue result{};
+    result.rawAddr = memberAddr;
+    result.type    = variantType;
+    result.typeName = VariantTypeName(variantType);
+
+    if (!memberAddr || !Zoltraak::IsReadable(memberAddr)) return result;
+
+    // Map 3.x type to 4.x for unified switch
+    int type4x = variantType;
+    if (GodotVer::IsGodot3()) {
+        type4x = MapType3xTo4x(variantType);
+        if (type4x < 0) return result;
+    }
+
+    switch (type4x) {
+        case 0: // NIL
+            result.value = "(null)";
+            break;
+
+        case 1: // BOOL
+            result.value = Zoltraak::ReadSafe<uint8_t>(memberAddr, 0) ? "true" : "false";
+            break;
+
+        case 2: // INT
+            if (nativeSize <= 4) {
+                result.value = std::to_string(Zoltraak::ReadSafe<int32_t>(memberAddr, 0));
+            } else {
+                result.value = std::to_string(Zoltraak::ReadSafe<int64_t>(memberAddr, 0));
+            }
+            break;
+
+        case 3: // FLOAT
+            if (nativeSize <= 4) {
+                result.value = FormatFloat(Zoltraak::ReadSafe<float>(memberAddr, 0.0f));
+            } else {
+                result.value = FormatDouble(Zoltraak::ReadSafe<double>(memberAddr, 0.0));
+            }
+            break;
+
+        case 4: { // STRING (CowData pointer — auto-detects 3.x wchar_t vs 4.x char32_t)
+            uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(memberAddr, 0);
+            if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
+                result.value = Zoltraak::ReadGodotString(cowPtr);
+            }
+            if (result.value.empty()) result.value = "\"\"";
+            break;
+        }
+
+        case 5: { // VECTOR2
+            float x = Zoltraak::ReadSafe<float>(memberAddr, 0.0f);
+            float y = Zoltraak::ReadSafe<float>(memberAddr + 4, 0.0f);
+            result.value = "(" + FormatFloat(x) + ", " + FormatFloat(y) + ")";
+            break;
+        }
+
+        case 6: { // VECTOR2I
+            int32_t x = Zoltraak::ReadSafe<int32_t>(memberAddr, 0);
+            int32_t y = Zoltraak::ReadSafe<int32_t>(memberAddr + 4, 0);
+            result.value = "(" + std::to_string(x) + ", " + std::to_string(y) + ")";
+            break;
+        }
+
+        case 9: { // VECTOR3
+            float x = Zoltraak::ReadSafe<float>(memberAddr, 0.0f);
+            float y = Zoltraak::ReadSafe<float>(memberAddr + 4, 0.0f);
+            float z = Zoltraak::ReadSafe<float>(memberAddr + 8, 0.0f);
+            result.value = "(" + FormatFloat(x) + ", " + FormatFloat(y) + ", " + FormatFloat(z) + ")";
+            break;
+        }
+
+        case 10: { // VECTOR3I
+            int32_t x = Zoltraak::ReadSafe<int32_t>(memberAddr, 0);
+            int32_t y = Zoltraak::ReadSafe<int32_t>(memberAddr + 4, 0);
+            int32_t z = Zoltraak::ReadSafe<int32_t>(memberAddr + 8, 0);
+            result.value = "(" + std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z) + ")";
+            break;
+        }
+
+        case 20: { // COLOR (4 floats RGBA)
+            float r = Zoltraak::ReadSafe<float>(memberAddr, 0.0f);
+            float g = Zoltraak::ReadSafe<float>(memberAddr + 4, 0.0f);
+            float b = Zoltraak::ReadSafe<float>(memberAddr + 8, 0.0f);
+            float a = Zoltraak::ReadSafe<float>(memberAddr + 12, 0.0f);
+            result.value = "Color(" + FormatFloat(r) + ", " + FormatFloat(g) +
+                          ", " + FormatFloat(b) + ", " + FormatFloat(a) + ")";
+            break;
+        }
+
+        case 21: { // STRINGNAME
+            result.value = Flamme::Resolve(memberAddr);
+            if (result.value.empty()) result.value = "(empty)";
+            break;
+        }
+
+        case 22: { // NODEPATH (pointer to NodePath::Data)
+            uint64_t pathPtr = Zoltraak::ReadSafe<uint64_t>(memberAddr, 0);
+            char buf[32];
+            snprintf(buf, sizeof(buf), "NodePath@%llX", static_cast<unsigned long long>(pathPtr));
+            result.value = buf;
+            break;
+        }
+
+        case 24: { // OBJECT (pointer)
+            uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(memberAddr, 0);
+            if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                result.rawAddr = objPtr;
+                char buf[32];
+                snprintf(buf, sizeof(buf), "Object@%llX", static_cast<unsigned long long>(objPtr));
+                result.value = buf;
+            } else {
+                result.value = "(null)";
+            }
+            break;
+        }
+
+        default: {
+            // For unhandled types: show raw hex of native member
+            int readSize = (nativeSize > 0) ? nativeSize : 8;
+            if (readSize > 24) readSize = 24;
+
+            uint8_t raw[24] = {};
+            Zoltraak::ReadSafe(memberAddr, raw, readSize);
+
+            std::string hex;
+            hex.reserve(readSize * 2);
+            for (int i = 0; i < readSize; i++) {
+                char h[3];
+                snprintf(h, sizeof(h), "%02X", raw[i]);
+                hex += h;
+            }
+            result.value = result.typeName + std::string("{") + hex + "}";
+            break;
+        }
+    }
+
+    return result;
+}
+
+// ============================================================
+// GDScript member reading — reads script-defined variables
+// ============================================================
+// GDScript-defined variables (var money = 100, var hp = 50) are stored
+// in GDScriptInstance::members (Vector<Variant>), NOT in ClassDB.
+// We probe the ScriptInstance offset from Object*, then read the Variants.
+
+// Module base/size for vtable validation (cached from init)
+static uint64_t s_moduleBase = 0;
+static uint64_t s_moduleSize = 0;
+
+static void EnsureModuleInfo() {
+    if (s_moduleBase) return;
+    HMODULE hModule = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&EnsureModuleInfo), &hModule);
+    if (!hModule) return;
+
+    MODULEINFO mi{};
+    if (GetModuleInformation(GetCurrentProcess(), hModule, &mi, sizeof(mi))) {
+        s_moduleBase = reinterpret_cast<uint64_t>(mi.lpBaseOfDll);
+        s_moduleSize = mi.SizeOfImage;
+    }
+}
+
+// Probe the offset of ScriptInstance* within Object.
+// Strategy: scan Object memory for a pointer whose target has
+// a backlink (owner) pointing back to the Object.
+// Allows retry on up to MAX_PROBE_ATTEMPTS different objects, since not all objects
+// have GDScript attached (e.g. Engine, InputMap are engine singletons without scripts).
+static std::atomic<int> s_probeAttempts{0};
+static constexpr int MAX_PROBE_ATTEMPTS = 10;
+
+static void ProbeScriptInstanceOffset(uint64_t objAddr) {
+    if (DynOff::bScriptInstanceProbed.load()) return; // Already found
+
+    int attempt = s_probeAttempts.fetch_add(1);
+    if (attempt >= MAX_PROBE_ATTEMPTS) return; // Give up after N attempts
+
+    EnsureModuleInfo();
+    Solliter::Info("WALK", "=== Probing ScriptInstance offset (attempt %d/%d) ===",
+        attempt + 1, MAX_PROBE_ATTEMPTS);
+
+    // Scan from +0x20 to +0x300 (ScriptInstance* is after the fixed Object header)
+    for (int off = 0x20; off <= 0x300; off += 8) {
+        uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(objAddr + off, 0);
+        if (!candidate || !Zoltraak::IsReadable(candidate)) continue;
+
+        // Validate: candidate should have a vtable in .text/.rdata section
+        uint64_t candidateVtable = Zoltraak::ReadSafe<uint64_t>(candidate, 0);
+        if (!candidateVtable || !Zoltraak::IsReadable(candidateVtable)) continue;
+
+        // Check if vtable is in main module (game executable)
+        // Skip if it's a common value or null-ish
+        if (candidateVtable < 0x10000) continue;
+
+        // Key validation: GDScriptInstance has Object* owner at +0x10
+        // This should point back to our Object
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(candidate + DynOff::GDSCRIPT_OWNER_OFF, 0);
+        if (owner != objAddr) continue;
+
+        // Additional check: owner_id at +0x08 should be non-zero
+        uint64_t ownerId = Zoltraak::ReadSafe<uint64_t>(candidate + 0x08, 0);
+        if (ownerId == 0) continue;
+
+        // Check that script pointer at +0x18 is also valid
+        uint64_t scriptPtr = Zoltraak::ReadSafe<uint64_t>(candidate + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
+        if (!scriptPtr || !Zoltraak::IsReadable(scriptPtr)) continue;
+
+        // Found it!
+        DynOff::OBJECT_SCRIPT_INSTANCE = off;
+        DynOff::bScriptInstanceProbed.store(true); // Mark as found — no more retries
+        Solliter::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p)",
+            off, reinterpret_cast<void*>(candidate), reinterpret_cast<void*>(scriptPtr));
+
+        // Try to validate Vector<Variant> members
+        uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+            candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+        if (membersPtr && Zoltraak::IsReadable(membersPtr)) {
+            // CowData: size is at ptr - 8 (4.x) or ptr - 4 (3.x)
+            int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+            uint32_t memberCount = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+            Solliter::Info("WALK", "  Members Vector: ptr=%p count=%u",
+                reinterpret_cast<void*>(membersPtr), memberCount);
+
+            // Validate: try reading first Variant
+            if (memberCount > 0 && memberCount < 1000) {
+                int32_t firstType = Zoltraak::ReadSafe<int32_t>(membersPtr, -1);
+                Solliter::Info("WALK", "  First member Variant::Type = %d", firstType);
+            }
+        }
+
+        Solliter::Info("WALK", "=== ScriptInstance probe complete ===");
+        return;
+    }
+
+    // Not found on this object — DON'T set bScriptInstanceProbed, allow retry on next object
+    Solliter::Info("WALK", "  No ScriptInstance found on this object (attempt %d/%d)",
+        attempt + 1, MAX_PROBE_ATTEMPTS);
+    Solliter::Info("WALK", "=== ScriptInstance probe complete ===");
+}
+
+// Read member names from GDScript::member_indices HashMap
+// Returns name→index map. Fails gracefully with empty map.
+static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gdscriptAddr) {
+    std::unordered_map<int, std::string> indexToName;
+    if (!gdscriptAddr || !Zoltraak::IsReadable(gdscriptAddr)) return indexToName;
+
+    // GDScript inherits from Script → Resource → RefCounted → Object
+    // member_indices is a HashMap<StringName, MemberInfo> somewhere in GDScript
+    // MemberInfo starts with int index (4B + 4B pad)
+    //
+    // Strategy: scan GDScript memory for a robin-hood HashMap (4.x) or bucket-chain (3.x)
+    // where keys resolve to StringNames and values start with small ints (indices 0-N)
+
+    if (GodotVer::IsGodot3()) {
+        // 3.x: bucket-chain HashMap (16B inline)
+        for (int off = 0x40; off <= 0x600; off += 8) {
+            uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off, 0);
+            uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(gdscriptAddr + off + 0x08, 0);
+            uint32_t count = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x0C, 0);
+            if (!ht || !Zoltraak::IsReadable(ht)) continue;
+            if (pw < 1 || pw > 12 || count < 1 || count > 200) continue;
+
+            // Validate: first non-null bucket element key resolves to a StringName,
+            // and value starts with a small int (index)
+            int buckets = 1 << pw;
+            bool valid = false;
+            for (int b = 0; b < buckets && !valid; ++b) {
+                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                if (!elem || !Zoltraak::IsReadable(elem)) continue;
+
+                std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                if (name.empty() || name.size() > 64) continue;
+
+                int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
+                if (idx < 0 || idx >= static_cast<int>(count)) continue;
+
+                valid = true;
+            }
+            if (!valid) continue;
+
+            // Read all entries
+            for (int b = 0; b < buckets; ++b) {
+                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                while (elem && Zoltraak::IsReadable(elem)) {
+                    std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                    int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
+                    if (!name.empty() && idx >= 0 && idx < 200) {
+                        indexToName[idx] = name;
+                    }
+                    uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                    if (next == elem) break;
+                    elem = next;
+                }
+            }
+            if (!indexToName.empty()) {
+                Solliter::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
+                    static_cast<int>(indexToName.size()), off);
+                break;
+            }
+        }
+    } else {
+        // 4.x: robin-hood HashMap (40B inline)
+        for (int off = 0x40; off <= 0x600; off += 8) {
+            uint64_t head = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off + 0x10, 0);
+            uint32_t num  = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x24, 0);
+            if (!head || num < 1 || num > 200) continue;
+            if (!Zoltraak::IsReadable(head)) continue;
+
+            // Validate: key is StringName, value.index is small int
+            // Element: next(8B), prev(8B), KeyValue { StringName(8B), MemberInfo { int index, ... } }
+            std::string firstName = Flamme::Resolve(head + 0x10);
+            if (firstName.empty() || firstName.size() > 64) continue;
+
+            int32_t firstIdx = Zoltraak::ReadSafe<int32_t>(head + 0x18, -1);
+            if (firstIdx < 0 || firstIdx >= static_cast<int>(num)) continue;
+
+            // Read all entries
+            uint64_t cur = head;
+            int walked = 0;
+            while (cur && walked < static_cast<int>(num) + 5) {
+                if (!Zoltraak::IsReadable(cur)) break;
+                std::string name = Flamme::Resolve(cur + 0x10);
+                int32_t idx = Zoltraak::ReadSafe<int32_t>(cur + 0x18, -1);
+                if (!name.empty() && idx >= 0 && idx < 200) {
+                    indexToName[idx] = name;
+                }
+                uint64_t next = Zoltraak::ReadSafe<uint64_t>(cur, 0);
+                if (next == cur) break;
+                cur = next;
+                walked++;
+            }
+            if (!indexToName.empty()) {
+                Solliter::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
+                    static_cast<int>(indexToName.size()), off);
+                break;
+            }
+        }
+    }
+
+    return indexToName;
+}
+
+// Read GDScript members from an Object's ScriptInstance
+// Appends FieldEntry items to the callback for each script member.
+static void ReadGDScriptMembers(uint64_t objAddr,
+                                 const std::function<void(const FieldEntry& entry)>& callback) {
+    if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return; // Offset not known
+
+    uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+        objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+    if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return;
+
+    // Verify owner backlink
+    uint64_t owner = Zoltraak::ReadSafe<uint64_t>(scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+    if (owner != objAddr) return; // Not a valid GDScriptInstance for this object
+
+    // Read GDScript pointer for name lookup
+    uint64_t gdscriptPtr = Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
+
+    // Read members Vector<Variant> (CowData pointer)
+    uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+    if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) return;
+
+    // Read count from CowData header (before data pointer)
+    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+    if (count == 0 || count > 500) return;
+
+    // Try to get member names from GDScript object
+    auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
+
+    Solliter::Debug("WALK", "GDScript members: %u variables, %d names resolved",
+        count, static_cast<int>(nameMap.size()));
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t varAddr = membersPtr + i * variantStride;
+        VariantValue val = ReadVariant(varAddr);
+
+        // Skip NIL/null entries
+        if (val.type == 0 && val.value.empty()) continue;
+
+        FieldEntry entry;
+        auto nameIt = nameMap.find(static_cast<int>(i));
+        entry.name = (nameIt != nameMap.end()) ? nameIt->second
+                                                : "script_var_" + std::to_string(i);
+        entry.className = "(GDScript)";
+        entry.value     = val;
+        entry.offset    = -1;  // Not a fixed offset from Object base (heap allocated)
+
+        callback(entry);
+    }
+}
+
+// ============================================================
 // WalkInstance — Walk all properties of an object instance
 // ============================================================
 void WalkInstance(uint64_t objAddr,
@@ -441,23 +848,44 @@ void WalkInstance(uint64_t objAddr,
         className.c_str(), reinterpret_cast<void*>(objAddr),
         static_cast<int>(properties.size()));
 
-    // Step 3: Build FieldEntry for each property
+    // Step 3: Build FieldEntry for each property, reading values where offsets are known
+    int valuesRead = 0;
     for (auto& prop : properties) {
         FieldEntry entry;
         entry.name       = prop.name;
         entry.className  = prop.className;
+        entry.offset     = prop.offset;
+        entry.nativeSize = prop.nativeSize;
         entry.hint       = prop.hint;
         entry.hintString = prop.hintString;
         entry.usage      = prop.usage;
 
-        // Set up VariantValue with type metadata but no live value
-        entry.value.type     = prop.type;
-        entry.value.typeName = VariantTypeName(prop.type);
-        entry.value.value    = "";      // No live value (would need getter call via Heiter)
-        entry.value.rawAddr  = 0;       // No address (offset unknown)
+        if (prop.offset >= 0) {
+            // Read live value from object memory at the extracted offset
+            uint64_t memberAddr = objAddr + prop.offset;
+            entry.value = ReadNativeValue(memberAddr, prop.type, prop.nativeSize);
+            valuesRead++;
+        } else {
+            // No offset available — metadata only
+            entry.value.type     = prop.type;
+            entry.value.typeName = VariantTypeName(prop.type);
+            entry.value.value    = "";
+            entry.value.rawAddr  = 0;
+        }
 
         callback(entry);
     }
+
+    if (valuesRead > 0) {
+        Solliter::Debug("WALK", "WalkInstance: read %d/%d live values for '%s'",
+            valuesRead, static_cast<int>(properties.size()), className.c_str());
+    }
+
+    // Step 4: Probe ScriptInstance offset (retries on different objects until found or max attempts)
+    ProbeScriptInstanceOffset(objAddr);
+
+    // Step 5: Read GDScript member variables (if object has a script attached)
+    ReadGDScriptMembers(objAddr, callback);
 }
 
 // ============================================================
@@ -475,6 +903,10 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     auto properties = DiAgolze::GetPropertyList(className.c_str());
     for (auto& prop : properties) {
         if (prop.name == propertyName) {
+            if (prop.offset >= 0) {
+                return ReadNativeValue(objAddr + prop.offset, prop.type, prop.nativeSize);
+            }
+            // Fallback: metadata only
             VariantValue result;
             result.type     = prop.type;
             result.typeName = VariantTypeName(prop.type);

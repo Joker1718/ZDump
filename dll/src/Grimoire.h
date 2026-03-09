@@ -62,6 +62,14 @@ namespace DynOff {
     inline int OBJECT_INSTANCE_ID      = 0x18;  // ObjectID (8 bytes)
     inline int OBJECT_SCRIPT_INSTANCE  = -1;    // ScriptInstance* (version-dependent, probe required)
 
+    // ----- GDScriptInstance layout -----
+    // GDScriptInstance { vtable(8), owner_id(8), owner(8), script(8), members(8...) }
+    inline int GDSCRIPT_OWNER_OFF    = 0x10;  // Object* owner within GDScriptInstance
+    inline int GDSCRIPT_SCRIPT_OFF   = 0x18;  // Ref<GDScript> script
+    inline int GDSCRIPT_MEMBERS_OFF  = 0x20;  // Vector<Variant> members (CowData pointer)
+    inline int VARIANT_STRIDE        = 0x20;  // sizeof(Variant) = 32 bytes for 4.x
+    inline std::atomic<bool> bScriptInstanceProbed{false};
+
     // ----- ObjectSlot layout (fixed) -----
     inline int SLOT_STRIDE         = 16;    // 8 bytes metadata + 8 bytes pointer
     inline int SLOT_OBJECT_OFFSET  = 8;     // Object* at offset 8 within slot

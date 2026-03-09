@@ -110,6 +110,43 @@ static std::string GetHexField(const json& req) {
     return "";
 }
 
+// Sanitize a string for JSON: replace invalid UTF-8 bytes with '?'.
+// nlohmann::json throws on invalid UTF-8, so all memory-sourced strings
+// must pass through this before assignment.
+static std::string SafeStr(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        int seqLen = 0;
+        if      (c < 0x80) seqLen = 1;
+        else if ((c & 0xE0) == 0xC0) seqLen = 2;
+        else if ((c & 0xF0) == 0xE0) seqLen = 3;
+        else if ((c & 0xF8) == 0xF0) seqLen = 4;
+        if (seqLen == 0 || i + seqLen > s.size()) {
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+        bool valid = true;
+        for (int j = 1; j < seqLen; ++j) {
+            if ((static_cast<unsigned char>(s[i + j]) & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid) {
+            out.append(s, i, seqLen);
+            i += seqLen;
+        } else {
+            out.push_back('?');
+            ++i;
+        }
+    }
+    return out;
+}
+
 // Read object name (StringName) by probing node name offsets
 static std::string ReadObjectName(uint64_t objAddr) {
     if (!objAddr) return "";
@@ -310,8 +347,8 @@ static json HandleGetObjectList(int id, const json& req) {
 
         json obj;
         obj["address"]    = AddrToHex(objAddr);
-        obj["name"]       = name;
-        obj["class_name"] = className;
+        obj["name"]       = SafeStr(name);
+        obj["class_name"] = SafeStr(className);
         obj["object_id"]  = static_cast<int64_t>(objId);
         obj["slot_index"] = index;
 
@@ -348,8 +385,8 @@ static json HandleGetObject(int id, const json& req) {
 
     json resp = OkResponse(id);
     resp["address"]    = AddrToHex(addr);
-    resp["name"]       = name;
-    resp["class_name"] = className;
+    resp["name"]       = SafeStr(name);
+    resp["class_name"] = SafeStr(className);
     resp["object_id"]  = static_cast<int64_t>(objId);
     resp["slot_index"] = slotIndex;
     resp["is_node"]    = !className.empty(); // approximate
@@ -409,8 +446,8 @@ static json HandleFindObject(int id, const json& req) {
     json resp = OkResponse(id);
     resp["found"]      = true;
     resp["address"]    = AddrToHex(current);
-    resp["name"]       = name;
-    resp["class_name"] = className;
+    resp["name"]       = SafeStr(name);
+    resp["class_name"] = SafeStr(className);
     resp["node_path"]  = path;
     return resp;
 }
@@ -436,8 +473,8 @@ static json HandleFindByAddress(int id, const json& req) {
     json resp = OkResponse(id);
     resp["found"]      = true;
     resp["address"]    = AddrToHex(addr);
-    resp["name"]       = name;
-    resp["class_name"] = className;
+    resp["name"]       = SafeStr(name);
+    resp["class_name"] = SafeStr(className);
     resp["slot_index"] = slotIndex;
     return resp;
 }
@@ -454,12 +491,12 @@ static json HandleWalkClass(int id, const json& req) {
     json properties = json::array();
     for (auto& prop : classInfo.properties) {
         json f;
-        f["name"]        = prop.name;
+        f["name"]        = SafeStr(prop.name);
         f["type"]        = VariantTypeName(prop.type);
         f["offset"]      = prop.offset;
-        f["size"]        = 0;
+        f["size"]        = prop.nativeSize > 0 ? prop.nativeSize : 0;
         f["hint"]        = prop.hint;
-        f["hint_string"] = prop.hintString;
+        f["hint_string"] = SafeStr(prop.hintString);
         f["usage"]       = static_cast<int>(prop.usage);
         properties.push_back(std::move(f));
     }
@@ -467,15 +504,15 @@ static json HandleWalkClass(int id, const json& req) {
     json methods = json::array();
     for (auto& m : classInfo.methods) {
         json method;
-        method["name"]        = m.name;
-        method["return_type"] = m.returnType;
+        method["name"]        = SafeStr(m.name);
+        method["return_type"] = SafeStr(m.returnType);
         method["arg_count"]   = m.argCount;
         methods.push_back(std::move(method));
     }
 
     json resp = OkResponse(id);
-    resp["class_name"]  = classInfo.name;
-    resp["super_name"]  = classInfo.parentName;
+    resp["class_name"]  = SafeStr(classInfo.name);
+    resp["super_name"]  = SafeStr(classInfo.parentName);
     resp["class_addr"]  = AddrToHex(classInfo.nativePtr);
     resp["properties"]  = std::move(properties);
     resp["methods"]     = std::move(methods);
@@ -592,21 +629,21 @@ static json HandleWalkInstance(int id, const json& req) {
     json fields = json::array();
     Ubel::WalkInstance(addr, [&](const Ubel::FieldEntry& entry) {
         json f;
-        f["name"]         = entry.name;
+        f["name"]         = SafeStr(entry.name);
         f["type"]         = entry.value.typeName;
         f["variant_type"] = entry.value.type;
-        f["value"]        = entry.value.value;
+        f["value"]        = SafeStr(entry.value.value);
         f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
-        f["offset"]       = -1;  // Godot doesn't expose byte offsets via ClassDB
-        f["size"]         = VariantTypeSize(entry.value.type);
+        f["offset"]       = entry.offset;
+        f["size"]         = entry.nativeSize > 0 ? entry.nativeSize : VariantTypeSize(entry.value.type);
         f["hint"]         = entry.hint;
-        f["hint_string"]  = entry.hintString;
+        f["hint_string"]  = SafeStr(entry.hintString);
         f["usage"]        = static_cast<int>(entry.usage);
         f["is_pointer"]   = IsPointerType(entry.value.type);
         f["is_struct"]    = IsStructType(entry.value.type);
         f["is_container"] = IsContainerType(entry.value.type);
         if (!entry.className.empty()) {
-            f["class_name"] = entry.className; // owning class for the property
+            f["class_name"] = SafeStr(entry.className);
         }
         fields.push_back(std::move(f));
     });
@@ -624,8 +661,8 @@ static json HandleWalkInstance(int id, const json& req) {
 
     json resp = OkResponse(id);
     resp["address"]    = AddrToHex(addr);
-    resp["name"]       = name;
-    resp["class_name"] = className;
+    resp["name"]       = SafeStr(name);
+    resp["class_name"] = SafeStr(className);
     resp["parent_addr"] = parentAddr;
     resp["fields"]     = std::move(fields);
     return resp;
@@ -635,8 +672,8 @@ static json HandleWalkInstance(int id, const json& req) {
 static json BuildTreeNode(uint64_t nodeAddr, int depth, int maxDepth) {
     json node;
     node["address"]    = AddrToHex(nodeAddr);
-    node["name"]       = ReadObjectName(nodeAddr);
-    node["class_name"] = DiAgolze::GetObjectClass(nodeAddr);
+    node["name"]       = SafeStr(ReadObjectName(nodeAddr));
+    node["class_name"] = SafeStr(DiAgolze::GetObjectClass(nodeAddr));
 
     if (depth < maxDepth) {
         auto children = Serie::GetChildren(nodeAddr);
@@ -731,8 +768,8 @@ static json HandleFindInstances(int id, const json& req) {
         if (match) {
             json obj;
             obj["address"]    = AddrToHex(objAddr);
-            obj["name"]       = name;
-            obj["class_name"] = cls;
+            obj["name"]       = SafeStr(name);
+            obj["class_name"] = SafeStr(cls);
             obj["slot_index"] = index;
             instances.push_back(std::move(obj));
             found++;
@@ -803,8 +840,8 @@ static json HandleListClasses(int id, const json& /*req*/) {
         auto info = DiAgolze::GetClassInfo(name.c_str());
 
         json cls;
-        cls["class_name"]     = name;
-        cls["super_name"]     = info.parentName;
+        cls["class_name"]     = SafeStr(name);
+        cls["super_name"]     = SafeStr(info.parentName);
         cls["property_count"] = static_cast<int>(info.properties.size());
         cls["method_count"]   = static_cast<int>(info.methods.size());
         cls["is_game_class"]  = false; // TODO: detect game vs engine classes
@@ -842,9 +879,9 @@ static json HandleSearchProperties(int id, const json& req) {
 
             if (propLower.find(queryLower) != std::string::npos) {
                 json hit;
-                hit["class_name"]    = className;
-                hit["super_name"]    = info.parentName;
-                hit["property_name"] = prop.name;
+                hit["class_name"]    = SafeStr(className);
+                hit["super_name"]    = SafeStr(info.parentName);
+                hit["property_name"] = SafeStr(prop.name);
                 hit["property_type"] = VariantTypeName(prop.type);
                 hit["offset"]        = prop.offset;
                 hit["size"]          = 0;

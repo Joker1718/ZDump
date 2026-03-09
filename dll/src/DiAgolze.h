@@ -17,7 +17,8 @@ struct PropertyInfo {
     std::string name;
     std::string className;   // owning class
     int         type;        // Variant::Type
-    int         offset;      // memory offset within instance (-1: Godot has no byte offsets)
+    int         offset;      // memory offset within instance (-1 if unknown)
+    int         nativeSize = 0; // native access size in bytes (1, 4, 8) from ptrcall analysis
     int         hint = 0;    // PropertyHint enum value
     std::string hintString;  // hint parameter string (e.g., "0,100,1" for Range)
     uint32_t    usage = 0;   // PROPERTY_USAGE_* flags

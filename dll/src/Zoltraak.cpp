@@ -3,6 +3,7 @@
 // RIP-relative resolution, module enumeration.
 
 #include "Zoltraak.h"
+#include "Grimoire.h"
 #include <Windows.h>
 #include <Psapi.h>
 #include <cstring>
@@ -240,7 +241,11 @@ static std::string ConvertChar32ToUtf8(uint64_t dataAddr, uint32_t maxChars) {
         uint32_t ch = ReadSafe<uint32_t>(dataAddr + i * 4, 0);
         if (ch == 0) break;
 
-        // Simple UTF-32 to UTF-8 conversion
+        // Skip invalid Unicode codepoints (surrogates, out of range)
+        if (ch > 0x10FFFF || (ch >= 0xD800 && ch <= 0xDFFF))
+            continue;
+
+        // UTF-32 to UTF-8 conversion
         if (ch < 0x80) {
             result.push_back(static_cast<char>(ch));
         } else if (ch < 0x800) {
@@ -260,11 +265,59 @@ static std::string ConvertChar32ToUtf8(uint64_t dataAddr, uint32_t maxChars) {
     return result;
 }
 
+// Helper: convert wchar_t[] (UTF-16 on Windows) to UTF-8, reading from memory
+static std::string ConvertWchar16ToUtf8(uint64_t dataAddr, uint32_t maxChars) {
+    std::string result;
+    result.reserve(maxChars);
+
+    for (uint32_t i = 0; i < maxChars; ++i) {
+        uint16_t wc = ReadSafe<uint16_t>(dataAddr + i * 2, 0);
+        if (wc == 0) break;
+
+        if (wc < 0x80) {
+            result.push_back(static_cast<char>(wc));
+        } else if (wc < 0x800) {
+            result.push_back(static_cast<char>(0xC0 | (wc >> 6)));
+            result.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        } else if (wc >= 0xD800 && wc <= 0xDBFF) {
+            // Surrogate pair — read low surrogate
+            uint16_t lo = ReadSafe<uint16_t>(dataAddr + (i + 1) * 2, 0);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                uint32_t cp = 0x10000 + ((static_cast<uint32_t>(wc) - 0xD800) << 10) + (lo - 0xDC00);
+                result.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                i++; // Skip low surrogate
+            }
+        } else {
+            result.push_back(static_cast<char>(0xE0 | (wc >> 12)));
+            result.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        }
+    }
+    return result;
+}
+
 std::string ReadGodotString(uint64_t cowDataPtr) {
     if (!cowDataPtr || !IsReadable(cowDataPtr)) return "";
 
-    // Godot CowData<char32_t> layout:
-    // _ptr points to char32_t[] data. Size is stored before the data.
+    // ---- Godot 3.x: CowData<wchar_t> (Windows: 2 bytes per char) ----
+    // Must be checked FIRST because char32_t reading produces garbage for wchar_t data.
+    if (GodotVer::IsGodot3()) {
+        // Strategy A: size at _ptr - 4 (int32_t element count)
+        int32_t wsize = ReadSafe<int32_t>(cowDataPtr - 4, 0);
+        if (wsize > 0 && wsize <= 4096) {
+            uint16_t wterm = ReadSafe<uint16_t>(cowDataPtr + wsize * 2, 0);
+            if (wterm == 0) {
+                return ConvertWchar16ToUtf8(cowDataPtr, static_cast<uint32_t>(wsize));
+            }
+        }
+        // Strategy B: null-terminated wchar_t read (fallback)
+        return ConvertWchar16ToUtf8(cowDataPtr, 256);
+    }
+
+    // ---- Godot 4.x: CowData<char32_t> (4 bytes per char) ----
     // The layout changed across Godot versions:
     //
     // Old layout (Godot 4.0-4.2): [uint32_t refcount][uint32_t size][data...]
@@ -308,6 +361,23 @@ std::string ReadGodotString(uint64_t cowDataPtr) {
     // Strategy 4: Null-terminated read (most robust fallback)
     // Works regardless of header layout — just read char32_t until null
     return ConvertChar32ToUtf8(cowDataPtr, 256);
+}
+
+std::string ReadWcharString(uint64_t cowDataPtr) {
+    if (!cowDataPtr || !IsReadable(cowDataPtr)) return "";
+
+    // Godot 3.x CowData<wchar_t> (Windows: wchar_t = 2 bytes = UTF-16)
+    // Size stored as int32_t element count at _ptr - 4
+    int32_t wsize = ReadSafe<int32_t>(cowDataPtr - 4, 0);
+    if (wsize > 0 && wsize <= 4096) {
+        uint16_t wterm = ReadSafe<uint16_t>(cowDataPtr + wsize * 2, 0);
+        if (wterm == 0) {
+            return ConvertWchar16ToUtf8(cowDataPtr, static_cast<uint32_t>(wsize));
+        }
+    }
+
+    // Fallback: null-terminated wchar_t read
+    return ConvertWchar16ToUtf8(cowDataPtr, 256);
 }
 
 std::string ReadChar32String(uint64_t addr, size_t maxChars) {

@@ -80,4 +80,8 @@ std::string ReadGodotString(uint64_t cowDataPtr);
 // Used for StringName::_Data::cname which is a raw const char32_t* pointer.
 std::string ReadChar32String(uint64_t addr, size_t maxChars = 256);
 
+// Read a UTF-16 Godot 3.x String from its CowData<wchar_t> pointer
+// Windows wchar_t = 2 bytes. CowData stores int32_t size at _ptr - 4.
+std::string ReadWcharString(uint64_t cowDataPtr);
+
 } // namespace Zolt::Zoltraak
