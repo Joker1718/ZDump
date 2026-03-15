@@ -63,6 +63,9 @@ void EnumerateClasses(const std::function<void(const std::string& name, uint64_t
 // Named GetObjectClass to avoid collision with Windows GetClassName macro
 std::string GetObjectClass(uint64_t objectAddr);
 
+// Check if a class name inherits from Node (walks parent chain in ClassDB)
+bool IsNodeDerived(const std::string& className);
+
 // One-shot diagnostics dump
 void LogDiagnostics();
 

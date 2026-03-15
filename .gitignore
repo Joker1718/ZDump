@@ -449,6 +449,7 @@ build/
 # repos specific
 dist/
 build_proxy/
+build_proxy_winmm/
 
 # Test binaries and artifacts
 test/godot/*.exe

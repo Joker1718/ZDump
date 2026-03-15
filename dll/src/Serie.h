@@ -32,4 +32,7 @@ uint64_t GetRoot();
 // Get children of a node
 std::vector<NodeInfo> GetChildren(uint64_t nodeAddr);
 
+// Resolve a Node's StringName name (uses cached offset or probes)
+std::string GetNodeName(uint64_t nodeAddr);
+
 } // namespace Zolt::Serie
