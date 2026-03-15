@@ -13,10 +13,11 @@ namespace Zolt::Ubel {
 
 // Represents a decoded Variant value
 struct VariantValue {
-    int         type;       // Variant::Type enum
-    std::string typeName;   // Human-readable type name
-    std::string value;      // String representation of the value
-    uint64_t    rawAddr;    // Address of the variant data
+    int         type = 0;       // Variant::Type enum
+    std::string typeName;       // Human-readable type name
+    std::string value;          // String representation of the value
+    uint64_t    rawAddr = 0;    // Address of the variant data (where the field lives)
+    uint64_t    ptrTarget = 0;  // For Object-type: address of the pointed-to Object (0 if not applicable)
 };
 
 // Property with its value

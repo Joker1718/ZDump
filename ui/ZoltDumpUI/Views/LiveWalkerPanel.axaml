@@ -121,7 +121,26 @@
                 <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="200" />
                 <DataGridTextColumn Header="Hex" Binding="{Binding Hex}" Width="120" />
                 <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="140" />
-                <DataGridTextColumn Header="Ptr" Binding="{Binding PtrValue}" Width="140" />
+                <DataGridTemplateColumn Header="Ptr" Width="160">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="{Binding PtrValue}"
+                                    Command="{Binding $parent[DataGrid].((vm:LiveWalkerViewModel)DataContext).NavigatePointerCommand}"
+                                    CommandParameter="{Binding}"
+                                    IsVisible="{Binding PtrValue, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                    Classes="link"
+                                    Padding="2,0"
+                                    Margin="0"
+                                    Background="Transparent"
+                                    Foreground="#4EC9B0"
+                                    FontFamily="Consolas"
+                                    FontSize="12"
+                                    Cursor="Hand"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
     </DockPanel>

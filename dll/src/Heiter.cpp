@@ -36,6 +36,9 @@ static std::atomic<bool> s_initialized   {false};
 static std::atomic<bool> s_hookActive    {false};
 static std::atomic<bool> s_draining      {false};   // re-entrancy guard
 static std::atomic<bool> s_shutdownFlag  {false};
+static std::atomic<int>  s_hookCallCount {0};        // Diagnostic: how many times hook proc fired
+static std::atomic<int>  s_consecTimeouts{0};        // Consecutive sync dispatch timeouts
+static std::atomic<bool> s_ptrcallDisabled{false};   // Auto-disabled after too many timeouts
 static std::mutex        s_mutex;
 static std::deque<WorkItem> s_workQueue;
 
@@ -99,6 +102,7 @@ static void DrainWorkQueue() {
 // Hook callback — fires on the game thread during PeekMessage
 // ============================================================
 static LRESULT CALLBACK HeiterHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    s_hookCallCount.fetch_add(1, std::memory_order_relaxed);
     if (nCode >= 0 && !s_workQueue.empty()) {
         DrainWorkQueue();
     }
@@ -167,7 +171,15 @@ static bool InstallHook() {
                    s_hGameWnd, s_gameThreadId, titleA);
 
     // Install thread-specific message hook
-    s_hHook = SetWindowsHookExW(WH_GETMESSAGE, HeiterHookProc, s_hModule, s_gameThreadId);
+    // MSDN: hMod should be NULL when hooking a thread in the current process
+    // and the hook procedure is within the process's code (our injected DLL).
+    // First try with NULL (correct per MSDN), fallback to DLL module handle.
+    s_hHook = SetWindowsHookExW(WH_GETMESSAGE, HeiterHookProc, nullptr, s_gameThreadId);
+    if (!s_hHook) {
+        Solitaer::Debug("HEITER", "SetWindowsHookExW(hMod=NULL) failed (%lu), retrying with DLL module",
+                        GetLastError());
+        s_hHook = SetWindowsHookExW(WH_GETMESSAGE, HeiterHookProc, s_hModule, s_gameThreadId);
+    }
     if (!s_hHook) {
         Solitaer::Error("HEITER", "SetWindowsHookExW failed (error %lu)", GetLastError());
         return false;
@@ -252,6 +264,11 @@ void QueueWork(std::function<void()> callback) {
 bool QueueWorkSync(std::function<void()> work, DWORD timeoutMs) {
     if (!work) return false;
 
+    // If ptrcall is auto-disabled due to repeated timeouts, skip entirely
+    if (s_ptrcallDisabled.load()) {
+        return false;
+    }
+
     if (!s_hookActive.load()) {
         Solitaer::Debug("HEITER", "QueueWorkSync: hook not active, executing inline");
         work();
@@ -277,18 +294,35 @@ bool QueueWorkSync(std::function<void()> work, DWORD timeoutMs) {
         s_workQueue.push_back({std::move(work), evt, false});
     }
 
-    // Wake game thread
+    // Wake game thread — try both PostThreadMessage and PostMessage to window
     PostThreadMessageW(s_gameThreadId, WM_NULL, 0, 0);
+    if (s_hGameWnd) {
+        PostMessageW(s_hGameWnd, WM_NULL, 0, 0);
+    }
 
     DWORD waitResult = WaitForSingleObject(evt, timeoutMs);
     CloseHandle(evt);
 
     if (waitResult == WAIT_TIMEOUT) {
-        Solitaer::Warn("HEITER", "QueueWorkSync timed out after %lu ms", timeoutMs);
+        int n = s_consecTimeouts.fetch_add(1) + 1;
+        Solitaer::Warn("HEITER", "QueueWorkSync timed out after %lu ms (hookCalls=%d, consecutive=%d)",
+                       timeoutMs, s_hookCallCount.load(), n);
+        if (n >= Zolt::Heiter::MAX_CONSEC_TIMEOUTS) {
+            s_ptrcallDisabled.store(true);
+            Solitaer::Warn("HEITER", "Ptrcall auto-disabled after %d consecutive timeouts. "
+                           "Hook proc fired %d times total. Direct memory reads only.",
+                           n, s_hookCallCount.load());
+        }
         return false;
     }
 
+    // Success — reset timeout counter
+    s_consecTimeouts.store(0);
     return (waitResult == WAIT_OBJECT_0);
+}
+
+bool IsPtrcallDisabled() {
+    return s_ptrcallDisabled.load();
 }
 
 bool IsReady() {

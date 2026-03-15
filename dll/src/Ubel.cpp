@@ -220,6 +220,7 @@ static std::string FormatDouble(double v) {
 VariantValue ReadVariant(uint64_t addr) {
     VariantValue result{};
     result.rawAddr = addr;
+    result.ptrTarget = 0;
 
     if (!addr || !Zoltraak::IsReadable(addr)) return result;
 
@@ -387,6 +388,9 @@ VariantValue ReadVariant(uint64_t addr) {
         case 24: { // OBJECT — ObjData { ObjectID id(8B); Object* obj(8B) }
             uint64_t objId  = Zoltraak::ReadSafe<uint64_t>(data, 0);
             uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(data + 8, 0);
+            if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                result.ptrTarget = objPtr;
+            }
             char buf[64];
             snprintf(buf, sizeof(buf), "Object@%llX (id=%llu)",
                 static_cast<unsigned long long>(objPtr),
@@ -428,6 +432,7 @@ VariantValue ReadVariant(uint64_t addr) {
 static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int nativeSize) {
     VariantValue result{};
     result.rawAddr = memberAddr;
+    result.ptrTarget = 0;
     result.type    = variantType;
     result.typeName = VariantTypeName(variantType);
 
@@ -531,7 +536,7 @@ static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int na
         case 24: { // OBJECT (pointer)
             uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(memberAddr, 0);
             if (objPtr && Zoltraak::IsReadable(objPtr)) {
-                result.rawAddr = objPtr;
+                result.ptrTarget = objPtr;
                 char buf[32];
                 snprintf(buf, sizeof(buf), "Object@%llX", static_cast<unsigned long long>(objPtr));
                 result.value = buf;
@@ -608,6 +613,7 @@ static VariantValue DecodeReturnBuffer(const uint8_t* buf, int variantType, int 
     result.type     = variantType;
     result.typeName = VariantTypeName(variantType);
     result.rawAddr  = 0;
+    result.ptrTarget = 0;
 
     switch (type4x) {
         case 1: // bool
@@ -730,7 +736,7 @@ static VariantValue DecodeReturnBuffer(const uint8_t* buf, int variantType, int 
             uint64_t objPtr;
             memcpy(&objPtr, buf, 8);
             if (objPtr && Zoltraak::IsReadable(objPtr)) {
-                result.rawAddr = objPtr;
+                result.ptrTarget = objPtr;
                 char b[32];
                 snprintf(b, sizeof(b), "Object@%llX", static_cast<unsigned long long>(objPtr));
                 result.value = b;
@@ -907,21 +913,58 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
         Solitaer::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p)",
             off, reinterpret_cast<void*>(candidate), reinterpret_cast<void*>(scriptPtr));
 
-        // Try to validate Vector<Variant> members
-        uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
-            candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
-        if (membersPtr && Zoltraak::IsReadable(membersPtr)) {
-            // CowData: size is at ptr - 8 (4.x) or ptr - 4 (3.x)
-            int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-            uint32_t memberCount = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-            Solitaer::Info("WALK", "  Members Vector: ptr=%p count=%u",
-                reinterpret_cast<void*>(membersPtr), memberCount);
+        // Hexdump first 0x50 bytes of GDScriptInstance for layout diagnosis
+        Solitaer::Info("WALK", "  GDScriptInstance hexdump (first 0x50 bytes at %p):",
+            reinterpret_cast<void*>(candidate));
+        for (int doff = 0; doff < 0x50; doff += 8) {
+            uint64_t val = Zoltraak::ReadSafe<uint64_t>(candidate + doff, 0);
+            Solitaer::Info("WALK", "    +0x%02X: %016llX%s",
+                doff, val,
+                (doff == 0x00) ? "  <- vtable" :
+                (doff == 0x08) ? "  <- owner_id" :
+                (doff == 0x10) ? "  <- owner" :
+                (doff == 0x18) ? "  <- script (Ref)" : "");
+        }
 
-            // Validate: try reading first Variant
-            if (memberCount > 0 && memberCount < 1000) {
-                int32_t firstType = Zoltraak::ReadSafe<int32_t>(membersPtr, -1);
-                Solitaer::Info("WALK", "  First member Variant::Type = %d", firstType);
+        // Probe members Vector offset dynamically:
+        // Scan from +0x20 to +0x48 for a valid CowData pointer (aligned, readable, sensible count)
+        int probedMembersOff = -1;
+        for (int moff = 0x20; moff <= 0x48; moff += 8) {
+            uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(candidate + moff, 0);
+            if (!mptr || !Zoltraak::IsReadable(mptr)) continue;
+            // CowData._ptr must be reasonably aligned (at least 8-byte for Variant data)
+            if (mptr % 8 != 0) {
+                Solitaer::Debug("WALK", "  +0x%02X: ptr=%p SKIP (not 8-byte aligned)", moff,
+                    reinterpret_cast<void*>(mptr));
+                continue;
             }
+            // Read size from CowData header
+            int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+            uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
+            if (cnt == 0 || cnt > 1000) continue;
+            // Validate: first Variant::Type should be in range [0, VariantTypeMax)
+            int32_t firstType = Zoltraak::ReadSafe<int32_t>(mptr, -1);
+            if (firstType < 0 || firstType >= GodotVer::VariantTypeMax()) continue;
+
+            probedMembersOff = moff;
+            Solitaer::Info("WALK", "  Members Vector probed at +0x%02X: ptr=%p count=%u firstType=%d",
+                moff, reinterpret_cast<void*>(mptr), cnt, firstType);
+            break;
+        }
+
+        if (probedMembersOff >= 0 && probedMembersOff != DynOff::GDSCRIPT_MEMBERS_OFF) {
+            Solitaer::Info("WALK", "  Updating GDSCRIPT_MEMBERS_OFF: 0x%X -> 0x%X",
+                DynOff::GDSCRIPT_MEMBERS_OFF, probedMembersOff);
+            DynOff::GDSCRIPT_MEMBERS_OFF = probedMembersOff;
+        } else if (probedMembersOff < 0) {
+            // Fallback: log all readable pointers for manual analysis
+            Solitaer::Warn("WALK", "  Could not probe members Vector offset (all candidates failed)");
+            uint64_t defaultPtr = Zoltraak::ReadSafe<uint64_t>(
+                candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+            Solitaer::Warn("WALK", "  Default +0x%X value: %p (aligned=%s)",
+                DynOff::GDSCRIPT_MEMBERS_OFF,
+                reinterpret_cast<void*>(defaultPtr),
+                (defaultPtr % 8 == 0) ? "yes" : "NO");
         }
 
         Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
@@ -1040,15 +1083,30 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
 // Appends FieldEntry items to the callback for each script member.
 static void ReadGDScriptMembers(uint64_t objAddr,
                                  const std::function<void(const FieldEntry& entry)>& callback) {
-    if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return; // Offset not known
+    if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) {
+        // Offset not yet probed — no log needed (normal before probe succeeds)
+        return;
+    }
 
     uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
         objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
-    if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return;
+    if (!scriptInst) {
+        // Object has no ScriptInstance (no GDScript attached) — expected for engine nodes
+        return;
+    }
+    if (!Zoltraak::IsReadable(scriptInst)) {
+        Solitaer::Debug("WALK", "ReadGDScriptMembers: ScriptInstance ptr %p not readable for obj %p",
+            reinterpret_cast<void*>(scriptInst), reinterpret_cast<void*>(objAddr));
+        return;
+    }
 
     // Verify owner backlink
     uint64_t owner = Zoltraak::ReadSafe<uint64_t>(scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
-    if (owner != objAddr) return; // Not a valid GDScriptInstance for this object
+    if (owner != objAddr) {
+        Solitaer::Debug("WALK", "ReadGDScriptMembers: owner mismatch at %p (owner=%p, expected=%p) — not a GDScriptInstance",
+            reinterpret_cast<void*>(scriptInst), reinterpret_cast<void*>(owner), reinterpret_cast<void*>(objAddr));
+        return;
+    }
 
     // Read GDScript pointer for name lookup
     uint64_t gdscriptPtr = Zoltraak::ReadSafe<uint64_t>(
@@ -1057,12 +1115,32 @@ static void ReadGDScriptMembers(uint64_t objAddr,
     // Read members Vector<Variant> (CowData pointer)
     uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
         scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
-    if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) return;
+    if (!membersPtr) {
+        Solitaer::Info("WALK", "ReadGDScriptMembers: obj %p has GDScriptInstance at %p but members Vector is empty (ptr=NULL)",
+            reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(scriptInst));
+        return;
+    }
+    if (!Zoltraak::IsReadable(membersPtr)) {
+        Solitaer::Warn("WALK", "ReadGDScriptMembers: members ptr %p not readable (scriptInst=%p)",
+            reinterpret_cast<void*>(membersPtr), reinterpret_cast<void*>(scriptInst));
+        return;
+    }
 
     // Read count from CowData header (before data pointer)
+    // Godot 4.x: USize (uint64_t) at ptr-8; Godot 3.x: uint32_t at ptr-4
     int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
     uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-    if (count == 0 || count > 500) return;
+    if (count == 0) {
+        Solitaer::Debug("WALK", "ReadGDScriptMembers: members count=0 for obj %p (CowData at %p, size at %p)",
+            reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(membersPtr),
+            reinterpret_cast<void*>(membersPtr - sizeOff));
+        return;
+    }
+    if (count > 500) {
+        Solitaer::Warn("WALK", "ReadGDScriptMembers: members count=%u exceeds sanity limit (CowData at %p)",
+            count, reinterpret_cast<void*>(membersPtr));
+        return;
+    }
 
     // Try to get member names from GDScript object
     auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
@@ -1167,7 +1245,8 @@ void WalkInstance(uint64_t objAddr,
     }
 
     // Execute batched ptrcall on game thread (single QueueWorkSync for all)
-    if (!ptrcallJobs.empty()) {
+    // Skip entirely if ptrcall is auto-disabled (all timeouts → direct reads only)
+    if (!ptrcallJobs.empty() && !Heiter::IsPtrcallDisabled()) {
         struct PtrcallResult {
             VariantValue value;
             bool ok = false;

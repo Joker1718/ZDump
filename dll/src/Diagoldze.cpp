@@ -673,77 +673,92 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     uint8_t code[64] = {};
     Zoltraak::ReadSafe(ptrcallAddr, code, sizeof(code));
 
-    // Scan for common x86-64 memory access patterns:
-    // Pattern 1: REX.W MOV reg, [rdx + imm32] → 8-byte read (ptr/int64/double)
-    //   48 8B ?2 XX XX XX XX  (ModRM: mod=10, r/m=010=rdx)
-    // Pattern 2: MOV eax, [rdx + imm32] → 4-byte read (int32)
-    //   8B ?2 XX XX XX XX     (ModRM: mod=10, r/m=010=rdx)
-    // Pattern 3: REX.W MOV reg, [rdx + imm8] → 8-byte read
-    //   48 8B 42 XX           (ModRM: mod=01, r/m=010=rdx, reg=000=rax)
-    // Pattern 4: MOV eax, [rdx + imm8] → 4-byte read
-    //   8B 42 XX
-    // Pattern 5: MOVSS xmm, [rdx + imm32] → 4-byte float read
-    //   F3 0F 10 ?2 XX XX XX XX
-    // Pattern 6: MOVSD xmm, [rdx + imm32] → 8-byte double read
-    //   F2 0F 10 ?2 XX XX XX XX
-    // Pattern 7: MOVZX eax, byte [rdx + imm32] → 1-byte read (bool)
-    //   0F B6 82 XX XX XX XX
-    // Pattern 8: MOVSXD reg, [rdx + imm32] → 4-byte sign-extended to 8 (int32)
-    //   48 63 ?2 XX XX XX XX
+    // Scan for common x86-64 memory access patterns.
+    // The compiler (MSVC or GCC) may use any base register — ptrcall receives Object*
+    // in rdx (Win x64 ABI) but GCC may move it to another register (rbx, rdi, etc.)
+    //
+    // ModRM byte: [mod(2)|reg(3)|r/m(3)]
+    //   mod=10 → [r/m + disp32], mod=01 → [r/m + disp8], mod=11 → register
+    //   r/m=100 → SIB follows (skip), r/m=other → base register
+    //
+    // We accept ANY base register (r/m != 100) to handle GCC's register allocation.
+    // Filter by offset range (0x40-0xFFFF) to avoid false positives from stack accesses.
+
+    auto isValidRM = [](uint8_t modrm) -> bool {
+        uint8_t rm = modrm & 0x07;
+        return rm != 0x04; // Skip SIB-encoded
+    };
+    auto isModDisp32 = [](uint8_t modrm) -> bool {
+        return (modrm & 0xC0) == 0x80; // mod=10
+    };
+    auto isModDisp8 = [](uint8_t modrm) -> bool {
+        return (modrm & 0xC0) == 0x40; // mod=01
+    };
+    // Reasonable object member offset: skip [reg+0] through small stack offsets
+    auto isFieldOffset = [](int32_t off) -> bool {
+        return off >= 0x10 && off < 0x10000;
+    };
 
     for (int i = 0; i < 56; i++) {
-        // MOVSXD: 48 63 ?2 → sign-extend int32 to int64 (4-byte member)
+        // MOVSXD: 48 63 ModRM disp32 → sign-extend int32 to int64 (4-byte member)
         if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x63 &&
-            (code[i+2] & 0x07) == 0x02 && (code[i+2] & 0xC0) == 0x80) {
+            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // REX.W + MOV reg, [rdx + imm32]: 48 8B ?2 → 8-byte read
+        // REX.W + MOV reg, [base + disp32]: 48 8B ModRM → 8-byte read
         if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            (code[i+2] & 0x07) == 0x02 && (code[i+2] & 0xC0) == 0x80) {
+            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 8; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOV eax, [rdx + imm32]: 8B ?2 → 4-byte read
+        // MOV r32, [base + disp32]: 8B ModRM → 4-byte read
         if (i + 6 <= 64 && code[i] == 0x8B &&
-            (code[i+1] & 0x07) == 0x02 && (code[i+1] & 0xC0) == 0x80) {
+            isModDisp32(code[i+1]) && isValidRM(code[i+1])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+2]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // REX.W + MOV reg, [rdx + imm8]: 48 8B 42 XX → 8-byte read
+        // REX.W + MOV reg, [base + disp8]: 48 8B ModRM byte → 8-byte read
         if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            code[i+2] == 0x42) {
+            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
             int8_t off = static_cast<int8_t>(code[i+3]);
-            if (off > 0) { result.offset = off; result.size = 8; return result; }
+            if (off >= 0x10) { result.offset = off; result.size = 8; return result; }
         }
-        // MOV eax, [rdx + imm8]: 8B 42 XX → 4-byte read
-        if (i + 3 <= 64 && code[i] == 0x8B && code[i+1] == 0x42) {
+        // MOV r32, [base + disp8]: 8B ModRM byte → 4-byte read
+        if (i + 3 <= 64 && code[i] == 0x8B &&
+            isModDisp8(code[i+1]) && isValidRM(code[i+1])) {
             int8_t off = static_cast<int8_t>(code[i+2]);
-            if (off > 0) { result.offset = off; result.size = 4; return result; }
+            if (off >= 0x10) { result.offset = off; result.size = 4; return result; }
         }
-        // MOVSS xmm, [rdx + imm32]: F3 0F 10 ?2 → 4-byte float
+        // MOVSS xmm, [base + disp32]: F3 0F 10 ModRM → 4-byte float
         if (i + 8 <= 64 && code[i] == 0xF3 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            (code[i+3] & 0x07) == 0x02 && (code[i+3] & 0xC0) == 0x80) {
+            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 4; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // MOVSD xmm, [rdx + imm32]: F2 0F 10 ?2 → 8-byte double
+        // MOVSD xmm, [base + disp32]: F2 0F 10 ModRM → 8-byte double
         if (i + 8 <= 64 && code[i] == 0xF2 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            (code[i+3] & 0x07) == 0x02 && (code[i+3] & 0xC0) == 0x80) {
+            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 8; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOVZX eax, byte [rdx + imm32]: 0F B6 82 → 1-byte read (bool)
+        // MOVZX r32, byte [base + disp32]: 0F B6 ModRM → 1-byte (bool)
         if (i + 7 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            code[i+2] == 0x82) {
+            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (off > 0 && off < 0x10000) { result.offset = off; result.size = 1; return result; }
+            if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
         }
-        // MOVZX eax, byte [rdx + imm8]: 0F B6 42 XX → 1-byte read
+        // MOVZX r32, byte [base + disp8]: 0F B6 ModRM byte → 1-byte
         if (i + 4 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            code[i+2] == 0x42) {
+            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
             int8_t off = static_cast<int8_t>(code[i+3]);
-            if (off > 0) { result.offset = off; result.size = 1; return result; }
+            if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
+        }
+        // REX.W + LEA reg, [base + disp32]: 48 8D ModRM → address calc (ptr)
+        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8D &&
+            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+            if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
     }
 

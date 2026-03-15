@@ -629,6 +629,15 @@ static json HandleWalkInstance(int id, const json& req) {
         if (!entry.className.empty()) {
             f["class_name"] = SafeStr(entry.className);
         }
+        // For Object-type variants, provide ptr_value and ptr_class for drilldown navigation
+        if (IsPointerType(entry.value.type) && entry.value.ptrTarget) {
+            f["ptr_value"] = AddrToHex(entry.value.ptrTarget);
+            // Try to resolve the pointed-to object's class
+            std::string ptrCls = Diagoldze::GetObjectClass(entry.value.ptrTarget);
+            if (!ptrCls.empty()) {
+                f["ptr_class"] = SafeStr(ptrCls);
+            }
+        }
         fields.push_back(std::move(f));
     });
 
