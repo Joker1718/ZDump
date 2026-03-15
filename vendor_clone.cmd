@@ -1,3 +1,4 @@
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Github\Zolt-Dump\tools\vendor-update.ps1"
 git clone --depth 1 --branch 3.5-stable https://github.com/godotengine/godot.git vendor/godot-3.5
 git clone --depth 1 --branch 3.5.3-stable https://github.com/godotengine/godot.git vendor/godot-3.5.3
 git clone --depth 1 --branch 3.6.2-stable https://github.com/godotengine/godot.git vendor/godot-3.6.2
