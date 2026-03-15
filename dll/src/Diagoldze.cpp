@@ -652,9 +652,35 @@ static uint64_t LookupGetterMethodBind(uint64_t infoAddr, const std::string& pro
 //
 // Returns { offset, accessSize } or { -1, 0 } if not found.
 struct MemberAccess {
-    int offset = -1;   // byte offset within object
-    int size   = 0;    // native access size: 1 (bool), 4 (int32/float), 8 (int64/double/ptr)
+    int offset   = -1;   // byte offset within object
+    int size     = 0;    // native access size: 1 (bool), 4 (int32/float), 8 (int64/double/ptr)
+    int bitShift = 0;    // right-shift applied before mask (0 = no shift)
+    int bitMask  = 0;    // bitmask applied after shift (0 = no mask, use full value)
 };
+
+// Scan bytes after a MOVZX instruction for shr/and bitfield extraction.
+// Patterns: C0 E8 XX = shr al, XX;  83 E0 XX = and eax, XX;  24 XX = and al, XX
+static void DetectBitfield(const uint8_t* code, int startIdx, int endIdx, MemberAccess& ma) {
+    for (int i = startIdx; i < endIdx - 1; i++) {
+        if (code[i] == 0xC3 || code[i] == 0xCC) break; // ret / int3
+        // shr al, imm8
+        if (code[i] == 0xC0 && code[i+1] == 0xE8 && i+2 < endIdx) {
+            ma.bitShift = code[i+2];
+            i += 2;
+            continue;
+        }
+        // and eax, imm8 (sign-extended to 32-bit)
+        if (code[i] == 0x83 && code[i+1] == 0xE0 && i+2 < endIdx) {
+            ma.bitMask = code[i+2];
+            break; // mask is always last
+        }
+        // and al, imm8
+        if (code[i] == 0x24 && i+1 < endIdx) {
+            ma.bitMask = code[i+1];
+            break;
+        }
+    }
+}
 
 static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     MemberAccess result;
@@ -823,12 +849,20 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
                 // MOVZX byte [obj+disp32]
                 if (go == 0x0F && gp+6 < 96 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 2 && gObj(gc[gp+2])) {
                     int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+3]);
-                    if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
+                    if (isFieldOffset(off)) {
+                        result.offset = off; result.size = 1;
+                        DetectBitfield(gc, gp+7, gcEnd, result);
+                        return result;
+                    }
                 }
                 // MOVZX byte [obj+disp8]
                 if (go == 0x0F && gp+3 < 96 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 1 && gObj(gc[gp+2])) {
                     int8_t off = static_cast<int8_t>(gc[gp+3]);
-                    if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
+                    if (off >= 0x10) {
+                        result.offset = off; result.size = 1;
+                        DetectBitfield(gc, gp+4, gcEnd, result);
+                        return result;
+                    }
                 }
                 // MOVSXD [obj+disp32]
                 if (gW && go == 0x63 && gp+6 < 96 && gMod(gc[gp+1]) == 2 && gObj(gc[gp+1])) {
@@ -903,13 +937,21 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
         if (op == 0x0F && pi + 6 <= 64 && code[pi+1] == 0xB6 &&
             modOf(code[pi+2]) == 2 && isRdx(code[pi+2])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[pi+3]);
-            if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
+            if (isFieldOffset(off)) {
+                result.offset = off; result.size = 1;
+                DetectBitfield(code, pi+7, 64, result);
+                return result;
+            }
         }
         // MOVZX r32, byte [rdx + disp8]: 0F B6 ModRM disp8
         if (op == 0x0F && pi + 3 <= 64 && code[pi+1] == 0xB6 &&
             modOf(code[pi+2]) == 1 && isRdx(code[pi+2])) {
             int8_t off = static_cast<int8_t>(code[pi+3]);
-            if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
+            if (off >= 0x10) {
+                result.offset = off; result.size = 1;
+                DetectBitfield(code, pi+4, 64, result);
+                return result;
+            }
         }
     }
 
@@ -1325,6 +1367,12 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
                     if (ma.offset >= 0) {
                         pi.offset     = ma.offset;
                         pi.nativeSize = ma.size;
+                        pi.bitShift   = ma.bitShift;
+                        pi.bitMask    = ma.bitMask;
+                        if (ma.bitMask) {
+                            Solitaer::Info("CLSDB", "  Bitfield: %s @ +0x%X >> %d & 0x%X",
+                                propName.c_str(), ma.offset, ma.bitShift, ma.bitMask);
+                        }
                     }
                 }
             }

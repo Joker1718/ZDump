@@ -27,6 +27,8 @@ struct FieldEntry {
     VariantValue value;
     int          offset = -1;    // byte offset within object (-1 if unknown)
     int          nativeSize = 0; // native access size (1, 4, 8)
+    int          bitShift = 0;   // right-shift for bitfield extraction (0 = none)
+    int          bitMask  = 0;   // bitmask after shift (0 = use full value)
     bool         fromPtrcall = false; // true if value obtained via runtime ptrcall
     int          hint = 0;       // PropertyHint enum value
     std::string  hintString;     // hint parameter string

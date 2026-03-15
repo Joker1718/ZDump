@@ -429,7 +429,8 @@ VariantValue ReadVariant(uint64_t addr) {
 // Reads directly from object memory at the given offset, using the
 // Variant type and native access size to determine how to interpret.
 // This bypasses Variant boxing — reads the raw native member value.
-static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int nativeSize) {
+static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int nativeSize,
+                                    int bitShift = 0, int bitMask = 0) {
     VariantValue result{};
     result.rawAddr = memberAddr;
     result.ptrTarget = 0;
@@ -451,11 +452,20 @@ static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int na
             break;
 
         case 1: // BOOL
-            result.value = Zoltraak::ReadSafe<uint8_t>(memberAddr, 0) ? "true" : "false";
+            if (bitMask) {
+                uint8_t raw = Zoltraak::ReadSafe<uint8_t>(memberAddr, 0);
+                result.value = ((raw >> bitShift) & bitMask) ? "true" : "false";
+            } else {
+                result.value = Zoltraak::ReadSafe<uint8_t>(memberAddr, 0) ? "true" : "false";
+            }
             break;
 
         case 2: // INT
-            if (nativeSize <= 4) {
+            if (bitMask) {
+                // Bitfield: read byte, shift, mask
+                uint8_t raw = Zoltraak::ReadSafe<uint8_t>(memberAddr, 0);
+                result.value = std::to_string((raw >> bitShift) & bitMask);
+            } else if (nativeSize <= 4) {
                 result.value = std::to_string(Zoltraak::ReadSafe<int32_t>(memberAddr, 0));
             } else {
                 result.value = std::to_string(Zoltraak::ReadSafe<int64_t>(memberAddr, 0));
@@ -1216,6 +1226,8 @@ void WalkInstance(uint64_t objAddr,
         entry.className  = prop.className;
         entry.offset     = prop.offset;
         entry.nativeSize = prop.nativeSize;
+        entry.bitShift   = prop.bitShift;
+        entry.bitMask    = prop.bitMask;
         entry.hint       = prop.hint;
         entry.hintString = prop.hintString;
         entry.usage      = prop.usage;
@@ -1223,7 +1235,7 @@ void WalkInstance(uint64_t objAddr,
         if (prop.offset >= 0) {
             // Fast path: direct memory read at known offset
             uint64_t memberAddr = objAddr + prop.offset;
-            entry.value = ReadNativeValue(memberAddr, prop.type, prop.nativeSize);
+            entry.value = ReadNativeValue(memberAddr, prop.type, prop.nativeSize, prop.bitShift, prop.bitMask);
             valuesRead++;
             directReads++;
         } else if (prop.getterMethodBind != 0) {
@@ -1331,7 +1343,7 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     for (auto& prop : properties) {
         if (prop.name == propertyName) {
             if (prop.offset >= 0) {
-                return ReadNativeValue(objAddr + prop.offset, prop.type, prop.nativeSize);
+                return ReadNativeValue(objAddr + prop.offset, prop.type, prop.nativeSize, prop.bitShift, prop.bitMask);
             }
             if (prop.getterMethodBind != 0) {
                 return CallGetterPtrcall(prop.getterMethodBind, objAddr, prop.type);

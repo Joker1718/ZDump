@@ -478,6 +478,8 @@ static json HandleWalkClass(int id, const json& req) {
         f["type"]        = VariantTypeName(prop.type);
         f["offset"]      = prop.offset;
         f["size"]        = prop.nativeSize > 0 ? prop.nativeSize : 0;
+        if (prop.bitShift) f["bit_shift"] = prop.bitShift;
+        if (prop.bitMask)  f["bit_mask"]  = prop.bitMask;
         f["hint"]        = prop.hint;
         f["hint_string"] = SafeStr(prop.hintString);
         f["usage"]       = static_cast<int>(prop.usage);
@@ -619,6 +621,8 @@ static json HandleWalkInstance(int id, const json& req) {
         f["address"]      = entry.value.rawAddr ? AddrToHex(entry.value.rawAddr) : "";
         f["offset"]       = entry.offset;
         f["size"]         = entry.nativeSize > 0 ? entry.nativeSize : VariantTypeSize(entry.value.type);
+        if (entry.bitShift) f["bit_shift"] = entry.bitShift;
+        if (entry.bitMask)  f["bit_mask"]  = entry.bitMask;
         f["hint"]         = entry.hint;
         f["hint_string"]  = SafeStr(entry.hintString);
         f["usage"]        = static_cast<int>(entry.usage);

@@ -315,6 +315,8 @@ public sealed class DumpService : IDumpService
                     Type = obj["type"]?.GetValue<string>() ?? "",
                     Offset = obj["offset"]?.GetValue<int>() ?? 0,
                     Size = obj["size"]?.GetValue<int>() ?? 0,
+                    BitShift = obj["bit_shift"]?.GetValue<int>() ?? 0,
+                    BitMask = obj["bit_mask"]?.GetValue<int>() ?? 0,
                     Hint = obj["hint"]?.GetValue<int>() ?? 0,
                     HintString = obj["hint_string"]?.GetValue<string>() ?? "",
                     Usage = obj["usage"]?.GetValue<int>() ?? 0
@@ -409,6 +411,8 @@ public sealed class DumpService : IDumpService
             Address = obj["address"]?.GetValue<string>() ?? "",
             Offset = obj["offset"]?.GetValue<int>() ?? 0,
             Size = obj["size"]?.GetValue<int>() ?? 0,
+            BitShift = obj["bit_shift"]?.GetValue<int>() ?? 0,
+            BitMask = obj["bit_mask"]?.GetValue<int>() ?? 0,
             PtrValue = obj["ptr_value"]?.GetValue<string>() ?? "",
             PtrClass = obj["ptr_class"]?.GetValue<string>() ?? "",
             IsPointer = obj["is_pointer"]?.GetValue<bool>() ?? false,
