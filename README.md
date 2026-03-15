@@ -2,7 +2,7 @@
 
 Real-time Godot Engine memory dumper and analyzer with Cheat Engine integration.
 
-Named after **Zoltraak** (栔爾朵列) — Frieren's signature attack magic that deconstructs its target. This tool "deconstructs" Godot (from the play *Waiting for Godot*).
+Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack magic that deconstructs its target.
 
 ## Features
 
