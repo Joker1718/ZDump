@@ -465,3 +465,4 @@ test/godot/*.zip
 test/godot/Godot_v*.exe
 test/kill_*
 test/run_*
+vendor/godot-4.5.1-rc2/
