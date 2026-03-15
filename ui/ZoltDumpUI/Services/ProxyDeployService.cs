@@ -267,10 +267,19 @@ public sealed class ProxyDeployService : IProxyDeployService
                 string? installed = GetDllVersion(targetDll);
                 game.DeployedVersion = installed ?? "";
 
-                if (sourceVersion != null && installed == sourceVersion)
+                if (sourceVersion == null)
+                {
+                    // Source DLL not found — can't compare, assume current
                     game.Status = DeployStatus.DeployedCurrent;
+                }
+                else if (installed == sourceVersion)
+                {
+                    game.Status = DeployStatus.DeployedCurrent;
+                }
                 else
+                {
                     game.Status = DeployStatus.DeployedOutdated;
+                }
             }
         });
     }
@@ -311,9 +320,13 @@ public sealed class ProxyDeployService : IProxyDeployService
                 }
             }
 
+            // Read source version before copy — FileVersionInfo may cache stale data
+            // from the overwritten target file on Windows.
+            string? srcVersion = GetDllVersion(sourceDll);
+
             File.Copy(sourceDll, targetDll, overwrite: true);
             game.Status = DeployStatus.DeployedCurrent;
-            game.DeployedVersion = GetDllVersion(targetDll) ?? "";
+            game.DeployedVersion = srcVersion ?? "";
             game.Error = "";
 
             // Clean up legacy version.dll if it's ours (prevent mixed proxy state)

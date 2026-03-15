@@ -70,7 +70,8 @@ static std::string ProbeNodeNameInternal(uint64_t nodeAddr, bool allowCache) {
     }
 
     // Probe: scan for StringName fields that resolve to plausible node names.
-    for (int off = 0x80; off <= 0x500; off += 8) {
+    // Godot 4.5+ has larger Node objects — extend range to 0x800.
+    for (int off = 0x80; off <= 0x800; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(nodeAddr + off, 0);
         if (!candidate || candidate < 0x10000) continue;
         if (!Zoltraak::IsReadable(candidate)) continue;

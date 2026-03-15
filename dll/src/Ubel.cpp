@@ -874,8 +874,9 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
     Solitaer::Info("WALK", "=== Probing ScriptInstance offset (attempt %d/%d) ===",
         attempt + 1, MAX_PROBE_ATTEMPTS);
 
-    // Scan from +0x20 to +0x300 (ScriptInstance* is after the fixed Object header)
-    for (int off = 0x20; off <= 0x300; off += 8) {
+    // Scan from +0x20 to +0x500 (ScriptInstance* is after the fixed Object header)
+    // Godot 4.5+ may have moved script_instance further due to Object refactoring
+    for (int off = 0x20; off <= 0x500; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(objAddr + off, 0);
         if (!candidate || !Zoltraak::IsReadable(candidate)) continue;
 

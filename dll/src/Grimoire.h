@@ -45,7 +45,8 @@ namespace Grimoire {
     constexpr int            PIPE_BUF_SIZE   = 65536;                // 64 KB pipe buffer
 
     // ----- SceneTree probe constants -----
-    constexpr int            STREE_PROBE_MAX = 0x2000;               // Max offset to scan for root Window*
+    constexpr int            STREE_PROBE_MAX = 0x4000;               // Max offset to scan for root Window*
+                                                                        // Godot 4.5+ SceneTree can exceed 0x2000 bytes
 }
 
 // ============================================================
