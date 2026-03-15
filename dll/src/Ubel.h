@@ -26,6 +26,7 @@ struct FieldEntry {
     VariantValue value;
     int          offset = -1;    // byte offset within object (-1 if unknown)
     int          nativeSize = 0; // native access size (1, 4, 8)
+    bool         fromPtrcall = false; // true if value obtained via runtime ptrcall
     int          hint = 0;       // PropertyHint enum value
     std::string  hintString;     // hint parameter string
     uint32_t     usage = 0;      // PROPERTY_USAGE_* flags

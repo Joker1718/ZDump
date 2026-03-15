@@ -14,7 +14,7 @@ param(
 
 $testDir    = "D:\Github\Zolt-Dump\test\godot"
 $logRoot    = "$env:LOCALAPPDATA\ZoltDump\Logs"
-$proxyPath  = "D:\Github\Zolt-Dump\build_proxy\dll\winmm.dll"
+$proxyPath  = "D:\Github\Zolt-Dump\dist\proxy\winmm.dll"
 
 if (-not (Test-Path $proxyPath)) {
     Write-Host "ERROR: Proxy DLL not found at $proxyPath. Build first!" -ForegroundColor Red

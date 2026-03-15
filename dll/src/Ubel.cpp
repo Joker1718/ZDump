@@ -11,6 +11,7 @@
 #include "Zoltraak.h"
 #include "Diagoldze.h"
 #include "Flamme.h"
+#include "Heiter.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
 
@@ -564,6 +565,272 @@ static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int na
 }
 
 // ============================================================
+// Runtime ptrcall — invoke MethodBind::ptrcall on the game thread
+// ============================================================
+// Used as fallback when ExtractMemberAccess fails to disassemble the getter.
+// ptrcall signature: void (MethodBind* self, Object* obj, const void** args, void* ret)
+
+// Returns native return buffer size for ptrcall, or 0 if type is unsafe
+static int PtrcallReturnSize(int type4x) {
+    switch (type4x) {
+        case 0:  return 0;     // Nil — skip
+        case 1:  return 8;     // bool (1B but padded)
+        case 2:  return 8;     // int64_t
+        case 3:  return 8;     // double
+        case 4:  return 8;     // String (CowData ptr)
+        case 5:  return 8;     // Vector2 (2x float)
+        case 6:  return 8;     // Vector2i (2x int32)
+        case 7:  return 16;    // Rect2 (4x float)
+        case 8:  return 16;    // Rect2i (4x int32)
+        case 9:  return 16;    // Vector3 (3x float, padded)
+        case 10: return 16;    // Vector3i (3x int32, padded)
+        case 11: return 24;    // Transform2D (6 floats)
+        case 12: return 16;    // Vector4 (4x float)
+        case 13: return 16;    // Vector4i (4x int32)
+        case 14: return 16;    // Plane (4x float)
+        case 15: return 16;    // Quaternion (4x float)
+        case 16: return 24;    // AABB (6x float)
+        case 17: return 48;    // Basis (9x float, padded)
+        case 18: return 64;    // Transform3D (Basis + Origin)
+        case 19: return 64;    // Projection (4x Vector4)
+        case 20: return 16;    // Color (4x float)
+        case 21: return 8;     // StringName (ptr)
+        case 22: return 8;     // NodePath (ptr)
+        case 23: return 8;     // RID (uint64_t)
+        case 24: return 8;     // Object (ptr)
+        default: return 0;     // Callable, Signal, Dict, Array, Packed* — unsafe
+    }
+}
+
+// Decode a ptrcall return buffer into a VariantValue
+static VariantValue DecodeReturnBuffer(const uint8_t* buf, int variantType, int type4x) {
+    VariantValue result{};
+    result.type     = variantType;
+    result.typeName = VariantTypeName(variantType);
+    result.rawAddr  = 0;
+
+    switch (type4x) {
+        case 1: // bool
+            result.value = (*buf) ? "true" : "false";
+            break;
+        case 2: { // int64
+            int64_t v;
+            memcpy(&v, buf, 8);
+            result.value = std::to_string(v);
+            break;
+        }
+        case 3: { // double
+            double v;
+            memcpy(&v, buf, 8);
+            result.value = FormatDouble(v);
+            break;
+        }
+        case 4: { // String — ptrcall writes a String object inline
+            // String is { CowData<char32_t>* _cowdata; } = 8 bytes
+            uint64_t cowPtr;
+            memcpy(&cowPtr, buf, 8);
+            if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
+                result.value = Zoltraak::ReadGodotString(cowPtr);
+            }
+            if (result.value.empty()) result.value = "\"\"";
+            break;
+        }
+        case 5: { // Vector2
+            float f[2];
+            memcpy(f, buf, 8);
+            result.value = "(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) + ")";
+            break;
+        }
+        case 6: { // Vector2i
+            int32_t i[2];
+            memcpy(i, buf, 8);
+            result.value = "(" + std::to_string(i[0]) + ", " + std::to_string(i[1]) + ")";
+            break;
+        }
+        case 7: { // Rect2
+            float f[4];
+            memcpy(f, buf, 16);
+            result.value = "(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) +
+                          ", " + FormatFloat(f[2]) + ", " + FormatFloat(f[3]) + ")";
+            break;
+        }
+        case 8: { // Rect2i
+            int32_t i[4];
+            memcpy(i, buf, 16);
+            result.value = "(" + std::to_string(i[0]) + ", " + std::to_string(i[1]) +
+                          ", " + std::to_string(i[2]) + ", " + std::to_string(i[3]) + ")";
+            break;
+        }
+        case 9: { // Vector3
+            float f[3];
+            memcpy(f, buf, 12);
+            result.value = "(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) + ", " + FormatFloat(f[2]) + ")";
+            break;
+        }
+        case 10: { // Vector3i
+            int32_t i[3];
+            memcpy(i, buf, 12);
+            result.value = "(" + std::to_string(i[0]) + ", " + std::to_string(i[1]) + ", " + std::to_string(i[2]) + ")";
+            break;
+        }
+        case 12: { // Vector4
+            float f[4];
+            memcpy(f, buf, 16);
+            result.value = "(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) +
+                          ", " + FormatFloat(f[2]) + ", " + FormatFloat(f[3]) + ")";
+            break;
+        }
+        case 13: { // Vector4i
+            int32_t i[4];
+            memcpy(i, buf, 16);
+            result.value = "(" + std::to_string(i[0]) + ", " + std::to_string(i[1]) +
+                          ", " + std::to_string(i[2]) + ", " + std::to_string(i[3]) + ")";
+            break;
+        }
+        case 14: { // Plane
+            float f[4];
+            memcpy(f, buf, 16);
+            result.value = "Plane(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) +
+                          ", " + FormatFloat(f[2]) + ", " + FormatFloat(f[3]) + ")";
+            break;
+        }
+        case 15: { // Quaternion
+            float f[4];
+            memcpy(f, buf, 16);
+            result.value = "Quat(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) +
+                          ", " + FormatFloat(f[2]) + ", " + FormatFloat(f[3]) + ")";
+            break;
+        }
+        case 20: { // Color
+            float f[4];
+            memcpy(f, buf, 16);
+            result.value = "Color(" + FormatFloat(f[0]) + ", " + FormatFloat(f[1]) +
+                          ", " + FormatFloat(f[2]) + ", " + FormatFloat(f[3]) + ")";
+            break;
+        }
+        case 21: { // StringName
+            uint64_t snPtr;
+            memcpy(&snPtr, buf, 8);
+            if (snPtr) {
+                // ptrcall writes a StringName inline; resolve its _Data*
+                result.value = Flamme::ResolveAt(snPtr);
+            }
+            if (result.value.empty()) result.value = "(empty)";
+            break;
+        }
+        case 23: { // RID
+            uint64_t rid;
+            memcpy(&rid, buf, 8);
+            char b[32];
+            snprintf(b, sizeof(b), "RID(%llu)", static_cast<unsigned long long>(rid));
+            result.value = b;
+            break;
+        }
+        case 24: { // Object pointer
+            uint64_t objPtr;
+            memcpy(&objPtr, buf, 8);
+            if (objPtr && Zoltraak::IsReadable(objPtr)) {
+                result.rawAddr = objPtr;
+                char b[32];
+                snprintf(b, sizeof(b), "Object@%llX", static_cast<unsigned long long>(objPtr));
+                result.value = b;
+            } else {
+                result.value = "(null)";
+            }
+            break;
+        }
+        default: {
+            // Hex dump for unhandled value types
+            int retSize = PtrcallReturnSize(type4x);
+            if (retSize <= 0) retSize = 8;
+            if (retSize > 24) retSize = 24;
+            std::string hex;
+            hex.reserve(retSize * 2);
+            for (int i = 0; i < retSize; i++) {
+                char h[3];
+                snprintf(h, sizeof(h), "%02X", buf[i]);
+                hex += h;
+            }
+            result.value = result.typeName + std::string("{") + hex + "}";
+            break;
+        }
+    }
+    return result;
+}
+
+// Invoke MethodBind::ptrcall on game thread to read a property value
+// methodBindAddr: MethodBind* (from PropertySetGet._getptr)
+// objAddr: Object* to read from
+// variantType: raw Variant::Type for result interpretation
+static VariantValue CallGetterPtrcall(uint64_t methodBindAddr, uint64_t objAddr, int variantType) {
+    VariantValue result{};
+    if (!methodBindAddr || !objAddr) return result;
+
+    // Map to 4.x type for unified handling
+    int type4x = variantType;
+    if (GodotVer::IsGodot3()) {
+        type4x = MapType3xTo4x(variantType);
+        if (type4x < 0) return result;
+    }
+
+    int retSize = PtrcallReturnSize(type4x);
+    if (retSize <= 0) return result;  // Unsafe type, skip
+
+    // Resolve ptrcall function pointer from MethodBind vtable
+    uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(methodBindAddr, 0);
+    if (!vtable || !Zoltraak::IsReadable(vtable)) return result;
+
+    int ptrcallIdx = DynOff::METHODBIND_PTRCALL_VTIDX;
+    uint64_t ptrcallFn = Zoltraak::ReadSafe<uint64_t>(vtable + ptrcallIdx * 8, 0);
+    if (!ptrcallFn || !Zoltraak::IsReadable(ptrcallFn)) return result;
+
+    // ptrcall signature: void (__fastcall*)(MethodBind* self, Object* obj, const void** args, void* ret)
+    using PtrcallFn = void(__fastcall*)(void*, void*, const void**, void*);
+    auto fnPtr = reinterpret_cast<PtrcallFn>(ptrcallFn);
+
+    // Prepare return buffer (aligned, zero-initialized)
+    alignas(16) uint8_t retBuf[128] = {};
+    bool success = false;
+
+    // For String/StringName types, decode inside the game thread lambda
+    // to avoid lifetime issues with heap-allocated return values
+    std::string stringResult;
+    bool isStringType = (type4x == 4 || type4x == 21 || type4x == 22);
+
+    auto work = [&]() {
+        fnPtr(reinterpret_cast<void*>(methodBindAddr),
+              reinterpret_cast<void*>(objAddr),
+              nullptr,   // args = null for getter
+              retBuf);
+        success = true;
+
+        // Decode string types immediately on game thread (before String is freed)
+        if (isStringType && success) {
+            VariantValue tmp = DecodeReturnBuffer(retBuf, variantType, type4x);
+            stringResult = std::move(tmp.value);
+        }
+    };
+
+    bool dispatched = Heiter::QueueWorkSync(work, Zolt::Heiter::SYNC_TIMEOUT_MS);
+
+    if (!dispatched || !success) {
+        return result;
+    }
+
+    // For string types, use the value decoded on game thread
+    if (isStringType) {
+        result.type     = variantType;
+        result.typeName = VariantTypeName(variantType);
+        result.value    = std::move(stringResult);
+        result.rawAddr  = 0;
+        return result;
+    }
+
+    // For value types, decode from the buffer (safe — data is on our stack)
+    return DecodeReturnBuffer(retBuf, variantType, type4x);
+}
+
+// ============================================================
 // GDScript member reading — reads script-defined variables
 // ============================================================
 // GDScript-defined variables (var money = 100, var hp = 50) are stored
@@ -850,7 +1117,21 @@ void WalkInstance(uint64_t objAddr,
 
     // Step 3: Build FieldEntry for each property, reading values where offsets are known
     int valuesRead = 0;
-    for (auto& prop : properties) {
+    int directReads = 0;
+    int ptrcallReads = 0;
+
+    // Batch ptrcall: collect properties needing ptrcall, execute all in one game-thread dispatch
+    struct PtrcallJob {
+        size_t propIndex;
+        uint64_t methodBind;
+        int variantType;
+    };
+    std::vector<PtrcallJob> ptrcallJobs;
+    std::vector<FieldEntry> entries;
+    entries.reserve(properties.size());
+
+    for (size_t i = 0; i < properties.size(); i++) {
+        auto& prop = properties[i];
         FieldEntry entry;
         entry.name       = prop.name;
         entry.className  = prop.className;
@@ -861,24 +1142,90 @@ void WalkInstance(uint64_t objAddr,
         entry.usage      = prop.usage;
 
         if (prop.offset >= 0) {
-            // Read live value from object memory at the extracted offset
+            // Fast path: direct memory read at known offset
             uint64_t memberAddr = objAddr + prop.offset;
             entry.value = ReadNativeValue(memberAddr, prop.type, prop.nativeSize);
             valuesRead++;
+            directReads++;
+        } else if (prop.getterMethodBind != 0) {
+            // Queue for batched ptrcall
+            ptrcallJobs.push_back({ i, prop.getterMethodBind, prop.type });
+            entry.value.type     = prop.type;
+            entry.value.typeName = VariantTypeName(prop.type);
+            entry.value.value    = "";
+            entry.value.rawAddr  = 0;
         } else {
-            // No offset available — metadata only
+            // No offset, no getter — metadata only
             entry.value.type     = prop.type;
             entry.value.typeName = VariantTypeName(prop.type);
             entry.value.value    = "";
             entry.value.rawAddr  = 0;
         }
 
+        entries.push_back(std::move(entry));
+    }
+
+    // Execute batched ptrcall on game thread (single QueueWorkSync for all)
+    if (!ptrcallJobs.empty()) {
+        struct PtrcallResult {
+            VariantValue value;
+            bool ok = false;
+        };
+        std::vector<PtrcallResult> ptrcallResults(ptrcallJobs.size());
+
+        auto batchWork = [&]() {
+            for (size_t j = 0; j < ptrcallJobs.size(); j++) {
+                auto& job = ptrcallJobs[j];
+
+                int type4x = job.variantType;
+                if (GodotVer::IsGodot3()) {
+                    type4x = MapType3xTo4x(job.variantType);
+                    if (type4x < 0) continue;
+                }
+                int retSize = PtrcallReturnSize(type4x);
+                if (retSize <= 0) continue;
+
+                uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(job.methodBind, 0);
+                if (!vtable || !Zoltraak::IsReadable(vtable)) continue;
+                uint64_t ptrcallFn = Zoltraak::ReadSafe<uint64_t>(
+                    vtable + DynOff::METHODBIND_PTRCALL_VTIDX * 8, 0);
+                if (!ptrcallFn || !Zoltraak::IsReadable(ptrcallFn)) continue;
+
+                using PtrcallFn = void(__fastcall*)(void*, void*, const void**, void*);
+                auto fnPtr = reinterpret_cast<PtrcallFn>(ptrcallFn);
+
+                alignas(16) uint8_t retBuf[128] = {};
+                fnPtr(reinterpret_cast<void*>(job.methodBind),
+                      reinterpret_cast<void*>(objAddr),
+                      nullptr, retBuf);
+
+                ptrcallResults[j].value = DecodeReturnBuffer(retBuf, job.variantType, type4x);
+                ptrcallResults[j].ok = true;
+            }
+        };
+
+        bool dispatched = Heiter::QueueWorkSync(batchWork, Zolt::Heiter::SYNC_TIMEOUT_MS);
+        if (dispatched) {
+            for (size_t j = 0; j < ptrcallJobs.size(); j++) {
+                if (ptrcallResults[j].ok && !ptrcallResults[j].value.value.empty()) {
+                    entries[ptrcallJobs[j].propIndex].value = std::move(ptrcallResults[j].value);
+                    entries[ptrcallJobs[j].propIndex].fromPtrcall = true;
+                    valuesRead++;
+                    ptrcallReads++;
+                }
+            }
+        }
+    }
+
+    // Emit all entries
+    for (auto& entry : entries) {
         callback(entry);
     }
 
     if (valuesRead > 0) {
-        Solitaer::Debug("WALK", "WalkInstance: read %d/%d live values for '%s'",
-            valuesRead, static_cast<int>(properties.size()), className.c_str());
+        Solitaer::Debug("WALK", "WalkInstance: read %d/%d values (%d direct, %d ptrcall) for '%s'",
+            valuesRead, static_cast<int>(properties.size()),
+            directReads, ptrcallReads, className.c_str());
     }
 
     // Step 4: Probe ScriptInstance offset (retries on different objects until found or max attempts)
@@ -905,6 +1252,9 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
         if (prop.name == propertyName) {
             if (prop.offset >= 0) {
                 return ReadNativeValue(objAddr + prop.offset, prop.type, prop.nativeSize);
+            }
+            if (prop.getterMethodBind != 0) {
+                return CallGetterPtrcall(prop.getterMethodBind, objAddr, prop.type);
             }
             // Fallback: metadata only
             VariantValue result;

@@ -130,6 +130,11 @@ namespace DynOff {
     inline int PROPINFO_TOTAL_SIZE    = -1;  // total PropertyInfo size in bytes
     inline int ELEMENT_NEXT_OFFSET    = -1;  // Element.next_ptr offset (after PropertyInfo value)
 
+    // ----- MethodBind ptrcall vtable index -----
+    // MSVC ABI: ptrcall at vtable[2], Itanium ABI: vtable[3]
+    // Set by Diagoldze after ABI detection
+    inline int METHODBIND_PTRCALL_VTIDX = 2;
+
     // ----- Validation state -----
     inline std::atomic<bool> bOffsetsValidated{false};
     inline std::atomic<bool> bNodeOffsetsValidated{false};

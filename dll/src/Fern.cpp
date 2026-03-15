@@ -625,6 +625,7 @@ static json HandleWalkInstance(int id, const json& req) {
         f["is_pointer"]   = IsPointerType(entry.value.type);
         f["is_struct"]    = IsStructType(entry.value.type);
         f["is_container"] = IsContainerType(entry.value.type);
+        f["from_ptrcall"] = entry.fromPtrcall;
         if (!entry.className.empty()) {
             f["class_name"] = SafeStr(entry.className);
         }

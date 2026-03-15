@@ -17,7 +17,7 @@ param(
 
 $testDir    = "D:\Github\Zolt-Dump\test\godot"
 $logRoot    = "$env:LOCALAPPDATA\ZoltDump\Logs"
-$proxyPath  = "D:\Github\Zolt-Dump\build_proxy\dll\winmm.dll"
+$proxyPath  = "D:\Github\Zolt-Dump\dist\proxy\winmm.dll"
 $pipeName   = "ZoltDumpBfx"
 
 if (-not (Test-Path $proxyPath)) {
@@ -79,6 +79,10 @@ function Test-PipeCommands {
         OffsetsOk    = $false
         TreeOk       = $false
         TreeRoot     = "-"
+        WalkOk       = $false
+        WalkFields   = 0
+        WalkValues   = 0
+        WalkPtrcall  = 0
         Error        = ""
     }
 
@@ -151,23 +155,47 @@ function Test-PipeCommands {
         }
 
         # --- cmd: get_object_list (first 5 objects) ---
-        $resp = Send-PipeCmd '{"id":5,"cmd":"get_object_list","offset":0,"limit":5}'
-        if ($resp -and $resp.ok) {
+        $objListResp = Send-PipeCmd '{"id":5,"cmd":"get_object_list","offset":0,"limit":5}'
+        if ($objListResp -and $objListResp.ok) {
             $result.ObjListOk    = $true
-            $result.ObjListCount = if ($resp.objects) { $resp.objects.Count } else { 0 }
+            $result.ObjListCount = if ($objListResp.objects) { $objListResp.objects.Count } else { 0 }
         }
 
         # --- cmd: walk_tree (depth 1) ---
-        $resp = Send-PipeCmd '{"id":6,"cmd":"walk_tree","depth":1}'
-        if ($resp -and $resp.ok -and $resp.root) {
+        $treeResp = Send-PipeCmd '{"id":6,"cmd":"walk_tree","depth":1}'
+        if ($treeResp -and $treeResp.ok -and $treeResp.root) {
             $result.TreeOk   = $true
-            $result.TreeRoot = if ($resp.root.name) { $resp.root.name } else { "?" }
+            $result.TreeRoot = if ($treeResp.root.name) { $treeResp.root.name } else { "?" }
         }
 
         # --- cmd: find_instances (Node class) ---
-        $resp = Send-PipeCmd '{"id":7,"cmd":"find_instances","class_name":"Node","limit":3}'
-        if ($resp -and $resp.ok) {
-            $result.ClassCount = [int]$resp.count
+        $findResp = Send-PipeCmd '{"id":7,"cmd":"find_instances","class_name":"Node","limit":3}'
+        if ($findResp -and $findResp.ok) {
+            $result.ClassCount = [int]$findResp.count
+        }
+
+        # --- cmd: walk_instance ---
+        # Strategy: pick best target object for walk_instance
+        #   1. Root node from walk_tree (known Node-derived, has properties)
+        #   2. First Node from find_instances
+        #   3. Fallback: first object from get_object_list
+        $walkAddr = $null
+        if ($result.TreeOk -and $treeResp.root.address) {
+            $walkAddr = $treeResp.root.address
+        } elseif ($findResp -and $findResp.ok -and $findResp.instances -and $findResp.instances.Count -gt 0) {
+            $walkAddr = $findResp.instances[0].address
+        } elseif ($result.ObjListOk -and $objListResp.objects -and $objListResp.objects.Count -gt 0) {
+            $walkAddr = $objListResp.objects[0].address
+        }
+
+        if ($walkAddr) {
+            $walkResp = Send-PipeCmd "{`"id`":8,`"cmd`":`"walk_instance`",`"address`":`"$walkAddr`"}"
+            if ($walkResp -and $walkResp.ok -and $walkResp.fields) {
+                $result.WalkOk      = $true
+                $result.WalkFields  = $walkResp.fields.Count
+                $result.WalkValues  = ($walkResp.fields | Where-Object { $_.value -ne "" }).Count
+                $result.WalkPtrcall = ($walkResp.fields | Where-Object { $_.from_ptrcall -eq $true }).Count
+            }
         }
 
         $writer.Close()
@@ -268,6 +296,9 @@ foreach ($t in $targets) {
         Write-Host "  walk_tree:      root=$($pipeResult.TreeRoot)" -ForegroundColor $treeColor
 
         Write-Host "  find_instances: $($pipeResult.ClassCount) Node instances"
+
+        $walkColor = if ($pipeResult.WalkOk) { "Green" } else { "Yellow" }
+        Write-Host "  walk_instance:  $($pipeResult.WalkValues)/$($pipeResult.WalkFields) values ($($pipeResult.WalkPtrcall) via ptrcall)" -ForegroundColor $walkColor
     } elseif ($pipeResult.Error) {
         Write-Host "  Error: $($pipeResult.Error)" -ForegroundColor Red
     }
@@ -286,6 +317,8 @@ foreach ($t in $targets) {
         ObjCount   = $pipeResult.ObjCount
         ObjList    = if ($pipeResult.ObjListOk) { "$($pipeResult.ObjListCount)" } else { "FAIL" }
         Tree       = if ($pipeResult.TreeOk) { $pipeResult.TreeRoot } else { "FAIL" }
+        Walk       = if ($pipeResult.WalkOk) { "$($pipeResult.WalkValues)/$($pipeResult.WalkFields)" } else { "FAIL" }
+        Ptrcall    = $pipeResult.WalkPtrcall
         GodotVer   = $pipeResult.GodotVer
         Error      = $pipeResult.Error
     }
@@ -295,13 +328,13 @@ foreach ($t in $targets) {
 # Summary table
 # ================================================================
 Write-Host "`n`n========== PIPE SERVER COMPATIBILITY MATRIX ==========" -ForegroundColor Green
-$fmt = "{0,-28} {1,-6} {2,-6} {3,-6} {4,-6} {5,-6} {6,-8} {7,-8} {8,-10} {9}"
-Write-Host ($fmt -f "Target", "Pipe", "Init", "ObjDB", "ClsDB", "STree", "Objects", "ObjList", "Tree", "GodotVer")
-Write-Host ("-" * 110)
+$fmt = "{0,-28} {1,-6} {2,-6} {3,-6} {4,-6} {5,-6} {6,-8} {7,-8} {8,-10} {9,-12} {10,-8} {11}"
+Write-Host ($fmt -f "Target", "Pipe", "Init", "ObjDB", "ClsDB", "STree", "Objects", "ObjList", "Tree", "Walk(v/f)", "Ptrcall", "GodotVer")
+Write-Host ("-" * 130)
 foreach ($r in $results) {
     $allOk = ($r.Pipe -eq "OK" -and $r.Init -eq "OK" -and $r.ObjDB -eq "OK" -and $r.ClassDB -eq "OK")
     $color = if ($allOk) { "Green" } elseif ($r.Pipe -eq "FAIL") { "Red" } else { "Yellow" }
-    Write-Host ($fmt -f $r.Name, $r.Pipe, $r.Init, $r.ObjDB, $r.ClassDB, $r.STree, $r.ObjCount, $r.ObjList, $r.Tree, $r.GodotVer) -ForegroundColor $color
+    Write-Host ($fmt -f $r.Name, $r.Pipe, $r.Init, $r.ObjDB, $r.ClassDB, $r.STree, $r.ObjCount, $r.ObjList, $r.Tree, $r.Walk, $r.Ptrcall, $r.GodotVer) -ForegroundColor $color
 }
 
 Write-Host "`nAll proxy DLLs have been cleaned up from game directories."

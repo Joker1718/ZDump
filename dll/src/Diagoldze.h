@@ -19,6 +19,7 @@ struct PropertyInfo {
     int         type;        // Variant::Type
     int         offset;      // memory offset within instance (-1 if unknown)
     int         nativeSize = 0; // native access size in bytes (1, 4, 8) from ptrcall analysis
+    uint64_t    getterMethodBind = 0; // MethodBind* for getter (ptrcall fallback when offset == -1)
     int         hint = 0;    // PropertyHint enum value
     std::string hintString;  // hint parameter string (e.g., "0,100,1" for Range)
     uint32_t    usage = 0;   // PROPERTY_USAGE_* flags

@@ -1154,6 +1154,7 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
             if (s_propSetGetOffset >= 0) {
                 uint64_t getptr = LookupGetterMethodBind(infoAddr, propName);
                 if (getptr) {
+                    pi.getterMethodBind = getptr;  // Store for ptrcall fallback
                     MemberAccess ma = ExtractMemberAccess(getptr);
                     if (ma.offset >= 0) {
                         pi.offset     = ma.offset;
@@ -1660,6 +1661,7 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
     // Set global ABI flag based on which RTTI had more hits
     if (itaniumHits > 0 || msvcHits > 0) {
         s_isItaniumABI = (itaniumHits >= msvcHits);
+        DynOff::METHODBIND_PTRCALL_VTIDX = s_isItaniumABI ? 3 : 2;
         Solitaer::Info("CLSDB", "  ABI detected: %s (MSVC=%d, Itanium=%d)",
             s_isItaniumABI ? "Itanium" : "MSVC", msvcHits, itaniumHits);
     }
