@@ -439,6 +439,7 @@ vendor/godot-4.2
 vendor/godot-4.1
 vendor/godot-4.6.1
 vendor/godot-3.x
+vendor/godot-headers
 
 # vendor/godot-headers/ IS committed (small extracted headers)
 
