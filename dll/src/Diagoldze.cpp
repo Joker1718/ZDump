@@ -1,4 +1,4 @@
-// DiAgolze — 黃金化 (Mahat's Gold — ClassDB Scanner)
+// Diagoldze — 黃金化 (Mahat's Gold — ClassDB Scanner)
 // Scans the Godot ClassDB registry to extract class metadata.
 //
 // ClassDB is a HashMap<StringName, ClassInfo> with layout:
@@ -17,16 +17,16 @@
 //
 // StringName is 8 bytes (pointer to _Data), resolved via Flamme.
 
-#include "DiAgolze.h"
+#include "Diagoldze.h"
 #include "Zoltraak.h"
 #include "Flamme.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <atomic>
 #include <unordered_map>
 
-namespace Zolt::DiAgolze {
+namespace Zolt::Diagoldze {
 
 // Cached state (4.x robin-hood HashMap)
 static uint64_t s_classDBAddr   = 0;
@@ -77,14 +77,14 @@ static bool ReadHashMapFields() {
     s_numElements     = Zoltraak::ReadSafe<uint32_t>(s_classDBAddr + off + 0x24, 0);
 
     if (!elements || !hashes || !s_headElement || !s_tailElement) {
-        Solliter::Warn("CLSDB", "HashMap fields invalid (head=%p tail=%p num=%u)",
+        Solitaer::Warn("CLSDB", "HashMap fields invalid (head=%p tail=%p num=%u)",
             reinterpret_cast<void*>(s_headElement),
             reinterpret_cast<void*>(s_tailElement),
             s_numElements);
         return false;
     }
 
-    Solliter::Info("CLSDB", "HashMap: head=%p tail=%p capIdx=%u num=%u allocOff=%d",
+    Solitaer::Info("CLSDB", "HashMap: head=%p tail=%p capIdx=%u num=%u allocOff=%d",
         reinterpret_cast<void*>(s_headElement),
         reinterpret_cast<void*>(s_tailElement),
         s_capacityIndex, s_numElements, s_allocOffset);
@@ -104,7 +104,7 @@ static void BuildClassCache() {
 
     while (current && count < maxIter) {
         if (!Zoltraak::IsReadable(current)) {
-            Solliter::Warn("CLSDB", "Linked list element at %p not readable, stopping",
+            Solitaer::Warn("CLSDB", "Linked list element at %p not readable, stopping",
                 reinterpret_cast<void*>(current));
             break;
         }
@@ -122,7 +122,7 @@ static void BuildClassCache() {
         // Diagnostic: log first 3 elements if name is empty
         if (className.empty() && emptyNames < 3) {
             uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(keyAddr, 0);
-            Solliter::Debug("CLSDB", "  elem[%d] at %p: _Data*=%p",
+            Solitaer::Debug("CLSDB", "  elem[%d] at %p: _Data*=%p",
                 count, reinterpret_cast<void*>(current), reinterpret_cast<void*>(dataPtr));
 
             // Hex dump the ELEMENT itself to verify layout
@@ -130,7 +130,7 @@ static void BuildClassCache() {
                 uint8_t ebuf[64] = {};
                 Zoltraak::ReadSafe(current, ebuf, sizeof(ebuf));
                 char line[200];
-                Solliter::Debug("CLSDB", "  Element hex dump:");
+                Solitaer::Debug("CLSDB", "  Element hex dump:");
                 for (int i = 0; i < 64; i += 16) {
                     snprintf(line, sizeof(line),
                         "    elem+0x%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
@@ -138,7 +138,7 @@ static void BuildClassCache() {
                         ebuf[i+4], ebuf[i+5], ebuf[i+6], ebuf[i+7],
                         ebuf[i+8], ebuf[i+9], ebuf[i+10], ebuf[i+11],
                         ebuf[i+12], ebuf[i+13], ebuf[i+14], ebuf[i+15]);
-                    Solliter::Debug("CLSDB", "%s", line);
+                    Solitaer::Debug("CLSDB", "%s", line);
                 }
             }
 
@@ -146,7 +146,7 @@ static void BuildClassCache() {
                 uint8_t buf[48] = {};
                 Zoltraak::ReadSafe(dataPtr, buf, sizeof(buf));
                 char line[200];
-                Solliter::Debug("CLSDB", "  _Data hex dump:");
+                Solitaer::Debug("CLSDB", "  _Data hex dump:");
                 for (int i = 0; i < 48; i += 16) {
                     snprintf(line, sizeof(line),
                         "    +0x%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
@@ -154,11 +154,11 @@ static void BuildClassCache() {
                         buf[i+4], buf[i+5], buf[i+6], buf[i+7],
                         buf[i+8], buf[i+9], buf[i+10], buf[i+11],
                         buf[i+12], buf[i+13], buf[i+14], buf[i+15]);
-                    Solliter::Debug("CLSDB", "%s", line);
+                    Solitaer::Debug("CLSDB", "%s", line);
                 }
                 // Try reading string from _Data+0x00 directly as char32_t
                 std::string direct = Zoltraak::ReadChar32String(dataPtr, 64);
-                Solliter::Debug("CLSDB", "  direct char32 @_Data+0: '%s'", direct.c_str());
+                Solitaer::Debug("CLSDB", "  direct char32 @_Data+0: '%s'", direct.c_str());
             }
 
             // Also try alternate key offsets: +0x18, +0x20 (in case element has hash field)
@@ -166,7 +166,7 @@ static void BuildClassCache() {
                 uint64_t altKey = current + altOff;
                 std::string altName = Flamme::Resolve(altKey);
                 if (!altName.empty()) {
-                    Solliter::Debug("CLSDB", "  alt key at elem+0x%X: '%s'", altOff, altName.c_str());
+                    Solitaer::Debug("CLSDB", "  alt key at elem+0x%X: '%s'", altOff, altName.c_str());
                 }
             }
 
@@ -189,7 +189,7 @@ static void BuildClassCache() {
         count++;
     }
 
-    Solliter::Info("CLSDB", "Built class cache: %d classes found (%d expected, %d empty names)",
+    Solitaer::Info("CLSDB", "Built class cache: %d classes found (%d expected, %d empty names)",
         static_cast<int>(s_classMap.size()), static_cast<int>(s_numElements), emptyNames);
 }
 
@@ -209,16 +209,16 @@ static bool ReadHashMapFields3x() {
         s_classDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, 0);
 
     if (!s_hashTable3x || !Zoltraak::IsReadable(s_hashTable3x)) {
-        Solliter::Warn("CLSDB", "3x HashMap: invalid hash_table pointer");
+        Solitaer::Warn("CLSDB", "3x HashMap: invalid hash_table pointer");
         return false;
     }
 
     if (s_power3x < 4 || s_power3x > 20) {
-        Solliter::Warn("CLSDB", "3x HashMap: invalid power %u", s_power3x);
+        Solitaer::Warn("CLSDB", "3x HashMap: invalid power %u", s_power3x);
         return false;
     }
 
-    Solliter::Info("CLSDB", "3x HashMap: hashTable=%p power=%u elements=%u",
+    Solitaer::Info("CLSDB", "3x HashMap: hashTable=%p power=%u elements=%u",
         reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
     return true;
 }
@@ -246,7 +246,7 @@ static void BuildClassCache3x() {
             // Hex dump the first element for diagnostics
             uint8_t ebuf[64] = {};
             Zoltraak::ReadSafe(elem, ebuf, sizeof(ebuf));
-            Solliter::Info("CLSDB", "3x Element[0] layout probe at %p:",
+            Solitaer::Info("CLSDB", "3x Element[0] layout probe at %p:",
                 reinterpret_cast<void*>(elem));
             for (int i = 0; i < 64; i += 16) {
                 char line[200];
@@ -256,14 +256,14 @@ static void BuildClassCache3x() {
                     ebuf[i+4], ebuf[i+5], ebuf[i+6], ebuf[i+7],
                     ebuf[i+8], ebuf[i+9], ebuf[i+10], ebuf[i+11],
                     ebuf[i+12], ebuf[i+13], ebuf[i+14], ebuf[i+15]);
-                Solliter::Info("CLSDB", "%s", line);
+                Solitaer::Info("CLSDB", "%s", line);
             }
 
             // Try resolving StringName at multiple offsets to identify key position
             for (int tryOff : {0x08, 0x10, 0x18, 0x20}) {
                 std::string name = Flamme::Resolve(elem + tryOff);
                 if (!name.empty()) {
-                    Solliter::Info("CLSDB", "  StringName at elem+0x%X: '%s'", tryOff, name.c_str());
+                    Solitaer::Info("CLSDB", "  StringName at elem+0x%X: '%s'", tryOff, name.c_str());
                 }
             }
             break;
@@ -290,7 +290,7 @@ static void BuildClassCache3x() {
                 // Diagnostic: log first 3 empty names
                 if (emptyNames <= 3) {
                     uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(keyAddr, 0);
-                    Solliter::Debug("CLSDB", "  3x elem[%d] at %p: _Data*=%p (no name)",
+                    Solitaer::Debug("CLSDB", "  3x elem[%d] at %p: _Data*=%p (no name)",
                         totalFound, reinterpret_cast<void*>(elem),
                         reinterpret_cast<void*>(dataPtr));
                 }
@@ -313,9 +313,9 @@ static void BuildClassCache3x() {
         if (chainLen > maxChainLen) maxChainLen = chainLen;
     }
 
-    Solliter::Info("CLSDB", "3x: Built class cache: %d classes found (%u expected, %d empty names)",
+    Solitaer::Info("CLSDB", "3x: Built class cache: %d classes found (%u expected, %d empty names)",
         static_cast<int>(s_classMap.size()), s_elements3x, emptyNames);
-    Solliter::Info("CLSDB", "3x: %d occupied buckets / %d total, max chain=%d, %d chain breaks, %d walked",
+    Solitaer::Info("CLSDB", "3x: %d occupied buckets / %d total, max chain=%d, %d chain breaks, %d walked",
         occupiedBuckets, bucketCount, maxChainLen, chainBreaks, totalFound);
 }
 
@@ -462,7 +462,7 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
 
     // Read type field (always at offset 0)
     int32_t propType = Zoltraak::ReadSafe<int32_t>(first, -1);
-    Solliter::Info("CLSDB", "  Probe: first Element at %p, type=%d",
+    Solitaer::Info("CLSDB", "  Probe: first Element at %p, type=%d",
         reinterpret_cast<void*>(first), propType);
 
     // Scan for the property name String within the Element
@@ -480,7 +480,7 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
         }
 
         if (!resolved.empty()) {
-            Solliter::Info("CLSDB", "  Probe: found string '%s' at Element+0x%X",
+            Solitaer::Info("CLSDB", "  Probe: found string '%s' at Element+0x%X",
                 resolved.c_str(), nameOff);
 
             // Check if this looks like a property name
@@ -488,7 +488,7 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
             // "process_mode", "process_priority", etc.
             if (resolved.size() >= 2 && resolved.size() <= 64) {
                 s_propNameOffset = nameOff;
-                Solliter::Info("CLSDB", "  PropertyInfo.name offset = 0x%X", nameOff);
+                Solitaer::Info("CLSDB", "  PropertyInfo.name offset = 0x%X", nameOff);
 
                 // Now find next_ptr: scan after PropertyInfo for a pointer to another Element
                 // The next Element should also have a valid Variant::Type at offset 0
@@ -508,9 +508,9 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                             if (!nextName.empty() && nextName.size() >= 2) {
                                 s_elemNextOffset = nextOff;
                                 s_propTotalSize  = nextOff;  // PropertyInfo ends where next_ptr begins
-                                Solliter::Info("CLSDB", "  Element.next offset = 0x%X (propSize=%d)",
+                                Solitaer::Info("CLSDB", "  Element.next offset = 0x%X (propSize=%d)",
                                     nextOff, s_propTotalSize);
-                                Solliter::Info("CLSDB", "  Second property: '%s' (type=%d)",
+                                Solitaer::Info("CLSDB", "  Second property: '%s' (type=%d)",
                                     nextName.c_str(), nextType);
 
                                 // Verify: follow the chain and count, should match _Data.size_cache
@@ -523,7 +523,7 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                     cur = nxt;
                                 }
                                 if (walked == count) {
-                                    Solliter::Info("CLSDB", "  Chain validation: walked %d == count %d ✓",
+                                    Solitaer::Info("CLSDB", "  Chain validation: walked %d == count %d ✓",
                                         walked, count);
 
                                     // Derive hint and usage offsets from the known PropertyInfo layout.
@@ -536,10 +536,10 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                     int32_t hintVal = Zoltraak::ReadSafe<int32_t>(first + hintOff, -1);
                                     if (hintVal >= 0 && hintVal <= 60) {
                                         s_propHintOffset = hintOff;
-                                        Solliter::Info("CLSDB", "  PropertyInfo.hint offset = 0x%X (value=%d)",
+                                        Solitaer::Info("CLSDB", "  PropertyInfo.hint offset = 0x%X (value=%d)",
                                             hintOff, hintVal);
                                     } else {
-                                        Solliter::Warn("CLSDB", "  PropertyInfo.hint validation failed: value=%d at +0x%X",
+                                        Solitaer::Warn("CLSDB", "  PropertyInfo.hint validation failed: value=%d at +0x%X",
                                             hintVal, hintOff);
                                     }
 
@@ -547,16 +547,16 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                     uint32_t usageVal = Zoltraak::ReadSafe<uint32_t>(first + usageOff, 0);
                                     if (usageVal > 0 && usageVal < 0x10000) {
                                         s_propUsageOffset = usageOff;
-                                        Solliter::Info("CLSDB", "  PropertyInfo.usage offset = 0x%X (value=0x%X)",
+                                        Solitaer::Info("CLSDB", "  PropertyInfo.usage offset = 0x%X (value=0x%X)",
                                             usageOff, usageVal);
                                     } else {
-                                        Solliter::Warn("CLSDB", "  PropertyInfo.usage validation failed: value=0x%X at +0x%X",
+                                        Solitaer::Warn("CLSDB", "  PropertyInfo.usage validation failed: value=0x%X at +0x%X",
                                             usageVal, usageOff);
                                     }
 
                                     return true;
                                 } else {
-                                    Solliter::Debug("CLSDB", "  Chain validation: walked %d != count %d, trying next offset",
+                                    Solitaer::Debug("CLSDB", "  Chain validation: walked %d != count %d, trying next offset",
                                         walked, count);
                                     // Don't return false yet, try next nextOff
                                 }
@@ -567,14 +567,14 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
 
                 // If we found name but not next_ptr, still partial success
                 if (s_elemNextOffset < 0) {
-                    Solliter::Warn("CLSDB", "  Found name offset but could not determine Element.next");
+                    Solitaer::Warn("CLSDB", "  Found name offset but could not determine Element.next");
                 }
                 return s_elemNextOffset >= 0;
             }
         }
     }
 
-    Solliter::Warn("CLSDB", "  Could not probe PropertyInfo layout");
+    Solitaer::Warn("CLSDB", "  Could not probe PropertyInfo layout");
     return false;
 }
 
@@ -753,7 +753,7 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
 static void ProbeClassInfoLayout() {
     if (DynOff::bClassInfoProbed.exchange(true)) return; // One-shot
 
-    Solliter::Info("CLSDB", "=== Probing ClassInfo layout ===");
+    Solitaer::Info("CLSDB", "=== Probing ClassInfo layout ===");
 
     // Use "Node" as our validation target — it's always present in Godot
     auto nodeIt = s_classMap.find("Node");
@@ -761,14 +761,14 @@ static void ProbeClassInfoLayout() {
         // Try "Object" as fallback
         nodeIt = s_classMap.find("Object");
         if (nodeIt == s_classMap.end()) {
-            Solliter::Warn("CLSDB", "Cannot probe: neither 'Node' nor 'Object' found in ClassDB");
+            Solitaer::Warn("CLSDB", "Cannot probe: neither 'Node' nor 'Object' found in ClassDB");
             return;
         }
     }
 
     const std::string& targetClass = nodeIt->first;
     uint64_t infoAddr = nodeIt->second.infoAddr;
-    Solliter::Info("CLSDB", "  Using '%s' class at ClassInfo=%p",
+    Solitaer::Info("CLSDB", "  Using '%s' class at ClassInfo=%p",
         targetClass.c_str(), reinterpret_cast<void*>(infoAddr));
 
     // Step 1: Find the 'name' StringName field by scanning ClassInfo memory.
@@ -782,14 +782,14 @@ static void ProbeClassInfoLayout() {
         std::string resolved = Flamme::Resolve(infoAddr + off);
         if (resolved == targetClass) {
             s_nameOffset = off;
-            Solliter::Info("CLSDB", "  Found 'name' StringName at ClassInfo+0x%X -> '%s'",
+            Solitaer::Info("CLSDB", "  Found 'name' StringName at ClassInfo+0x%X -> '%s'",
                 off, resolved.c_str());
             break;
         }
     }
 
     if (s_nameOffset < 0) {
-        Solliter::Warn("CLSDB", "  Could not find 'name' StringName field in ClassInfo");
+        Solitaer::Warn("CLSDB", "  Could not find 'name' StringName field in ClassInfo");
         return;
     }
 
@@ -804,7 +804,7 @@ static void ProbeClassInfoLayout() {
             // Validate: should match the known parent
             if (resolved == nodeIt->second.parentName || nodeIt->second.parentName.empty()) {
                 s_inheritsOffset = tryOff;
-                Solliter::Info("CLSDB", "  Found 'inherits' StringName at ClassInfo+0x%X -> '%s'",
+                Solitaer::Info("CLSDB", "  Found 'inherits' StringName at ClassInfo+0x%X -> '%s'",
                     tryOff, resolved.c_str());
                 break;
             }
@@ -814,7 +814,7 @@ static void ProbeClassInfoLayout() {
     if (s_inheritsOffset < 0) {
         // Try the offset just before name
         s_inheritsOffset = s_nameOffset - 8;
-        Solliter::Info("CLSDB", "  Assuming 'inherits' at ClassInfo+0x%X (default -8 from name)",
+        Solitaer::Info("CLSDB", "  Assuming 'inherits' at ClassInfo+0x%X (default -8 from name)",
             s_inheritsOffset);
     }
 
@@ -830,13 +830,13 @@ static void ProbeClassInfoLayout() {
             // Additional validation: try to read property names from the list
             int32_t  count = Zoltraak::ReadSafe<int32_t>(candidate + 16, 0);
 
-            Solliter::Info("CLSDB", "  Candidate property_list at ClassInfo+0x%X: _Data=%p count=%d",
+            Solitaer::Info("CLSDB", "  Candidate property_list at ClassInfo+0x%X: _Data=%p count=%d",
                 off, reinterpret_cast<void*>(candidate), count);
 
             // For "Node", count should be reasonable (5-100 properties)
             if (count >= 3 && count <= 200) {
                 s_propListOffset = off;
-                Solliter::Info("CLSDB", "  Found 'property_list' at ClassInfo+0x%X (count=%d)",
+                Solitaer::Info("CLSDB", "  Found 'property_list' at ClassInfo+0x%X (count=%d)",
                     off, count);
 
                 // Probe PropertyInfo layout using this list
@@ -847,7 +847,7 @@ static void ProbeClassInfoLayout() {
     }
 
     if (s_propListOffset < 0) {
-        Solliter::Warn("CLSDB", "  Could not find 'property_list' in ClassInfo");
+        Solitaer::Warn("CLSDB", "  Could not find 'property_list' in ClassInfo");
     }
 
     // Step 4: Find 'method_map' — a HashMap with StringName keys.
@@ -877,7 +877,7 @@ static void ProbeClassInfoLayout() {
                 std::string methodName = Flamme::Resolve(keyAddr);
                 if (!methodName.empty() && methodName.size() >= 2 && methodName.size() <= 64) {
                     s_methodMapOffset = off;
-                    Solliter::Info("CLSDB", "  Found 3.x 'method_map' at ClassInfo+0x%X "
+                    Solitaer::Info("CLSDB", "  Found 3.x 'method_map' at ClassInfo+0x%X "
                         "(power=%u, num=%u, first='%s')",
                         off, pw, count, methodName.c_str());
                     found = true;
@@ -904,7 +904,7 @@ static void ProbeClassInfoLayout() {
             std::string methodName = Flamme::Resolve(keyAddr);
             if (!methodName.empty() && methodName.size() >= 2 && methodName.size() <= 64) {
                 s_methodMapOffset = off;
-                Solliter::Info("CLSDB", "  Found 'method_map' at ClassInfo+0x%X (num=%u, first='%s')",
+                Solitaer::Info("CLSDB", "  Found 'method_map' at ClassInfo+0x%X (num=%u, first='%s')",
                     off, num, methodName.c_str());
                 break;
             }
@@ -912,7 +912,7 @@ static void ProbeClassInfoLayout() {
     }
 
     if (s_methodMapOffset < 0) {
-        Solliter::Warn("CLSDB", "  Could not find 'method_map' in ClassInfo");
+        Solitaer::Warn("CLSDB", "  Could not find 'method_map' in ClassInfo");
     }
 
     // Step 5: Find 'property_setget' — HashMap<StringName, PropertySetGet>
@@ -942,7 +942,7 @@ static void ProbeClassInfoLayout() {
                     if (!name.empty() && name.size() <= 64 &&
                         off != s_methodMapOffset) { // Don't confuse with method_map
                         s_propSetGetOffset = off;
-                        Solliter::Info("CLSDB", "  Found 3.x 'property_setget' at ClassInfo+0x%X "
+                        Solitaer::Info("CLSDB", "  Found 3.x 'property_setget' at ClassInfo+0x%X "
                             "(power=%u, num=%u, first='%s')", off, pw, count, name.c_str());
                         break;
                     }
@@ -970,7 +970,7 @@ static void ProbeClassInfoLayout() {
 
                 if (!getter.empty() && getptr && Zoltraak::IsReadable(getptr)) {
                     s_propSetGetOffset = off;
-                    Solliter::Info("CLSDB", "  Found 'property_setget' at ClassInfo+0x%X "
+                    Solitaer::Info("CLSDB", "  Found 'property_setget' at ClassInfo+0x%X "
                         "(num=%u, first='%s', getter='%s', _getptr=%p)",
                         off, num, name.c_str(), getter.c_str(),
                         reinterpret_cast<void*>(getptr));
@@ -980,7 +980,7 @@ static void ProbeClassInfoLayout() {
         }
 
         if (s_propSetGetOffset < 0) {
-            Solliter::Info("CLSDB", "  Could not find 'property_setget' in ClassInfo (offset extraction unavailable)");
+            Solitaer::Info("CLSDB", "  Could not find 'property_setget' in ClassInfo (offset extraction unavailable)");
         }
     }
 
@@ -995,10 +995,10 @@ static void ProbeClassInfoLayout() {
     DynOff::ELEMENT_NEXT_OFFSET        = s_elemNextOffset;
     DynOff::PROPINFO_TOTAL_SIZE        = s_propTotalSize;
 
-    Solliter::Info("CLSDB", "=== ClassInfo probe complete ===");
-    Solliter::Info("CLSDB", "  name=+0x%X inherits=+0x%X propList=+0x%X methodMap=+0x%X propSetGet=+0x%X",
+    Solitaer::Info("CLSDB", "=== ClassInfo probe complete ===");
+    Solitaer::Info("CLSDB", "  name=+0x%X inherits=+0x%X propList=+0x%X methodMap=+0x%X propSetGet=+0x%X",
         s_nameOffset, s_inheritsOffset, s_propListOffset, s_methodMapOffset, s_propSetGetOffset);
-    Solliter::Info("CLSDB", "  propNameOff=+0x%X hintOff=+0x%X usageOff=+0x%X elemNextOff=+0x%X propSize=%d",
+    Solitaer::Info("CLSDB", "  propNameOff=+0x%X hintOff=+0x%X usageOff=+0x%X elemNextOff=+0x%X propSize=%d",
         s_propNameOffset, s_propHintOffset, s_propUsageOffset, s_elemNextOffset, s_propTotalSize);
 }
 
@@ -1011,14 +1011,14 @@ void Init(uint64_t classDBAddr) {
     EnsureModuleInfo();
 
     if (!classDBAddr) {
-        Solliter::Warn("CLSDB", "Init called with null address");
+        Solitaer::Warn("CLSDB", "Init called with null address");
         return;
     }
 
     if (s_is3x) {
         // 3.x: bucket-chain HashMap<StringName, ClassInfo>
         if (!ReadHashMapFields3x()) {
-            Solliter::Warn("CLSDB", "Failed to read 3.x ClassDB HashMap fields");
+            Solitaer::Warn("CLSDB", "Failed to read 3.x ClassDB HashMap fields");
             return;
         }
         BuildClassCache3x();
@@ -1027,7 +1027,7 @@ void Init(uint64_t classDBAddr) {
     } else {
         // 4.x: robin-hood HashMap with linked list
         if (!ReadHashMapFields()) {
-            Solliter::Warn("CLSDB", "Failed to read ClassDB HashMap fields");
+            Solitaer::Warn("CLSDB", "Failed to read ClassDB HashMap fields");
             return;
         }
         BuildClassCache();
@@ -1040,7 +1040,7 @@ void Init(uint64_t classDBAddr) {
         if (!entry.parentName.empty()) resolvedParents++;
     }
 
-    Solliter::Info("CLSDB", "Init complete: %d classes, %d parent links resolved",
+    Solitaer::Info("CLSDB", "Init complete: %d classes, %d parent links resolved",
         static_cast<int>(s_classMap.size()), resolvedParents);
 
     // Probe ClassInfo struct layout (find property_list, method_map, etc.)
@@ -1127,7 +1127,7 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
         int32_t propType = Zoltraak::ReadSafe<int32_t>(elem, -1);
         if (propType < 0 || propType >= GodotVer::VariantTypeMax()) {
             // Invalid type — might have wrong offsets, stop
-            Solliter::Debug("CLSDB", "  Invalid prop type %d at elem %p, stopping",
+            Solitaer::Debug("CLSDB", "  Invalid prop type %d at elem %p, stopping",
                 propType, reinterpret_cast<void*>(elem));
             break;
         }
@@ -1197,7 +1197,7 @@ static std::vector<PropertyInfo> ReadPropertyListRaw(uint64_t infoAddr, const st
 std::vector<PropertyInfo> GetPropertyList(const char* className) {
     if (!className || s_propListOffset < 0) {
         if (s_propListOffset < 0) {
-            Solliter::Debug("CLSDB", "GetPropertyList: ClassInfo layout not probed yet");
+            Solitaer::Debug("CLSDB", "GetPropertyList: ClassInfo layout not probed yet");
         }
         return {};
     }
@@ -1330,7 +1330,7 @@ static std::vector<MethodInfo> ReadMethodMapRaw(uint64_t infoAddr) {
 std::vector<MethodInfo> GetMethodList(const char* className) {
     if (!className || s_methodMapOffset < 0) {
         if (s_methodMapOffset < 0) {
-            Solliter::Debug("CLSDB", "GetMethodList: ClassInfo layout not probed yet");
+            Solitaer::Debug("CLSDB", "GetMethodList: ClassInfo layout not probed yet");
         }
         return {};
     }
@@ -1528,21 +1528,21 @@ void LogDiagnostics() {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return; // One-shot
 
-    Solliter::Info("CLSDB", "=== DiAgolze Diagnostics ===");
-    Solliter::Info("CLSDB", "ClassDB addr:   %p", reinterpret_cast<void*>(s_classDBAddr));
-    Solliter::Info("CLSDB", "Mode:           %s", s_is3x ? "3.x bucket-chain" : "4.x robin-hood");
+    Solitaer::Info("CLSDB", "=== Diagoldze Diagnostics ===");
+    Solitaer::Info("CLSDB", "ClassDB addr:   %p", reinterpret_cast<void*>(s_classDBAddr));
+    Solitaer::Info("CLSDB", "Mode:           %s", s_is3x ? "3.x bucket-chain" : "4.x robin-hood");
     if (s_is3x) {
-        Solliter::Info("CLSDB", "3x HashMap:     hashTable=%p power=%u elements=%u",
+        Solitaer::Info("CLSDB", "3x HashMap:     hashTable=%p power=%u elements=%u",
             reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
     } else {
-        Solliter::Info("CLSDB", "Alloc offset:   %d (0x%X)", s_allocOffset, s_allocOffset);
-        Solliter::Info("CLSDB", "HashMap:        head=%p tail=%p capIdx=%u num=%u",
+        Solitaer::Info("CLSDB", "Alloc offset:   %d (0x%X)", s_allocOffset, s_allocOffset);
+        Solitaer::Info("CLSDB", "HashMap:        head=%p tail=%p capIdx=%u num=%u",
             reinterpret_cast<void*>(s_headElement),
             reinterpret_cast<void*>(s_tailElement),
             s_capacityIndex, s_numElements);
     }
-    Solliter::Info("CLSDB", "Classes cached: %d", static_cast<int>(s_classMap.size()));
-    Solliter::Info("CLSDB", "Module range:   %p..+%llX",
+    Solitaer::Info("CLSDB", "Classes cached: %d", static_cast<int>(s_classMap.size()));
+    Solitaer::Info("CLSDB", "Module range:   %p..+%llX",
         reinterpret_cast<void*>(s_moduleBase),
         static_cast<unsigned long long>(s_moduleSize));
 
@@ -1554,7 +1554,7 @@ void LogDiagnostics() {
         auto it = s_classMap.find(name);
         std::string parent = (it != s_classMap.end()) ? it->second.parentName : "?";
 
-        Solliter::Info("CLSDB", "  [%d] %s : %s (info=%p)",
+        Solitaer::Info("CLSDB", "  [%d] %s : %s (info=%p)",
             shown, name.c_str(), parent.c_str(),
             reinterpret_cast<void*>(infoAddr));
         shown++;
@@ -1567,7 +1567,7 @@ void LogDiagnostics() {
     for (const char* name : EXPECTED) {
         if (s_classMap.count(name)) foundExpected++;
     }
-    Solliter::Info("CLSDB", "Known class check: %d/%d found",
+    Solitaer::Info("CLSDB", "Known class check: %d/%d found",
         foundExpected, static_cast<int>(sizeof(EXPECTED) / sizeof(EXPECTED[0])));
 }
 
@@ -1577,7 +1577,7 @@ void LogDiagnostics() {
 void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
     EnsureModuleInfo();
 
-    Solliter::Info("CLSDB", "=== RTTI Vtable Scan ===");
+    Solitaer::Info("CLSDB", "=== RTTI Vtable Scan ===");
 
     int scanned = 0;
     int identified = 0;
@@ -1630,7 +1630,7 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
             uint32_t sig = (locPtr && Zoltraak::IsReadable(locPtr)) ?
                            Zoltraak::ReadSafe<uint32_t>(locPtr, 0xFFFF) : 0xFFFF;
 
-            Solliter::Info("CLSDB", "  vtable=%p obj=%p inMod=%d loc=%p sig=%u msvc='%s' ita='%s' -> %s",
+            Solitaer::Info("CLSDB", "  vtable=%p obj=%p inMod=%d loc=%p sig=%u msvc='%s' ita='%s' -> %s",
                 reinterpret_cast<void*>(vtable),
                 reinterpret_cast<void*>(objAddr),
                 inModule ? 1 : 0,
@@ -1645,13 +1645,13 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
     // Set global ABI flag based on which RTTI had more hits
     if (itaniumHits > 0 || msvcHits > 0) {
         s_isItaniumABI = (itaniumHits >= msvcHits);
-        Solliter::Info("CLSDB", "  ABI detected: %s (MSVC=%d, Itanium=%d)",
+        Solitaer::Info("CLSDB", "  ABI detected: %s (MSVC=%d, Itanium=%d)",
             s_isItaniumABI ? "Itanium" : "MSVC", msvcHits, itaniumHits);
     }
 
-    Solliter::Info("CLSDB", "  Scanned %d objects, %d unique vtables, %d identified (MSVC=%d Itanium=%d), %d misses",
+    Solitaer::Info("CLSDB", "  Scanned %d objects, %d unique vtables, %d identified (MSVC=%d Itanium=%d), %d misses",
         scanned, static_cast<int>(seenVtables.size()), identified, msvcHits, itaniumHits, misses);
-    Solliter::Info("CLSDB", "=== RTTI Vtable Scan Complete ===");
+    Solitaer::Info("CLSDB", "=== RTTI Vtable Scan Complete ===");
 }
 
-} // namespace Zolt::DiAgolze
+} // namespace Zolt::Diagoldze

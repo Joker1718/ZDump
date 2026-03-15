@@ -22,7 +22,7 @@ Game Process (Godot 4.x)          ZoltDumpUI (Avalonia)
 | ZoltDumper.dll [injected] | <-> | NodeTreePanel             |
 |   Frieren (OffsetFinder)  |     | LiveWalkerPanel           |
 |   Ausetiese (ObjectDB)    |pipe | ClassStructPanel          |
-|   DiAgolze (ClassDB)      |     | InstanceFinderPanel       |
+|   Diagoldze (ClassDB)      |     | InstanceFinderPanel       |
 |   Serie (SceneTree)       |     | CE XML/CSX Export         |
 |   Ubel (PropertyWalker)   |     | AOBMaker Bridge           |
 +---------------------------+     +---------------------------+

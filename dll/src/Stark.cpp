@@ -1,15 +1,15 @@
 // Stark — 修塔爾克 (Brave Warrior — Export API)
 // C ABI export functions for CE Lua and external callers.
-// Orchestrates initialization: Solliter -> Frieren -> subsystem init.
+// Orchestrates initialization: Solitaer -> Frieren -> subsystem init.
 
 #include "Stark.h"
 #include "Frieren.h"
 #include "Ausetiese.h"
-#include "DiAgolze.h"
+#include "Diagoldze.h"
 #include "Serie.h"
 #include "Flamme.h"
 #include "Fern.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 #include "BuildInfo.h"
 
@@ -38,14 +38,14 @@ static char s_versionBuf[64] = ZOLT_VERSION_STRING;
 // BSS address but the singleton pointer was NULL (game not ready yet).
 // Periodically retries until SceneTree is populated or timeout (30s).
 static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
-    Zolt::Solliter::Info("INIT", "SceneTree retry thread started");
+    Zolt::Solitaer::Info("INIT", "SceneTree retry thread started");
 
     for (int attempt = 0; attempt < 15; ++attempt) {
         Sleep(2000);
 
         // Check if Serie already resolved it via lazy deref
         if (Zolt::Serie::GetRoot()) {
-            Zolt::Solliter::Summary("SceneTree resolved (lazy deref, attempt %d)", attempt + 1);
+            Zolt::Solitaer::Summary("SceneTree resolved (lazy deref, attempt %d)", attempt + 1);
             return 0;
         }
 
@@ -55,14 +55,14 @@ static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
             Zolt::Serie::Init(addr);
             if (Zolt::Serie::GetRoot()) {
                 s_sceneTreeAddr = addr;
-                Zolt::Solliter::Summary("SceneTree retry: found at %p (attempt %d)",
+                Zolt::Solitaer::Summary("SceneTree retry: found at %p (attempt %d)",
                     reinterpret_cast<void*>(addr), attempt + 1);
                 return 0;
             }
         }
     }
 
-    Zolt::Solliter::Warn("INIT", "SceneTree retry thread gave up after 30s");
+    Zolt::Solitaer::Warn("INIT", "SceneTree retry thread gave up after 30s");
     return 1;
 }
 
@@ -70,21 +70,21 @@ extern "C" {
 
 int Zolt_Init() {
     if (s_initialized) return 0;
-    Zolt::Solliter::LogInit("Zolt_Init called");
+    Zolt::Solitaer::LogInit("Zolt_Init called");
     s_initialized = true;
     return 0;
 }
 
 int Zolt_AutoStart() {
-    Zolt::Solliter::LogInit("Zolt_AutoStart called");
+    Zolt::Solitaer::LogInit("Zolt_AutoStart called");
 
     // Initialize process-specific logging
     wchar_t processPath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, processPath, MAX_PATH);
     std::wstring processName = fs::path(processPath).stem().wstring();
-    Zolt::Solliter::InitProcessMirror(processName);
+    Zolt::Solitaer::InitProcessMirror(processName);
 
-    Zolt::Solliter::Summary("Zolt-Dump v%s (%s) starting in '%ls'",
+    Zolt::Solitaer::Summary("Zolt-Dump v%s (%s) starting in '%ls'",
         ZOLT_VERSION_STRING, ZOLT_GIT_SHORT, processName.c_str());
 
     // Run Frieren scan (discovers all Godot globals)
@@ -104,8 +104,8 @@ int Zolt_AutoStart() {
 
     // Initialize subsystems with discovered addresses
     if (s_classDBAddr) {
-        LOG_TIMED("INIT", "DiAgolze::Init (ClassDB)");
-        Zolt::DiAgolze::Init(s_classDBAddr);
+        LOG_TIMED("INIT", "Diagoldze::Init (ClassDB)");
+        Zolt::Diagoldze::Init(s_classDBAddr);
     }
     if (s_objectDBAddr) {
         LOG_TIMED("INIT", "Ausetiese::Init (ObjectDB)");
@@ -118,7 +118,7 @@ int Zolt_AutoStart() {
 
     // Log diagnostics for each subsystem
     Zolt::Flamme::LogDiagnostics();
-    Zolt::DiAgolze::LogDiagnostics();
+    Zolt::Diagoldze::LogDiagnostics();
     Zolt::Ausetiese::LogDiagnostics();
 
     // Proactive RTTI scan: pre-seed the vtable→class cache by scanning ObjectDB
@@ -130,7 +130,7 @@ int Zolt_AutoStart() {
             sampleAddrs.push_back(objAddr);
             return sampleAddrs.size() < 200;
         });
-        Zolt::DiAgolze::ScanObjectVtables(sampleAddrs);
+        Zolt::Diagoldze::ScanObjectVtables(sampleAddrs);
     }
 
     // Start Fern pipe server for UI communication
@@ -139,7 +139,7 @@ int Zolt_AutoStart() {
     // If SceneTree BSS address was found but singleton is NULL,
     // spawn a background thread to periodically retry resolution.
     if (s_sceneTreeAddr && !Zolt::Serie::GetRoot()) {
-        Zolt::Solliter::Info("INIT", "SceneTree not yet populated, starting background retry thread");
+        Zolt::Solitaer::Info("INIT", "SceneTree not yet populated, starting background retry thread");
         HANDLE hRetry = CreateThread(nullptr, 0, SceneTreeRetryThread, nullptr, 0, nullptr);
         if (hRetry) CloseHandle(hRetry);
     }
@@ -147,33 +147,33 @@ int Zolt_AutoStart() {
     s_initialized = true;
 
     // Condensed init summary
-    Zolt::Solliter::Summary("=============== Zolt-Dump %s Init Complete ===============", ZOLT_VERSION_STRING);
-    Zolt::Solliter::Summary("  Godot:     %s", s_godotVersion.empty() ? "(unknown)" : s_godotVersion.c_str());
-    Zolt::Solliter::Summary("  ObjectDB:  %p (%d objects, %d slots)",
+    Zolt::Solitaer::Summary("=============== Zolt-Dump %s Init Complete ===============", ZOLT_VERSION_STRING);
+    Zolt::Solitaer::Summary("  Godot:     %s", s_godotVersion.empty() ? "(unknown)" : s_godotVersion.c_str());
+    Zolt::Solitaer::Summary("  ObjectDB:  %p (%d objects, %d slots)",
         reinterpret_cast<void*>(s_objectDBAddr),
         Zolt::Ausetiese::GetObjectCount(), Zolt::Ausetiese::GetSlotMax());
-    Zolt::Solliter::Summary("  ClassDB:   %p (%d classes)",
+    Zolt::Solitaer::Summary("  ClassDB:   %p (%d classes)",
         reinterpret_cast<void*>(s_classDBAddr),
-        Zolt::DiAgolze::GetClassCount());
-    Zolt::Solliter::Summary("  SceneTree: %p (root=%s)",
+        Zolt::Diagoldze::GetClassCount());
+    Zolt::Solitaer::Summary("  SceneTree: %p (root=%s)",
         reinterpret_cast<void*>(s_sceneTreeAddr),
         Zolt::Serie::GetRoot() ? "found" : "NULL");
-    Zolt::Solliter::Summary("  Engine:    %p", reinterpret_cast<void*>(s_engineAddr));
-    Zolt::Solliter::Summary("  PropInfo:  nameOff=+0x%X hintOff=+0x%X usageOff=+0x%X size=%d",
+    Zolt::Solitaer::Summary("  Engine:    %p", reinterpret_cast<void*>(s_engineAddr));
+    Zolt::Solitaer::Summary("  PropInfo:  nameOff=+0x%X hintOff=+0x%X usageOff=+0x%X size=%d",
         Zolt::DynOff::PROPINFO_NAME_OFFSET,
         Zolt::DynOff::PROPINFO_HINT_OFFSET,
         Zolt::DynOff::PROPINFO_USAGE_OFFSET,
         Zolt::DynOff::PROPINFO_TOTAL_SIZE);
-    Zolt::Solliter::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
-    Zolt::Solliter::Summary("==========================================================");
+    Zolt::Solitaer::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
+    Zolt::Solitaer::Summary("==========================================================");
 
     return success ? 0 : 1;
 }
 
 void Zolt_Shutdown() {
-    Zolt::Solliter::LogInit("Zolt_Shutdown called");
+    Zolt::Solitaer::LogInit("Zolt_Shutdown called");
     Zolt::Fern::Stop();
-    Zolt::Solliter::Shutdown();
+    Zolt::Solitaer::Shutdown();
     s_initialized = false;
 }
 
@@ -220,14 +220,14 @@ int Zolt_FindObjectByAddress(uint64_t addr) {
 }
 
 int Zolt_GetClassCount() {
-    return Zolt::DiAgolze::GetClassCount();
+    return Zolt::Diagoldze::GetClassCount();
 }
 
 // Static buffer for class name return (C ABI requires stable pointer)
 static char s_classNameBuf[256] = {};
 
 const char* Zolt_GetClassName(uint64_t objectAddr) {
-    std::string name = Zolt::DiAgolze::GetObjectClass(objectAddr);
+    std::string name = Zolt::Diagoldze::GetObjectClass(objectAddr);
     if (name.empty()) {
         s_classNameBuf[0] = '\0';
     } else {

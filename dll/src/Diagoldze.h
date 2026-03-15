@@ -1,6 +1,6 @@
 #pragma once
 
-// DiAgolze — 黃金化 (Mahat's Gold — ClassDB Scanner)
+// Diagoldze — 黃金化 (Mahat's Gold — ClassDB Scanner)
 // Scans the Godot ClassDB registry to extract class metadata:
 // class info, property lists, method lists.
 // Traverses the ClassDB HashMap<StringName, ClassInfo> via linked list.
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace Zolt::DiAgolze {
+namespace Zolt::Diagoldze {
 
 // Property descriptor
 struct PropertyInfo {
@@ -70,4 +70,4 @@ void LogDiagnostics();
 // Call after ObjectDB init to identify classes before any UI requests.
 void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs);
 
-} // namespace Zolt::DiAgolze
+} // namespace Zolt::Diagoldze

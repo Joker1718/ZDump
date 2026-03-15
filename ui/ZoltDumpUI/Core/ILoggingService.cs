@@ -1,7 +1,7 @@
 namespace ZoltDumpUI.Core;
 
 /// <summary>
-/// Solliter — 索莉緹爾 (Mana Concealment)
+/// Solitaer — 索莉緹爾 (Mana Concealment)
 /// Logging service with category-based routing.
 /// </summary>
 public interface ILoggingService

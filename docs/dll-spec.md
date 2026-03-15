@@ -11,12 +11,12 @@ ZoltDumper.dll is a C++ DLL injected into Godot 4.x game processes. It discovers
 ```
 ZoltDumper.dll
   ├── Zoltraak (Memory)        ← AOBScan, SEH reads, module info
-  ├── Solliter (Logger)        ← 5-category file logging
+  ├── Solitaer (Logger)        ← 5-category file logging
   ├── Frieren (OffsetFinder)   ← AOB sigs, version detection, DynOff
   ├── Himmel (HintCache)       ← Per-game pattern caching
   ├── Ausetiese (ObjectDB)     ← ObjectSlot sparse array enumeration
   ├── Flamme (StringName)      ← Interned string resolution
-  ├── DiAgolze (ClassDB)       ← Class registry traversal
+  ├── Diagoldze (ClassDB)       ← Class registry traversal
   ├── Serie (SceneTree)        ← Node hierarchy walking
   ├── Ubel (PropertyWalker)    ← Variant value reading
   ├── Fern (PipeServer)        ← Named pipe JSON IPC
@@ -158,7 +158,7 @@ Priority 50+ (AOB patterns): To be built from Godot binary analysis.
 
 ---
 
-## Logging (Solliter)
+## Logging (Solitaer)
 
 **Output**: `%LOCALAPPDATA%\ZoltDump\Logs\{ProcessName}\`
 

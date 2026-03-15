@@ -10,7 +10,7 @@
 #include "Himmel.h"
 #include "Frieren.h"
 #include "Zoltraak.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <Windows.h>

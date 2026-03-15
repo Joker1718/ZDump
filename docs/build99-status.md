@@ -20,7 +20,7 @@ Five bugs fixed based on testing against Brotato (3.x) and OnePotionPlease (4.3)
    - Fix: `ReadGodotString()` now checks `GodotVer::IsGodot3()` and reads wchar_t first. Added `ConvertWchar16ToUtf8()`, `ReadWcharString()`.
    - Impact: Fixes Brotato name display, property search, class struct, node filter
 
-2. **ProbePropertyInfoLayout hint/usage unreachable** (`DiAgolze.cpp`)
+2. **ProbePropertyInfoLayout hint/usage unreachable** (`Diagoldze.cpp`)
    - Root cause: `return true` on successful chain validation exited before hint/usage derivation code
    - Symptom: `hintOff=0xFFFFFFFF usageOff=0xFFFFFFFF` in init log
    - Fix: Moved hint/usage derivation inside the chain validation success block, before `return true`
@@ -34,7 +34,7 @@ Five bugs fixed based on testing against Brotato (3.x) and OnePotionPlease (4.3)
    - Root cause: Missing `CanUserResizeColumns="True"` attribute
    - Fix: Added the attribute to both panels
 
-5. **3.x ClassDB enumeration diagnostics** (`DiAgolze.cpp`)
+5. **3.x ClassDB enumeration diagnostics** (`Diagoldze.cpp`)
    - Issue: Only 347 of 648 classes found in Brotato. Root cause unclear (element layout?).
    - Added: Hex dump of first HashMap element + multi-offset StringName probing in `BuildClassCache3x()` for next test run analysis.
 
@@ -74,8 +74,8 @@ Five bugs fixed based on testing against Brotato (3.x) and OnePotionPlease (4.3)
 |------|---------|
 | `Zoltraak.h` | Added `ReadWcharString()` declaration |
 | `Zoltraak.cpp` | Added `ConvertWchar16ToUtf8()`, wchar_t path in `ReadGodotString()`, `ReadWcharString()`. Included `Grimoire.h` for `GodotVer`. |
-| `DiAgolze.h` | Added `nativeSize` to `PropertyInfo` struct |
-| `DiAgolze.cpp` | Fixed `ProbePropertyInfoLayout` hint/usage early return. Added 3.x element hex dump diagnostics. Integrated ptrcall offset extraction into `ReadPropertyListRaw()`. |
+| `Diagoldze.h` | Added `nativeSize` to `PropertyInfo` struct |
+| `Diagoldze.cpp` | Fixed `ProbePropertyInfoLayout` hint/usage early return. Added 3.x element hex dump diagnostics. Integrated ptrcall offset extraction into `ReadPropertyListRaw()`. |
 | `Ubel.h` | Added `offset`, `nativeSize` to `FieldEntry` struct |
 | `Ubel.cpp` | Added `ReadNativeValue()`, `ProbeScriptInstanceOffset()` (with retry), `ReadGDScriptMemberNames()`, `ReadGDScriptMembers()`. Cleaned up STRING reading fallbacks. |
 | `Grimoire.h` | Added GDScriptInstance DynOff constants, `STREE_PROBE_MAX` |

@@ -6,7 +6,7 @@ using ZoltDumpUI.Models;
 namespace ZoltDumpUI.ViewModels;
 
 /// <summary>
-/// DiAgolze — 黃金化 (Golden Transmutation)
+/// Diagoldze — 黃金化 (Golden Transmutation)
 /// ClassDB class structure browser.
 /// </summary>
 public partial class ClassStructViewModel : ViewModelBase

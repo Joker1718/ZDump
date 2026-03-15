@@ -3,7 +3,7 @@
 //
 // On DLL_PROCESS_ATTACH:
 //   1. Store module handle for DLL path resolution
-//   2. Initialize Solliter (logging)
+//   2. Initialize Solitaer (logging)
 //   3. Start Qual (mailbox) polling thread for CE Lua
 //   4. Spawn auto-start thread (scan + pipe server)
 
@@ -15,8 +15,8 @@ namespace Zolt::Stark {
     int AutoStart();
 }
 
-// Solliter — 索莉緹爾 — Logger
-namespace Zolt::Solliter {
+// Solitaer — 索莉緹爾 — Logger
+namespace Zolt::Solitaer {
     bool Init();
 }
 
@@ -73,7 +73,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID /*reserved*/) {
         DisableThreadLibraryCalls(hModule);
 
         // Initialize logging (early buffering until InitProcessMirror)
-        Zolt::Solliter::Init();
+        Zolt::Solitaer::Init();
 
         // Start mailbox polling for CE Lua communication
         Zolt::Qual::StartPolling();
