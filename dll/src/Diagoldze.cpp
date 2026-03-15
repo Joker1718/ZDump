@@ -673,63 +673,145 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     uint8_t code[64] = {};
     Zoltraak::ReadSafe(ptrcallAddr, code, sizeof(code));
 
-    // Diagnostic: dump first 3 getter functions for debugging
+    // Diagnostic: dump first 3 getter functions + MethodBind struct
     static int s_dumpCount = 0;
     if (s_dumpCount < 3) {
         s_dumpCount++;
-        Solitaer::Info("CLSDB", "ExtractMemberAccess #%d: ptrcall at %p", s_dumpCount,
-            reinterpret_cast<void*>(ptrcallAddr));
+        Solitaer::Info("CLSDB", "ExtractMemberAccess #%d: MB=%p ptrcall=%p (vtable[%d])",
+            s_dumpCount, reinterpret_cast<void*>(methodBindAddr),
+            reinterpret_cast<void*>(ptrcallAddr), ptrcallIdx);
         for (int d = 0; d < 64; d += 16) {
-            Solitaer::Info("CLSDB", "  +%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
+            Solitaer::Info("CLSDB", "  code+%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
                 d, code[d], code[d+1], code[d+2], code[d+3],
                 code[d+4], code[d+5], code[d+6], code[d+7],
                 code[d+8], code[d+9], code[d+10], code[d+11],
                 code[d+12], code[d+13], code[d+14], code[d+15]);
         }
+        // Dump MethodBind struct (first 0x80 bytes) — look for member offset field
+        uint8_t mb[0x80] = {};
+        Zoltraak::ReadSafe(methodBindAddr, mb, sizeof(mb));
+        Solitaer::Info("CLSDB", "  MethodBind dump (%p):", reinterpret_cast<void*>(methodBindAddr));
+        for (int d = 0; d < 0x80; d += 16) {
+            uint64_t v0 = *reinterpret_cast<uint64_t*>(&mb[d]);
+            uint64_t v1 = *reinterpret_cast<uint64_t*>(&mb[d+8]);
+            Solitaer::Info("CLSDB", "    +%02X: %016llX %016llX", d, v0, v1);
+        }
     }
 
-    // === Strategy A (GCC/Itanium): Indirect offset via MethodBind field ===
+    // === Strategy A (GCC/Itanium): Follow MethodBind getter function pointer ===
     //
-    // GCC-compiled Godot uses generic getter templates that read the member offset
-    // from the MethodBind struct itself:
-    //   48 03 51 XX       add rdx, [rcx+XX]     ; rdx(Object*) += MethodBind.member_offset
-    //   48 03 91 XX XX XX XX  add rdx, [rcx+XXXXXXXX]  ; same, disp32 form
+    // GCC ptrcall is a generic template:
+    //   mov rax, [rcx+0x48]       ; load getter fn ptr from MethodBind
+    //   add rdx, [rcx+0x50]       ; add member_offset (usually 0)
+    //   test al, 1                ; check if virtual (Itanium ABI tag bit)
+    //   jz direct_call            ; if not virtual, call directly
     //
-    // So the property offset is stored at MethodBind+XX. We read it directly.
+    // When member_offset=0 and fnPtr is direct (bit0=0), the REAL offset
+    // is inside the getter function: getter(Variant* ret=rcx, Object* obj=rdx)
     //
     // === Strategy B (MSVC): Inline offset in getter code ===
     //
     // MSVC-compiled Godot inlines the offset: mov rax, [rdx+offset]
-    // We match mov/lea/movzx patterns on rdx (Object*).
 
     auto isFieldOffset = [](int64_t off) -> bool {
         return off >= 0x10 && off < 0x10000;
     };
 
-    // --- Strategy A: scan for "add rdx, [rcx+disp]" (GCC indirect offset) ---
+    // --- Strategy A: find fn ptr and member_offset fields in ptrcall code ---
+    int fnFieldOff = -1, memFieldOff = -1;
     for (int i = 0; i < 48; i++) {
-        // 48 03 51 XX = ADD rdx, [rcx + disp8]  (REX.W + ADD r64, r/m64)
-        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x03 && code[i+2] == 0x51) {
-            int mbFieldOff = static_cast<int8_t>(code[i+3]); // offset within MethodBind
-            if (mbFieldOff > 0 && mbFieldOff < 0x100) {
-                // Read the actual property offset from MethodBind
-                int64_t memberOff = Zoltraak::ReadSafe<int64_t>(methodBindAddr + mbFieldOff, -1);
-                if (isFieldOffset(memberOff)) {
-                    result.offset = static_cast<int>(memberOff);
-                    result.size = 8; // size unknown from this pattern, default to 8
-                    return result;
-                }
-            }
+        // 48 8B 41 XX or 4C 8B 41 XX = MOV r64, [rcx + disp8] (load fn ptr)
+        if (i + 4 <= 64 && (code[i] == 0x48 || code[i] == 0x4C) &&
+            code[i+1] == 0x8B && code[i+2] == 0x41) {
+            if (fnFieldOff < 0) fnFieldOff = static_cast<uint8_t>(code[i+3]);
         }
-        // 48 03 91 XX XX XX XX = ADD rdx, [rcx + disp32]
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x03 && code[i+2] == 0x91) {
-            int32_t mbFieldOff = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (mbFieldOff > 0 && mbFieldOff < 0x200) {
-                int64_t memberOff = Zoltraak::ReadSafe<int64_t>(methodBindAddr + mbFieldOff, -1);
-                if (isFieldOffset(memberOff)) {
-                    result.offset = static_cast<int>(memberOff);
-                    result.size = 8;
-                    return result;
+        // 48 03 51 XX = ADD rdx, [rcx + disp8] (add member_offset)
+        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x03 && code[i+2] == 0x51) {
+            if (memFieldOff < 0) memFieldOff = static_cast<uint8_t>(code[i+3]);
+        }
+    }
+
+    if (fnFieldOff >= 0 && memFieldOff >= 0) {
+        uint64_t fnPtr = Zoltraak::ReadSafe<uint64_t>(methodBindAddr + fnFieldOff, 0);
+        int64_t memberOff = Zoltraak::ReadSafe<int64_t>(methodBindAddr + memFieldOff, -1);
+
+        if (s_dumpCount <= 3) {
+            Solitaer::Info("CLSDB", "  Strategy A: fnField=+0x%X memField=+0x%X fnPtr=%p(tag=%d) memOff=%lld",
+                fnFieldOff, memFieldOff, reinterpret_cast<void*>(fnPtr),
+                (int)(fnPtr & 1), memberOff);
+        }
+
+        // Case 1: member_offset non-zero → direct field offset
+        if (isFieldOffset(memberOff)) {
+            result.offset = static_cast<int>(memberOff);
+            result.size = 8;
+            return result;
+        }
+
+        // Case 2: member_offset=0, fnPtr is direct (bit0=0) → follow getter function
+        if (memberOff == 0 && fnPtr && !(fnPtr & 1) && Zoltraak::IsReadable(fnPtr)) {
+            uint8_t gc[64] = {};
+            Zoltraak::ReadSafe(fnPtr, gc, sizeof(gc));
+
+            if (s_dumpCount <= 3) {
+                Solitaer::Info("CLSDB", "  Following getter at %p:", reinterpret_cast<void*>(fnPtr));
+                for (int d = 0; d < 32; d += 16)
+                    Solitaer::Info("CLSDB", "    +%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
+                        d, gc[d],gc[d+1],gc[d+2],gc[d+3],gc[d+4],gc[d+5],gc[d+6],gc[d+7],
+                        gc[d+8],gc[d+9],gc[d+10],gc[d+11],gc[d+12],gc[d+13],gc[d+14],gc[d+15]);
+            }
+
+            // Getter: ret=rcx, obj=rdx → scan for [rdx+offset]
+            auto gMod = [](uint8_t m) -> uint8_t { return (m >> 6) & 3; };
+            auto gRdx = [](uint8_t m) -> bool { return (m & 7) == 2; };
+
+            for (int gi = 0; gi < 48; gi++) {
+                bool gW = false; int gp = gi;
+                if (gc[gi] >= 0x40 && gc[gi] <= 0x4F) { gW = (gc[gi] & 0x08) != 0; gp = gi + 1; }
+                if (gp + 1 >= 64) continue;
+                uint8_t go = gc[gp];
+
+                // MOV reg, [rdx+disp32]
+                if (go == 0x8B && gp+5 <= 64 && gMod(gc[gp+1]) == 2 && gRdx(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = gW ? 8 : 4; return result; }
+                }
+                // MOV reg, [rdx+disp8]
+                if (go == 0x8B && gp+2 <= 64 && gMod(gc[gp+1]) == 1 && gRdx(gc[gp+1])) {
+                    int8_t off = static_cast<int8_t>(gc[gp+2]);
+                    if (off >= 0x10) { result.offset = off; result.size = gW ? 8 : 4; return result; }
+                }
+                // LEA reg, [rdx+disp32]
+                if (gW && go == 0x8D && gp+5 <= 64 && gMod(gc[gp+1]) == 2 && gRdx(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
+                }
+                // MOVZX byte [rdx+disp32]
+                if (go == 0x0F && gp+6 <= 64 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 2 && gRdx(gc[gp+2])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+3]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
+                }
+                // MOVZX byte [rdx+disp8]
+                if (go == 0x0F && gp+3 <= 64 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 1 && gRdx(gc[gp+2])) {
+                    int8_t off = static_cast<int8_t>(gc[gp+3]);
+                    if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
+                }
+                // MOVSXD [rdx+disp32]
+                if (gW && go == 0x63 && gp+6 <= 64 && gMod(gc[gp+1]) == 2 && gRdx(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
+                }
+                // MOVSS [rdx+disp32]
+                if (gc[gi] == 0xF3 && gi+8 <= 64 && gc[gi+1] == 0x0F && gc[gi+2] == 0x10 &&
+                    gMod(gc[gi+3]) == 2 && gRdx(gc[gi+3])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gi+4]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
+                }
+                // MOVSD [rdx+disp32]
+                if (gc[gi] == 0xF2 && gi+8 <= 64 && gc[gi+1] == 0x0F && gc[gi+2] == 0x10 &&
+                    gMod(gc[gi+3]) == 2 && gRdx(gc[gi+3])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gi+4]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
                 }
             }
         }

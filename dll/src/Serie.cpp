@@ -234,36 +234,11 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         }
     }
 
-    // Select best candidate by score (highest wins, first among ties)
-    ObjCandidate* best = nullptr;
-    for (auto& c : candidates) {
-        if (c.score > 0 && (!best || c.score > best->score)) {
-            best = &c;
-        }
-    }
-
-    if (best && best->score >= 10) {
-        // Only accept if at least a confirmed Node class (score >= 10).
-        // Score 5 = unknown class Object pointer — too unreliable, fall through to ObjectDB.
-        DynOff::STREE_ROOT_OFFSET = best->offset;
-        Solitaer::Info("STREE", "Selected root at SceneTree+0x%X = %p (name='%s', class='%s', score=%d)",
-            best->offset, reinterpret_cast<void*>(best->addr),
-            best->name.c_str(), best->className.c_str(), best->score);
-        return best->addr;
-    }
-
-    int skippedNonNode = 0;
-    for (auto& c : candidates) {
-        if (c.score == 0) skippedNonNode++;
-    }
-    Solitaer::Warn("STREE", "Could not find root in SceneTree memory (probed 0x40-0x%X, %d non-Node objects skipped)",
-        Grimoire::STREE_PROBE_MAX, skippedNonNode);
-
-    // === Fallback Strategy: Search ObjectDB for root Window ===
-    // If SceneTree memory scan fails, look for a Window/Viewport object
-    // that has name "root" — this is always the SceneTree root node.
-    Solitaer::Info("STREE", "Fallback: searching ObjectDB for root Window/Viewport...");
-    uint64_t fallbackRoot = 0;
+    // === Primary Strategy: Search ObjectDB for root Window ===
+    // The most reliable method: find a Window/Viewport with name "root" in ObjectDB.
+    // SceneTree memory scanning is unreliable due to version-dependent struct layout.
+    Solitaer::Info("STREE", "Searching ObjectDB for root Window/Viewport...");
+    uint64_t objdbRoot = 0;
     Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) -> bool {
         std::string cls = Diagoldze::GetObjectClass(objAddr);
         if (cls != "Window" && cls != "Viewport" && cls != "SubViewport") return true;
@@ -271,26 +246,44 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         if (name == "root") {
             Solitaer::Info("STREE", "  Found root via ObjectDB: %p class='%s'",
                 reinterpret_cast<void*>(objAddr), cls.c_str());
-            fallbackRoot = objAddr;
+            objdbRoot = objAddr;
             return false; // stop
         }
         return true; // continue
     });
 
-    if (fallbackRoot) {
+    if (objdbRoot) {
         // Try to determine SceneTree offset for this root (scan back for the pointer)
         for (int off = 0x40; off <= Grimoire::STREE_PROBE_MAX; off += 8) {
             uint64_t val = Zoltraak::ReadSafe<uint64_t>(sceneTree + off, 0);
-            if (val == fallbackRoot) {
+            if (val == objdbRoot) {
                 DynOff::STREE_ROOT_OFFSET = off;
-                Solitaer::Info("STREE", "  Root pointer at SceneTree+0x%X (validated via ObjectDB fallback)", off);
+                Solitaer::Info("STREE", "  Root pointer at SceneTree+0x%X (validated via ObjectDB)", off);
                 break;
             }
         }
-        return fallbackRoot;
+        return objdbRoot;
     }
 
-    Solitaer::Warn("STREE", "Fallback also failed — no 'root' Window/Viewport in ObjectDB");
+    // === Fallback: Use best SceneTree memory scan candidate ===
+    // Only if ObjectDB search failed (game not fully loaded yet?)
+    ObjCandidate* best = nullptr;
+    for (auto& c : candidates) {
+        if (c.score > 0 && (!best || c.score > best->score)) {
+            best = &c;
+        }
+    }
+
+    if (best && best->score >= 50) {
+        // Only accept high-confidence candidates (Window/Viewport class or name="root")
+        DynOff::STREE_ROOT_OFFSET = best->offset;
+        Solitaer::Info("STREE", "Selected root at SceneTree+0x%X = %p (name='%s', class='%s', score=%d)",
+            best->offset, reinterpret_cast<void*>(best->addr),
+            best->name.c_str(), best->className.c_str(), best->score);
+        return best->addr;
+    }
+
+    Solitaer::Warn("STREE", "Could not find root Window (ObjectDB search + SceneTree scan both failed)");
     return 0;
 }
 
