@@ -13,10 +13,11 @@ namespace Zolt::Ubel {
 
 // Represents a decoded Variant value
 struct VariantValue {
-    int         type;       // Variant::Type enum
-    std::string typeName;   // Human-readable type name
-    std::string value;      // String representation of the value
-    uint64_t    rawAddr;    // Address of the variant data
+    int         type = 0;       // Variant::Type enum
+    std::string typeName;       // Human-readable type name
+    std::string value;          // String representation of the value
+    uint64_t    rawAddr = 0;    // Address of the variant data (where the field lives)
+    uint64_t    ptrTarget = 0;  // For Object-type: address of the pointed-to Object (0 if not applicable)
 };
 
 // Property with its value
@@ -26,6 +27,7 @@ struct FieldEntry {
     VariantValue value;
     int          offset = -1;    // byte offset within object (-1 if unknown)
     int          nativeSize = 0; // native access size (1, 4, 8)
+    bool         fromPtrcall = false; // true if value obtained via runtime ptrcall
     int          hint = 0;       // PropertyHint enum value
     std::string  hintString;     // hint parameter string
     uint32_t     usage = 0;      // PROPERTY_USAGE_* flags

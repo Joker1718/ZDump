@@ -25,7 +25,7 @@ public partial class ProxyDeployViewModel : ViewModelBase
         _deploy = deploy;
         _log = log;
 
-        var dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Grimoire.ProxyDllFileName);
+        var dllPath = Path.Combine(Grimoire.AppDir, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
         SourceVersion = _deploy.GetDllVersion(dllPath) ?? "N/A";
     }
 
@@ -36,6 +36,10 @@ public partial class ProxyDeployViewModel : ViewModelBase
         {
             ClearError();
             IsScanning = true;
+
+            // Refresh source version (proxy DLL may have been rebuilt)
+            var dllPath = Path.Combine(Grimoire.AppDir, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
+            SourceVersion = _deploy.GetDllVersion(dllPath) ?? "N/A";
 
             var folders = await _deploy.GetSteamLibraryFoldersAsync();
             var games = await _deploy.FindGodotGamesAsync(folders);

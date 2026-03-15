@@ -26,6 +26,10 @@ bool QueueWorkSync(std::function<void()> work, DWORD timeoutMs = 5000);
 // Is the hook active and ready to drain work?
 bool IsReady();
 
+// Has ptrcall been auto-disabled due to repeated dispatch timeouts?
+// When true, QueueWorkSync returns false immediately without waiting.
+bool IsPtrcallDisabled();
+
 // Shut down the dispatcher: unhook, signal pending sync callers, discard queue.
 void Shutdown();
 

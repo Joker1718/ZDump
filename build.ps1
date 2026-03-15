@@ -40,7 +40,7 @@ param(
     [string]$Target = "All",
 
     [ValidateSet("version", "winmm")]
-    [string]$ProxyTarget = "version",
+    [string]$ProxyTarget = "winmm",
 
     [switch]$Clean,
     [switch]$SkipRestore,

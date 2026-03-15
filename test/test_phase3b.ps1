@@ -7,7 +7,7 @@ param(
 )
 
 $testDir   = Split-Path $GodotExe -Parent
-$proxy     = "D:\Github\Zolt-Dump\build_proxy\dll\winmm.dll"
+$proxy     = "D:\Github\Zolt-Dump\dist\proxy\winmm.dll"
 $pipeName  = "ZoltDumpBfx"
 
 if (-not (Test-Path $proxy)) {

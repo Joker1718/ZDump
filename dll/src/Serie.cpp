@@ -18,6 +18,7 @@
 // whose target has a vtable in module range and whose StringName name = "root".
 
 #include "Serie.h"
+#include "Ausetiese.h"
 #include "Diagoldze.h"
 #include "Zoltraak.h"
 #include "Flamme.h"
@@ -25,6 +26,7 @@
 #include "Grimoire.h"
 
 #include <atomic>
+#include <unordered_set>
 
 namespace Zolt::Serie {
 
@@ -44,14 +46,34 @@ static void EnsureModuleInfo() {
     }
 }
 
-// Check if a pointer looks like a valid Godot Object (heap-allocated, vtable in module range)
+// Cached ObjectDB address set for fast O(1) lookup during probing.
+// Built once per ProbeRootNode call, cleared when done.
+static std::unordered_set<uint64_t> s_objectDBSet;
+
+static void BuildObjectDBSet() {
+    s_objectDBSet.clear();
+    s_objectDBSet.reserve(4096);
+    Ausetiese::ForEach([](int /*index*/, uint64_t addr) {
+        s_objectDBSet.insert(addr);
+    });
+}
+
+// Check if a pointer looks like a valid Godot Object (heap-allocated, vtable in module range,
+// AND present in ObjectDB for strong validation)
 static bool IsValidObject(uint64_t addr) {
     if (!addr || !Zoltraak::IsReadable(addr)) return false;
     // Real Objects are heap-allocated — reject pointers within the module's own address range
     // (these are .rdata/.data/.bss pointers that can accidentally pass the vtable check)
     if (addr >= s_moduleBase && addr < s_moduleBase + s_moduleSize) return false;
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(addr, 0);
-    return vtable && vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize;
+    if (!vtable || vtable < s_moduleBase || vtable >= s_moduleBase + s_moduleSize) return false;
+    // Strong validation: the Object must be registered in ObjectDB.
+    // This eliminates MethodBind, Signal, and other internal structures with vtable pointers.
+    if (!s_objectDBSet.empty()) {
+        return s_objectDBSet.count(addr) > 0;
+    }
+    // Fallback if set not built (shouldn't happen during probe)
+    return Ausetiese::FindByAddress(addr) >= 0;
 }
 
 // Try to read a Node's StringName name from its memory.
@@ -70,7 +92,8 @@ static std::string ProbeNodeNameInternal(uint64_t nodeAddr, bool allowCache) {
     }
 
     // Probe: scan for StringName fields that resolve to plausible node names.
-    for (int off = 0x80; off <= 0x500; off += 8) {
+    // Godot 4.5+ has larger Node objects — extend range to 0x800.
+    for (int off = 0x80; off <= 0x800; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(nodeAddr + off, 0);
         if (!candidate || candidate < 0x10000) continue;
         if (!Zoltraak::IsReadable(candidate)) continue;
@@ -121,6 +144,13 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
     if (!sceneTree) return 0;
     EnsureModuleInfo();
     LOG_TIMED("STREE", "ProbeRootNode");
+
+    // Build ObjectDB address set for fast O(1) validation
+    BuildObjectDBSet();
+    // Auto-clear on scope exit (any return path)
+    struct SetCleaner { ~SetCleaner() { s_objectDBSet.clear(); } } _cleaner;
+    Solitaer::Debug("STREE", "ObjectDB set: %d addresses for validation",
+        static_cast<int>(s_objectDBSet.size()));
 
     // If we already know the offset, use it
     if (DynOff::STREE_ROOT_OFFSET >= 0) {
@@ -224,8 +254,41 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
     for (auto& c : candidates) {
         if (c.score == 0) skippedNonNode++;
     }
-    Solitaer::Warn("STREE", "Could not find any Node-like Object in SceneTree (probed 0x40-0x%X, %d non-Node objects skipped)",
+    Solitaer::Warn("STREE", "Could not find root in SceneTree memory (probed 0x40-0x%X, %d non-Node objects skipped)",
         Grimoire::STREE_PROBE_MAX, skippedNonNode);
+
+    // === Fallback Strategy: Search ObjectDB for root Window ===
+    // If SceneTree memory scan fails, look for a Window/Viewport object
+    // that has name "root" — this is always the SceneTree root node.
+    Solitaer::Info("STREE", "Fallback: searching ObjectDB for root Window/Viewport...");
+    uint64_t fallbackRoot = 0;
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) -> bool {
+        std::string cls = Diagoldze::GetObjectClass(objAddr);
+        if (cls != "Window" && cls != "Viewport" && cls != "SubViewport") return true;
+        std::string name = ProbeObjectName(objAddr);
+        if (name == "root") {
+            Solitaer::Info("STREE", "  Found root via ObjectDB: %p class='%s'",
+                reinterpret_cast<void*>(objAddr), cls.c_str());
+            fallbackRoot = objAddr;
+            return false; // stop
+        }
+        return true; // continue
+    });
+
+    if (fallbackRoot) {
+        // Try to determine SceneTree offset for this root (scan back for the pointer)
+        for (int off = 0x40; off <= Grimoire::STREE_PROBE_MAX; off += 8) {
+            uint64_t val = Zoltraak::ReadSafe<uint64_t>(sceneTree + off, 0);
+            if (val == fallbackRoot) {
+                DynOff::STREE_ROOT_OFFSET = off;
+                Solitaer::Info("STREE", "  Root pointer at SceneTree+0x%X (validated via ObjectDB fallback)", off);
+                break;
+            }
+        }
+        return fallbackRoot;
+    }
+
+    Solitaer::Warn("STREE", "Fallback also failed — no 'root' Window/Viewport in ObjectDB");
     return 0;
 }
 

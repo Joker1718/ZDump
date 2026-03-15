@@ -260,15 +260,14 @@ void Init(uint64_t objectDBAddr) {
 }
 
 int GetObjectCount() {
-    if (s_cachedCount < 0) {
-        // Need to count
-        int count = 0;
-        ForEachEx([&](int, uint64_t) {
-            count++;
-            return true;
-        });
-        s_cachedCount = count;
-    }
+    // Always recount — the game can create/destroy objects at any time.
+    // Returning a stale cached value causes the UI to load incorrect counts.
+    int count = 0;
+    ForEachEx([&](int, uint64_t) {
+        count++;
+        return true;
+    });
+    s_cachedCount = count;
     return s_cachedCount;
 }
 

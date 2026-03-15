@@ -45,7 +45,8 @@ namespace Grimoire {
     constexpr int            PIPE_BUF_SIZE   = 65536;                // 64 KB pipe buffer
 
     // ----- SceneTree probe constants -----
-    constexpr int            STREE_PROBE_MAX = 0x2000;               // Max offset to scan for root Window*
+    constexpr int            STREE_PROBE_MAX = 0x4000;               // Max offset to scan for root Window*
+                                                                        // Godot 4.5+ SceneTree can exceed 0x2000 bytes
 }
 
 // ============================================================
@@ -130,6 +131,11 @@ namespace DynOff {
     inline int PROPINFO_TOTAL_SIZE    = -1;  // total PropertyInfo size in bytes
     inline int ELEMENT_NEXT_OFFSET    = -1;  // Element.next_ptr offset (after PropertyInfo value)
 
+    // ----- MethodBind ptrcall vtable index -----
+    // MSVC ABI: ptrcall at vtable[2], Itanium ABI: vtable[3]
+    // Set by Diagoldze after ABI detection
+    inline int METHODBIND_PTRCALL_VTIDX = 2;
+
     // ----- Validation state -----
     inline std::atomic<bool> bOffsetsValidated{false};
     inline std::atomic<bool> bNodeOffsetsValidated{false};
@@ -165,11 +171,12 @@ namespace GodotVer {
 // Heiter — 海塔 (Priest — GameThread Dispatch) constants
 // ============================================================
 namespace Heiter {
-    constexpr unsigned long      SYNC_TIMEOUT_MS   = 5000;    // Default sync dispatch timeout
+    constexpr unsigned long      SYNC_TIMEOUT_MS   = 500;     // Default sync dispatch timeout (fast fail for UX)
     constexpr unsigned long long DRAIN_BUDGET_MS   = 2;       // Max ms to drain work queue per frame
     constexpr int                RETRY_ATTEMPTS    = 60;      // Window discovery retries (60 × 500ms = 30s)
     constexpr unsigned long      RETRY_INTERVAL_MS = 500;     // ms between window discovery retries
     constexpr size_t             MAX_QUEUE_SIZE    = 256;     // Max queued work items (overflow protection)
+    constexpr int                MAX_CONSEC_TIMEOUTS = 3;     // Consecutive timeouts before disabling ptrcall
 }
 
 } // namespace Zolt
