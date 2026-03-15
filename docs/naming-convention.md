@@ -16,20 +16,20 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 
 | File | Frieren Term | Character/Spell | Actual Function | Why This Name |
 |---|---|---|---|---|
-| **Zoltraak.cpp** | 栔爾朵列 | Attack magic (殺人魔法) | Core memory scanning: AOBScan, SEH reads, RIP resolution | The attack that deconstructs — core destructuring tool |
-| **Solliter.cpp** | 索莉緹爾 | Mana concealment magic | Logger: 5-category file logging with rotation | Conceals traces — records hidden observations |
+| **Zoltraak.cpp** | 殺人魔法 | Attack magic | Core memory scanning: AOBScan, SEH reads, RIP resolution | The attack that deconstructs — core destructuring tool |
+| **Solliter.cpp** | 索莉塔 | (Original: Solitär) Mana concealment magic | Logger: 5-category file logging with rotation | Conceals traces — records hidden observations |
 | **Ausetiese.cpp** | 服從之秤 | Aura's obedience scale | ObjectDB enumeration: slot scanning, validation | Weighs and sorts all objects (like Aura's power scale) |
 | **DiAgolze.cpp** | 黃金化 | Mahat's golden transmutation | ClassDB scanner: immutable class registry | Immutable like gold — static class definitions |
-| **Flamme.cpp** | 芙拉梅 | Great mage, Frieren's master | StringName resolver: interned string lookup | Ancient knowledge keeper — resolves name origins |
+| **Flamme.cpp** | 弗蘭梅 | Great mage, Frieren's master | StringName resolver: interned string lookup | Ancient knowledge keeper — resolves name origins |
 | **Serie.cpp** | 賽莉耶 | Great mage, living history | SceneTree / Node hierarchy walker | Sees all history and hierarchy — living memory |
-| **Ubel.cpp** | 優貝爾 | Special ops assassin | Variant value reader & property walker | Precise extraction — surgical data retrieval |
+| **Ubel.cpp** | 尤蓓爾 | Special ops assassin | Variant value reader & property walker | Precise extraction — surgical data retrieval |
 | **Frieren.cpp** | 芙莉蓮 | Protagonist, seeker | OffsetFinder: AOB signatures, version detection | The one who finds everything — eternal searcher |
 | **Stark.cpp** | 修塔爾克 | Brave warrior, reliable | Export API: C ABI (~25 functions) | Strong, reliable interface — brave shield |
 | **Fern.cpp** | 費倫 | Frieren's apprentice | Named Pipe server: JSON IPC dispatch | Communicator, messenger — bridges worlds |
 | **Himmel.cpp** | 欣梅爾 | Hero, remembered | Hint cache: per-game AOB results | Remembered wisdom — the hero's lasting legacy |
 | **Heiter.cpp** | 海塔 | Priest, healer | GameThread dispatch: MinHook queuing | Healing/restoring context — thread-safe dispatch |
-| **Qual.cpp** | 全 | Seven Sages demon | Mailbox: CE Lua shared memory | Dark communication channel — demon's whisper |
-| **Eisen.cpp** | 艾乍 | Iron warrior, defender | Proxy DLL: version.dll forwarding | Armored defense — iron shield proxy |
+| **Qual.cpp** | 庫瓦爾 | Seven Sages demon | Mailbox: CE Lua shared memory | Dark communication channel — demon's whisper |
+| **Eisen.cpp** | 艾冉 | Iron warrior, defender | Proxy DLL: version.dll forwarding | Armored defense — iron shield proxy |
 | **Macht.cpp** | 馬赫特 | Seven Sages (power) | CE Plugin: Type 5 interface | Raw power interface — direct force |
 | **Grimoire.h** | 魔導書 | Grimoire | Constants, magic strings, DynOff namespace | Book of spells — configuration tome |
 
