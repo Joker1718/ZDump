@@ -11,7 +11,7 @@ This document maps every UE5CEDumper feature to its Godot equivalent implementat
 | GObjects (FUObjectArray*) | ObjectDB::object_slots | Ausetiese | Sparse array vs chunked array — simpler |
 | GNames (FNamePool*) | StringName hash table | Flamme | Hash table vs indexed pool |
 | GWorld (UWorld**) | SceneTree::singleton | Serie | Direct singleton vs double-deref |
-| N/A | ClassDB::classes | DiAgolze | Godot-specific: class registry |
+| N/A | ClassDB::classes | Diagoldze | Godot-specific: class registry |
 | N/A | Engine::singleton | Frieren | Godot-specific: engine singletons |
 
 ## Object System Mapping
@@ -64,13 +64,13 @@ This document maps every UE5CEDumper feature to its Godot equivalent implementat
 | UE5CEDumper File | Zolt-Dump File | Frieren Name | Port Difficulty |
 |---|---|---|---|
 | Memory.cpp | Zoltraak.cpp | 栔爾朵列 | **Direct port** — identical functionality |
-| Logger.cpp | Solliter.cpp | 索莉緹爾 | **Direct port** — same design |
+| Logger.cpp | Solitaer.cpp | 索莉緹爾 | **Direct port** — same design |
 | ObjectArray.cpp | Ausetiese.cpp | 服從之秤 | **Adapt** — sparse array vs chunked |
 | FNamePool.cpp | Flamme.cpp | 芙拉梅 | **Rewrite** — hash table vs indexed pool |
 | UStructWalker.cpp | Ubel.cpp | 優貝爾 | **Major rewrite** — Variant vs FProperty |
 | OffsetFinder.cpp | Frieren.cpp | 芙莉蓮 | **Rewrite** — new AOB patterns |
 | (walk_world) | Serie.cpp | 賽莉耶 | **Rewrite** — tree model vs level model |
-| (ClassDB) | DiAgolze.cpp | 黃金化 | **New** — Godot-specific |
+| (ClassDB) | Diagoldze.cpp | 黃金化 | **New** — Godot-specific |
 | ExportAPI.cpp | Stark.cpp | 修塔爾克 | **Adapt** — same pattern, new functions |
 | PipeServer.cpp | Fern.cpp | 費倫 | **Adapt** — same protocol, new commands |
 | HintCache.cpp | Himmel.cpp | 欣梅爾 | **Direct port** — same concept |

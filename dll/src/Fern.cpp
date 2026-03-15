@@ -6,11 +6,11 @@
 #define LOG_CAT "PIPE"
 
 #include "Fern.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 #include "Frieren.h"
 #include "Ausetiese.h"
-#include "DiAgolze.h"
+#include "Diagoldze.h"
 #include "Flamme.h"
 #include "Serie.h"
 #include "Ubel.h"
@@ -340,7 +340,7 @@ static json HandleGetObjectList(int id, const json& req) {
         if (added >= limit) return false;
 
         std::string name      = ReadObjectName(objAddr);
-        std::string className = DiAgolze::GetObjectClass(objAddr);
+        std::string className = Diagoldze::GetObjectClass(objAddr);
 
         uint64_t objId = Zoltraak::ReadSafe<uint64_t>(
             objAddr + DynOff::OBJECT_INSTANCE_ID, 0);
@@ -375,12 +375,12 @@ static json HandleGetObject(int id, const json& req) {
         return ErrorResponse(id, "Address unreadable: " + addrStr);
 
     std::string name      = ReadObjectName(addr);
-    std::string className = DiAgolze::GetObjectClass(addr);
+    std::string className = Diagoldze::GetObjectClass(addr);
     uint64_t objId = Zoltraak::ReadSafe<uint64_t>(
         addr + DynOff::OBJECT_INSTANCE_ID, 0);
     int slotIndex = Ausetiese::FindByAddress(addr);
 
-    Solliter::Debug("PIPE:cmd", "get_object: addr=%s name='%s' class='%s' slot=%d",
+    Solitaer::Debug("PIPE:cmd", "get_object: addr=%s name='%s' class='%s' slot=%d",
         addrStr.c_str(), name.c_str(), className.c_str(), slotIndex);
 
     json resp = OkResponse(id);
@@ -441,7 +441,7 @@ static json HandleFindObject(int id, const json& req) {
     }
 
     std::string name      = ReadObjectName(current);
-    std::string className = DiAgolze::GetObjectClass(current);
+    std::string className = Diagoldze::GetObjectClass(current);
 
     json resp = OkResponse(id);
     resp["found"]      = true;
@@ -468,7 +468,7 @@ static json HandleFindByAddress(int id, const json& req) {
     }
 
     std::string name      = ReadObjectName(addr);
-    std::string className = DiAgolze::GetObjectClass(addr);
+    std::string className = Diagoldze::GetObjectClass(addr);
 
     json resp = OkResponse(id);
     resp["found"]      = true;
@@ -484,7 +484,7 @@ static json HandleWalkClass(int id, const json& req) {
     std::string className = req.value("class_name", std::string{});
     if (className.empty()) return ErrorResponse(id, "Missing 'class_name' field");
 
-    auto classInfo = DiAgolze::GetClassInfo(className.c_str());
+    auto classInfo = Diagoldze::GetClassInfo(className.c_str());
     if (classInfo.name.empty())
         return ErrorResponse(id, "Class not found: " + className);
 
@@ -621,9 +621,9 @@ static json HandleWalkInstance(int id, const json& req) {
         return ErrorResponse(id, "Address unreadable: " + addrStr);
 
     std::string name      = ReadObjectName(addr);
-    std::string className = DiAgolze::GetObjectClass(addr);
+    std::string className = Diagoldze::GetObjectClass(addr);
 
-    Solliter::Debug("PIPE:cmd", "walk_instance: addr=%s name='%s' class='%s'",
+    Solitaer::Debug("PIPE:cmd", "walk_instance: addr=%s name='%s' class='%s'",
         addrStr.c_str(), name.c_str(), className.c_str());
 
     json fields = json::array();
@@ -648,7 +648,7 @@ static json HandleWalkInstance(int id, const json& req) {
         fields.push_back(std::move(f));
     });
 
-    Solliter::Debug("PIPE:cmd", "walk_instance: %d fields returned for '%s' (%s)",
+    Solitaer::Debug("PIPE:cmd", "walk_instance: %d fields returned for '%s' (%s)",
         static_cast<int>(fields.size()), name.c_str(), className.c_str());
 
     // Read parent address (for Node objects)
@@ -673,7 +673,7 @@ static json BuildTreeNode(uint64_t nodeAddr, int depth, int maxDepth) {
     json node;
     node["address"]    = AddrToHex(nodeAddr);
     node["name"]       = SafeStr(ReadObjectName(nodeAddr));
-    node["class_name"] = SafeStr(DiAgolze::GetObjectClass(nodeAddr));
+    node["class_name"] = SafeStr(Diagoldze::GetObjectClass(nodeAddr));
 
     if (depth < maxDepth) {
         auto children = Serie::GetChildren(nodeAddr);
@@ -752,7 +752,7 @@ static json HandleFindInstances(int id, const json& req) {
     Ausetiese::ForEachEx([&](int index, uint64_t objAddr) {
         if (found >= limit) return false;
 
-        std::string cls  = DiAgolze::GetObjectClass(objAddr);
+        std::string cls  = Diagoldze::GetObjectClass(objAddr);
         std::string name = ReadObjectName(objAddr);
 
         bool match = false;
@@ -836,8 +836,8 @@ static json HandleWriteMem(int id, const json& req) {
 static json HandleListClasses(int id, const json& /*req*/) {
     json classes = json::array();
 
-    DiAgolze::EnumerateClasses([&](const std::string& name, uint64_t /*infoAddr*/) {
-        auto info = DiAgolze::GetClassInfo(name.c_str());
+    Diagoldze::EnumerateClasses([&](const std::string& name, uint64_t /*infoAddr*/) {
+        auto info = Diagoldze::GetClassInfo(name.c_str());
 
         json cls;
         cls["class_name"]     = SafeStr(name);
@@ -866,10 +866,10 @@ static json HandleSearchProperties(int id, const json& req) {
     json hits = json::array();
     int maxHits = 200;
 
-    DiAgolze::EnumerateClasses([&](const std::string& className, uint64_t /*infoAddr*/) {
+    Diagoldze::EnumerateClasses([&](const std::string& className, uint64_t /*infoAddr*/) {
         if (static_cast<int>(hits.size()) >= maxHits) return;
 
-        auto info = DiAgolze::GetClassInfo(className.c_str());
+        auto info = Diagoldze::GetClassInfo(className.c_str());
         for (auto& prop : info.properties) {
             if (static_cast<int>(hits.size()) >= maxHits) return;
 

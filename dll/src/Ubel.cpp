@@ -9,9 +9,9 @@
 
 #include "Ubel.h"
 #include "Zoltraak.h"
-#include "DiAgolze.h"
+#include "Diagoldze.h"
 #include "Flamme.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <cstdio>
@@ -604,7 +604,7 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
     if (attempt >= MAX_PROBE_ATTEMPTS) return; // Give up after N attempts
 
     EnsureModuleInfo();
-    Solliter::Info("WALK", "=== Probing ScriptInstance offset (attempt %d/%d) ===",
+    Solitaer::Info("WALK", "=== Probing ScriptInstance offset (attempt %d/%d) ===",
         attempt + 1, MAX_PROBE_ATTEMPTS);
 
     // Scan from +0x20 to +0x300 (ScriptInstance* is after the fixed Object header)
@@ -636,7 +636,7 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
         // Found it!
         DynOff::OBJECT_SCRIPT_INSTANCE = off;
         DynOff::bScriptInstanceProbed.store(true); // Mark as found — no more retries
-        Solliter::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p)",
+        Solitaer::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p)",
             off, reinterpret_cast<void*>(candidate), reinterpret_cast<void*>(scriptPtr));
 
         // Try to validate Vector<Variant> members
@@ -646,24 +646,24 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
             // CowData: size is at ptr - 8 (4.x) or ptr - 4 (3.x)
             int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
             uint32_t memberCount = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-            Solliter::Info("WALK", "  Members Vector: ptr=%p count=%u",
+            Solitaer::Info("WALK", "  Members Vector: ptr=%p count=%u",
                 reinterpret_cast<void*>(membersPtr), memberCount);
 
             // Validate: try reading first Variant
             if (memberCount > 0 && memberCount < 1000) {
                 int32_t firstType = Zoltraak::ReadSafe<int32_t>(membersPtr, -1);
-                Solliter::Info("WALK", "  First member Variant::Type = %d", firstType);
+                Solitaer::Info("WALK", "  First member Variant::Type = %d", firstType);
             }
         }
 
-        Solliter::Info("WALK", "=== ScriptInstance probe complete ===");
+        Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
         return;
     }
 
     // Not found on this object — DON'T set bScriptInstanceProbed, allow retry on next object
-    Solliter::Info("WALK", "  No ScriptInstance found on this object (attempt %d/%d)",
+    Solitaer::Info("WALK", "  No ScriptInstance found on this object (attempt %d/%d)",
         attempt + 1, MAX_PROBE_ATTEMPTS);
-    Solliter::Info("WALK", "=== ScriptInstance probe complete ===");
+    Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
 }
 
 // Read member names from GDScript::member_indices HashMap
@@ -721,7 +721,7 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
                 }
             }
             if (!indexToName.empty()) {
-                Solliter::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
+                Solitaer::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
                     static_cast<int>(indexToName.size()), off);
                 break;
             }
@@ -758,7 +758,7 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
                 walked++;
             }
             if (!indexToName.empty()) {
-                Solliter::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
+                Solitaer::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
                     static_cast<int>(indexToName.size()), off);
                 break;
             }
@@ -799,7 +799,7 @@ static void ReadGDScriptMembers(uint64_t objAddr,
     // Try to get member names from GDScript object
     auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
 
-    Solliter::Debug("WALK", "GDScript members: %u variables, %d names resolved",
+    Solitaer::Debug("WALK", "GDScript members: %u variables, %d names resolved",
         count, static_cast<int>(nameMap.size()));
 
     int variantStride = DynOff::VARIANT_STRIDE;
@@ -830,21 +830,21 @@ void WalkInstance(uint64_t objAddr,
     if (!objAddr || !callback) return;
 
     // Step 1: Determine object class via RTTI
-    std::string className = DiAgolze::GetObjectClass(objAddr);
+    std::string className = Diagoldze::GetObjectClass(objAddr);
     if (className.empty()) {
-        Solliter::Debug("WALK", "WalkInstance: could not determine class for object at %p",
+        Solitaer::Debug("WALK", "WalkInstance: could not determine class for object at %p",
             reinterpret_cast<void*>(objAddr));
         return;
     }
 
     // Step 2: Get property list from ClassDB (includes inherited properties)
-    auto properties = DiAgolze::GetPropertyList(className.c_str());
+    auto properties = Diagoldze::GetPropertyList(className.c_str());
     if (properties.empty()) {
-        Solliter::Debug("WALK", "WalkInstance: no properties for class '%s'", className.c_str());
+        Solitaer::Debug("WALK", "WalkInstance: no properties for class '%s'", className.c_str());
         return;
     }
 
-    Solliter::Debug("WALK", "WalkInstance: %s @ %p — %d properties",
+    Solitaer::Debug("WALK", "WalkInstance: %s @ %p — %d properties",
         className.c_str(), reinterpret_cast<void*>(objAddr),
         static_cast<int>(properties.size()));
 
@@ -877,7 +877,7 @@ void WalkInstance(uint64_t objAddr,
     }
 
     if (valuesRead > 0) {
-        Solliter::Debug("WALK", "WalkInstance: read %d/%d live values for '%s'",
+        Solitaer::Debug("WALK", "WalkInstance: read %d/%d live values for '%s'",
             valuesRead, static_cast<int>(properties.size()), className.c_str());
     }
 
@@ -894,13 +894,13 @@ void WalkInstance(uint64_t objAddr,
 VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     if (!objAddr || !propertyName) return {};
 
-    std::string className = DiAgolze::GetObjectClass(objAddr);
+    std::string className = Diagoldze::GetObjectClass(objAddr);
     if (className.empty()) {
-        Solliter::Debug("WALK", "GetFieldValue: unknown class for %p", reinterpret_cast<void*>(objAddr));
+        Solitaer::Debug("WALK", "GetFieldValue: unknown class for %p", reinterpret_cast<void*>(objAddr));
         return {};
     }
 
-    auto properties = DiAgolze::GetPropertyList(className.c_str());
+    auto properties = Diagoldze::GetPropertyList(className.c_str());
     for (auto& prop : properties) {
         if (prop.name == propertyName) {
             if (prop.offset >= 0) {

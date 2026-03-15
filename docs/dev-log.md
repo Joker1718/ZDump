@@ -19,14 +19,14 @@ All DLL-side functionality is implemented and tested. UI is ~85% complete.
 
 ### Phase 1: Core Memory Layer ✅ (Merged to main)
 - [x] **Zoltraak** — Memory scanning, AOB, SEH-safe reads, section enumeration
-- [x] **Solliter** — 5-category logging (init/scan/offsets/pipe/walk), 4-file rotation
+- [x] **Solitaer** — 5-category logging (init/scan/offsets/pipe/walk), 4-file rotation
 - [x] **Frieren** — AOB signatures for Engine/ObjectDB/ClassDB/SceneTree
 - [x] **Himmel** — Hint cache (PE hash → known patterns), persistence
 
 ### Phase 2: Object System ✅ (Merged to main, PR #6)
 - [x] **Ausetiese** — ObjectDB enumeration (4.x sparse-set slot array)
 - [x] **Flamme** — StringName resolution (cname + CowData, 4 strategies)
-- [x] **DiAgolze** — ClassDB traversal (4.x robin-hood HashMap, linked list walk)
+- [x] **Diagoldze** — ClassDB traversal (4.x robin-hood HashMap, linked list walk)
 
 ### Phase 3: Pipe Server + Property Walker ✅ (PR #8, feat/phase3-pipe-server)
 - [x] **Fern** — Named pipe IPC, 19 JSON command handlers

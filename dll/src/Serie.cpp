@@ -18,10 +18,10 @@
 // whose target has a vtable in module range and whose StringName name = "root".
 
 #include "Serie.h"
-#include "DiAgolze.h"
+#include "Diagoldze.h"
 #include "Zoltraak.h"
 #include "Flamme.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <atomic>
@@ -101,15 +101,15 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         if (IsValidObject(root)) return root;
     }
 
-    Solliter::Debug("STREE", "Probing for root node in SceneTree at %p (range 0x40-0x%X)",
+    Solitaer::Debug("STREE", "Probing for root node in SceneTree at %p (range 0x40-0x%X)",
         reinterpret_cast<void*>(sceneTree), Grimoire::STREE_PROBE_MAX);
 
     // Diagnostic hexdump: dump key memory regions of SceneTree
-    Solliter::Info("STREE", "SceneTree hexdump (first 0x80 bytes at %p):",
+    Solitaer::Info("STREE", "SceneTree hexdump (first 0x80 bytes at %p):",
         reinterpret_cast<void*>(sceneTree));
-    Solliter::HexDump("STREE", sceneTree, 0x80);
-    Solliter::Info("STREE", "SceneTree hexdump (0x700-0x900, likely root area):");
-    Solliter::HexDump("STREE", sceneTree + 0x700, 0x200);
+    Solitaer::HexDump("STREE", sceneTree, 0x80);
+    Solitaer::Info("STREE", "SceneTree hexdump (0x700-0x900, likely root area):");
+    Solitaer::HexDump("STREE", sceneTree + 0x700, 0x200);
 
     // Collect all Object pointers found
     struct ObjCandidate { int offset; uint64_t addr; std::string name; };
@@ -127,7 +127,7 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
 
         if (name == "root") {
             DynOff::STREE_ROOT_OFFSET = off;
-            Solliter::Info("STREE", "Found root node at SceneTree+0x%X = %p (name='root')",
+            Solitaer::Info("STREE", "Found root node at SceneTree+0x%X = %p (name='root')",
                 off, reinterpret_cast<void*>(candidate));
             return candidate;
         }
@@ -139,20 +139,20 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
 
     // Log all Object candidates found for debugging
     if (!candidates.empty()) {
-        Solliter::Info("STREE", "No 'root' name found. %d Object candidates in SceneTree:",
+        Solitaer::Info("STREE", "No 'root' name found. %d Object candidates in SceneTree:",
             static_cast<int>(candidates.size()));
         for (auto& c : candidates) {
-            std::string cls = DiAgolze::GetObjectClass(c.addr);
-            Solliter::Info("STREE", "  +0x%04X: %p name='%s' class='%s'",
+            std::string cls = Diagoldze::GetObjectClass(c.addr);
+            Solitaer::Info("STREE", "  +0x%04X: %p name='%s' class='%s'",
                 c.offset, reinterpret_cast<void*>(c.addr), c.name.c_str(), cls.c_str());
         }
 
         // Fallback: use the first candidate that has a Window-like class
         for (auto& c : candidates) {
-            std::string cls = DiAgolze::GetObjectClass(c.addr);
+            std::string cls = Diagoldze::GetObjectClass(c.addr);
             if (cls == "Window" || cls == "Viewport" || cls == "SubViewport") {
                 DynOff::STREE_ROOT_OFFSET = c.offset;
-                Solliter::Info("STREE", "Using %s at SceneTree+0x%X = %p as root (class match)",
+                Solitaer::Info("STREE", "Using %s at SceneTree+0x%X = %p as root (class match)",
                     cls.c_str(), c.offset, reinterpret_cast<void*>(c.addr));
                 return c.addr;
             }
@@ -160,13 +160,13 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
 
         // Last resort: first Object pointer
         DynOff::STREE_ROOT_OFFSET = candidates[0].offset;
-        Solliter::Warn("STREE", "Using first Object at SceneTree+0x%X = %p as root (name='%s', unconfirmed)",
+        Solitaer::Warn("STREE", "Using first Object at SceneTree+0x%X = %p as root (name='%s', unconfirmed)",
             candidates[0].offset, reinterpret_cast<void*>(candidates[0].addr),
             candidates[0].name.c_str());
         return candidates[0].addr;
     }
 
-    Solliter::Warn("STREE", "Could not find any Object pointers in SceneTree (probed 0x40-0x%X)",
+    Solitaer::Warn("STREE", "Could not find any Object pointers in SceneTree (probed 0x40-0x%X)",
         Grimoire::STREE_PROBE_MAX);
     return 0;
 }
@@ -212,7 +212,7 @@ static void ReadChildrenHashMap(uint64_t nodeAddr, std::vector<NodeInfo>& out) {
                 if (!IsValidObject(childAddr)) { valid = false; break; }
 
                 std::string childName = Flamme::Resolve(keyAddr);
-                std::string childClass = DiAgolze::GetObjectClass(childAddr);
+                std::string childClass = Diagoldze::GetObjectClass(childAddr);
 
                 NodeInfo ni;
                 ni.addr       = childAddr;
@@ -231,7 +231,7 @@ static void ReadChildrenHashMap(uint64_t nodeAddr, std::vector<NodeInfo>& out) {
             if (valid && count > 0) {
                 if (DynOff::NODE_CHILDREN < 0) {
                     DynOff::NODE_CHILDREN = off;
-                    Solliter::Info("STREE", "Children HashMap at Node+0x%X (allocSize=%d, %d children)",
+                    Solitaer::Info("STREE", "Children HashMap at Node+0x%X (allocSize=%d, %d children)",
                         off, allocSize, count);
                 }
                 return;
@@ -249,7 +249,7 @@ void Init(uint64_t sceneTreeAddr) {
     EnsureModuleInfo();
 
     if (!sceneTreeAddr) {
-        Solliter::Warn("STREE", "Init called with null address");
+        Solitaer::Warn("STREE", "Init called with null address");
         return;
     }
 
@@ -258,13 +258,13 @@ void Init(uint64_t sceneTreeAddr) {
     if (!s_sceneTree || !Zoltraak::IsReadable(s_sceneTree)) {
         // Singleton pointer is NULL — Main::start() may not have created it yet.
         // Store the BSS address; GetRoot() will lazily retry the dereference.
-        Solliter::Info("STREE", "SceneTree singleton at %p: null (deferred resolution via GetRoot())",
+        Solitaer::Info("STREE", "SceneTree singleton at %p: null (deferred resolution via GetRoot())",
             reinterpret_cast<void*>(sceneTreeAddr));
         s_sceneTree = 0;
         return;
     }
 
-    Solliter::Info("STREE", "SceneTree instance at %p",
+    Solitaer::Info("STREE", "SceneTree instance at %p",
         reinterpret_cast<void*>(s_sceneTree));
 
     // Probe for root node
@@ -272,11 +272,11 @@ void Init(uint64_t sceneTreeAddr) {
 
     if (s_rootNode) {
         std::string rootName = ProbeNodeName(s_rootNode);
-        Solliter::Info("STREE", "Root node: %p (name='%s')",
+        Solitaer::Info("STREE", "Root node: %p (name='%s')",
             reinterpret_cast<void*>(s_rootNode), rootName.c_str());
     }
 
-    Solliter::Info("STREE", "Init complete (root=%p, rootOffset=0x%X)",
+    Solitaer::Info("STREE", "Init complete (root=%p, rootOffset=0x%X)",
         reinterpret_cast<void*>(s_rootNode), DynOff::STREE_ROOT_OFFSET);
 }
 
@@ -290,7 +290,7 @@ uint64_t GetRoot() {
             uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(newTree, 0);
             if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
                 s_sceneTree = newTree;
-                Solliter::Info("STREE", "Lazy deref: SceneTree populated at %p",
+                Solitaer::Info("STREE", "Lazy deref: SceneTree populated at %p",
                     reinterpret_cast<void*>(s_sceneTree));
                 // Also probe for root now
                 s_rootNode = ProbeRootNode(s_sceneTree);
@@ -319,7 +319,7 @@ static void WalkNode(uint64_t nodeAddr, int depth, int maxDepth,
     if (depth > maxDepth || !nodeAddr) return;
 
     std::string name = ProbeNodeName(nodeAddr);
-    std::string className = DiAgolze::GetObjectClass(nodeAddr);
+    std::string className = Diagoldze::GetObjectClass(nodeAddr);
 
     std::vector<NodeInfo> children;
     if (depth < maxDepth) {
@@ -343,11 +343,11 @@ static void WalkNode(uint64_t nodeAddr, int depth, int maxDepth,
 void WalkTree(int maxDepth, const std::function<void(int depth, const NodeInfo& info)>& callback) {
     uint64_t root = GetRoot();
     if (!root) {
-        Solliter::Warn("STREE", "WalkTree: no root node available");
+        Solitaer::Warn("STREE", "WalkTree: no root node available");
         return;
     }
 
-    Solliter::Info("STREE", "Walking tree from root=%p, maxDepth=%d",
+    Solitaer::Info("STREE", "Walking tree from root=%p, maxDepth=%d",
         reinterpret_cast<void*>(root), maxDepth);
 
     WalkNode(root, 0, maxDepth, callback);

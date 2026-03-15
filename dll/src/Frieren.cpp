@@ -13,7 +13,7 @@
 #define LOG_CAT "SCAN"
 #include "Frieren.h"
 #include "Zoltraak.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Himmel.h"
 #include "Flamme.h"
 #include "Grimoire.h"
@@ -59,7 +59,7 @@ static uintptr_t TrySymbolExport(const char* mangledName) {
     if (hGame) {
         FARPROC addr = GetProcAddress(hGame, mangledName);
         if (addr) {
-            Solliter::Info("SCAN", "TrySymbolExport: Found '%s' in main module at %p",
+            Solitaer::Info("SCAN", "TrySymbolExport: Found '%s' in main module at %p",
                 mangledName, addr);
             return reinterpret_cast<uintptr_t>(addr);
         }
@@ -76,7 +76,7 @@ static uintptr_t TrySymbolExport(const char* mangledName) {
             if (addr) {
                 char modName[MAX_PATH] = {};
                 GetModuleFileNameA(modules[i], modName, MAX_PATH);
-                Solliter::Info("SCAN", "TrySymbolExport: Found '%s' in %s at %p",
+                Solitaer::Info("SCAN", "TrySymbolExport: Found '%s' in %s at %p",
                     mangledName, modName, addr);
                 return reinterpret_cast<uintptr_t>(addr);
             }
@@ -111,7 +111,7 @@ static uintptr_t TryExportTableScan(HMODULE hModule, const char* prefix) {
         if (strncmp(name, prefix, prefixLen) == 0) {
             DWORD funcRVA = functions[ordinals[i]];
             uintptr_t addr = base + funcRVA;
-            Solliter::Info("SCAN", "TryExportTableScan: Prefix '%s' matched '%s' at %p",
+            Solitaer::Info("SCAN", "TryExportTableScan: Prefix '%s' matched '%s' at %p",
                 prefix, name, reinterpret_cast<void*>(addr));
             return addr;
         }
@@ -155,14 +155,14 @@ static bool ValidateObjectDB(uintptr_t addr) {
     // Dereference to get the actual slot array address
     uint64_t arrayAddr = Zoltraak::ReadSafe<uint64_t>(addr, 0);
     if (!arrayAddr || !Zoltraak::IsReadable(arrayAddr)) {
-        Solliter::Debug("SCAN:ObjDB", "ValidateObjectDB: null or unreadable array ptr at %p",
+        Solitaer::Debug("SCAN:ObjDB", "ValidateObjectDB: null or unreadable array ptr at %p",
             reinterpret_cast<void*>(addr));
         return false;
     }
 
     // Array should be in heap (not in module range)
     if (arrayAddr >= s_moduleBase && arrayAddr < s_moduleBase + s_moduleSize) {
-        Solliter::Debug("SCAN:ObjDB", "ValidateObjectDB: array at %p is inside module",
+        Solitaer::Debug("SCAN:ObjDB", "ValidateObjectDB: array at %p is inside module",
             reinterpret_cast<void*>(arrayAddr));
         return false;
     }
@@ -191,7 +191,7 @@ static bool ValidateObjectDB(uintptr_t addr) {
         }
     }
 
-    Solliter::Info("SCAN:ObjDB", "ValidateObjectDB: array=%p %d/%d slots had valid vtables (need >= 3)",
+    Solitaer::Info("SCAN:ObjDB", "ValidateObjectDB: array=%p %d/%d slots had valid vtables (need >= 3)",
         reinterpret_cast<void*>(arrayAddr), validCount, checked);
     return validCount >= 3;
 }
@@ -225,7 +225,7 @@ static bool ValidateObjectDBRelaxed(uintptr_t addr) {
     }
 
     if (validCount >= 3) {
-        Solliter::Info("SCAN:ObjDB", "ValidateObjectDBRelaxed: strict pass array=%p %d valid",
+        Solitaer::Info("SCAN:ObjDB", "ValidateObjectDBRelaxed: strict pass array=%p %d valid",
             reinterpret_cast<void*>(arrayAddr), validCount);
         return true;
     }
@@ -241,7 +241,7 @@ static bool ValidateObjectDBRelaxed(uintptr_t addr) {
     }
 
     if (allReadable) {
-        Solliter::Warn("SCAN:ObjDB", "ValidateObjectDBRelaxed: accepting empty array at %p "
+        Solitaer::Warn("SCAN:ObjDB", "ValidateObjectDBRelaxed: accepting empty array at %p "
             "(heap ptr readable, %d slots checked, %d valid)",
             reinterpret_cast<void*>(arrayAddr), checked, validCount);
         return true;
@@ -297,7 +297,7 @@ static bool ValidateClassDBAtLayout(uintptr_t addr, int allocatorSize) {
     if (!Zoltraak::IsReadable(elements) || !Zoltraak::IsReadable(hashes)) return false;
     if (!Zoltraak::IsReadable(headElem) || !Zoltraak::IsReadable(tailElem)) return false;
 
-    Solliter::Info("SCAN:ClsDB", "ValidateClassDB: allocOff=%d capIdx=%u actualCap=%u num=%u "
+    Solitaer::Info("SCAN:ClsDB", "ValidateClassDB: allocOff=%d capIdx=%u actualCap=%u num=%u "
         "elements=%p hashes=%p head=%p valid=yes",
         allocatorSize, capIndex, actualCap, numElems,
         reinterpret_cast<void*>(elements),
@@ -316,13 +316,13 @@ static bool ValidateClassDB(uintptr_t addr) {
 
     for (int i = 0; ALLOC_SIZES[i] >= 0; ++i) {
         if (ValidateClassDBAtLayout(addr, ALLOC_SIZES[i])) {
-            // Store the working allocator offset for DiAgolze to use
+            // Store the working allocator offset for Diagoldze to use
             DynOff::CLASSDB_ALLOC_OFFSET = ALLOC_SIZES[i];
             return true;
         }
     }
 
-    Solliter::Debug("SCAN:ClsDB", "ValidateClassDB at %p: no matching layout found",
+    Solitaer::Debug("SCAN:ClsDB", "ValidateClassDB at %p: no matching layout found",
         reinterpret_cast<void*>(addr));
     return false;
 }
@@ -382,11 +382,11 @@ static uintptr_t ScanBssForClassDB() {
     auto data = Zoltraak::GetDataSection();
 
     if (bss.size == 0 && data.size == 0) {
-        Solliter::Warn("SCAN:ClsDB", "No .bss or .data section found for brute-force scan");
+        Solitaer::Warn("SCAN:ClsDB", "No .bss or .data section found for brute-force scan");
         return 0;
     }
 
-    Solliter::Info("SCAN:ClsDB", "Brute-force scanning .bss (0x%llX bytes) + .data (0x%llX bytes) for ClassDB HashMap",
+    Solitaer::Info("SCAN:ClsDB", "Brute-force scanning .bss (0x%llX bytes) + .data (0x%llX bytes) for ClassDB HashMap",
         bss.size, data.size);
 
     // Collect all valid HashMap candidates
@@ -425,7 +425,7 @@ static uintptr_t ScanBssForClassDB() {
             if (!Zoltraak::IsReadable(elements) || !Zoltraak::IsReadable(hashes)) continue;
             if (!Zoltraak::IsReadable(headElem) || !Zoltraak::IsReadable(tailElem)) continue;
 
-            Solliter::Debug("SCAN:ClsDB", "HashMap at %p: capIdx=%u cap=%u num=%u elements=%p hashes=%p",
+            Solitaer::Debug("SCAN:ClsDB", "HashMap at %p: capIdx=%u cap=%u num=%u elements=%p hashes=%p",
                 reinterpret_cast<void*>(probeAddr), capIndex, actualCap, numElems,
                 reinterpret_cast<void*>(elements), reinterpret_cast<void*>(hashes));
 
@@ -437,7 +437,7 @@ static uintptr_t ScanBssForClassDB() {
     if (data.size > 0) scanSection(data.baseAddr, data.size);
 
     if (candidateList.empty()) {
-        Solliter::Warn("SCAN:ClsDB", "Brute-force scan found no valid HashMap candidates");
+        Solitaer::Warn("SCAN:ClsDB", "Brute-force scan found no valid HashMap candidates");
         return 0;
     }
 
@@ -449,11 +449,11 @@ static uintptr_t ScanBssForClassDB() {
     // ClassDB keys are CamelCase (Object, Node2D, Sprite2D), not ALL_CAPS enums.
     for (auto& c : candidateList) {
         int classLike = SampleHashMapClassNames(c.headElem, 10);
-        Solliter::Debug("SCAN:ClsDB", "  Candidate %p (%u elems): %d/10 CamelCase class names",
+        Solitaer::Debug("SCAN:ClsDB", "  Candidate %p (%u elems): %d/10 CamelCase class names",
             reinterpret_cast<void*>(c.addr), c.numElems, classLike);
 
         if (classLike >= 5) {
-            Solliter::Info("SCAN:ClsDB", "Brute-force found ClassDB at %p with %u elements (%d/%d candidates, %d/10 class names)",
+            Solitaer::Info("SCAN:ClsDB", "Brute-force found ClassDB at %p with %u elements (%d/%d candidates, %d/10 class names)",
                 reinterpret_cast<void*>(c.addr), c.numElems,
                 static_cast<int>(&c - &candidateList[0]) + 1,
                 static_cast<int>(candidateList.size()), classLike);
@@ -463,7 +463,7 @@ static uintptr_t ScanBssForClassDB() {
 
     // Fallback: pick the largest HashMap (no class name validation passed)
     auto& best = candidateList[0];
-    Solliter::Warn("SCAN:ClsDB", "No candidate passed class name validation, using largest: %p (%u elements, %d candidates)",
+    Solitaer::Warn("SCAN:ClsDB", "No candidate passed class name validation, using largest: %p (%u elements, %d candidates)",
         reinterpret_cast<void*>(best.addr), best.numElems,
         static_cast<int>(candidateList.size()));
     return best.addr;
@@ -508,7 +508,7 @@ static uintptr_t ScanBssForClassDB() {
     // Hash table should be sparse (some null, some valid)
     if (validBuckets < 2) return false;
 
-    Solliter::Info("SCAN:ClsDB", "ValidateClassDB3x: power=%u buckets=%d elements=%u "
+    Solitaer::Info("SCAN:ClsDB", "ValidateClassDB3x: power=%u buckets=%d elements=%u "
         "valid=%d null=%d hashTable=%p",
         power, bucketCount, elements, validBuckets, nullBuckets,
         reinterpret_cast<void*>(hashTable));
@@ -551,7 +551,7 @@ static uintptr_t ScanBssForClassDB3x() {
     auto bss = Zoltraak::GetBssSection();
     auto data = Zoltraak::GetDataSection();
 
-    Solliter::Info("SCAN:ClsDB", "Brute-force scanning for 3.x ClassDB HashMap (16B inline)");
+    Solitaer::Info("SCAN:ClsDB", "Brute-force scanning for 3.x ClassDB HashMap (16B inline)");
 
     struct Candidate { uintptr_t addr; uint32_t elements; uint64_t hashTable; uint8_t power; };
     std::vector<Candidate> candidateList;
@@ -581,7 +581,7 @@ static uintptr_t ScanBssForClassDB3x() {
             }
             if (valid < 2) continue;
 
-            Solliter::Debug("SCAN:ClsDB", "3x HashMap at %p: power=%u elements=%u hashTable=%p",
+            Solitaer::Debug("SCAN:ClsDB", "3x HashMap at %p: power=%u elements=%u hashTable=%p",
                 reinterpret_cast<void*>(probeAddr), power, elements,
                 reinterpret_cast<void*>(hashTable));
             candidateList.push_back({ probeAddr, elements, hashTable, power });
@@ -592,7 +592,7 @@ static uintptr_t ScanBssForClassDB3x() {
     if (data.size > 0) scanSection(data.baseAddr, data.size);
 
     if (candidateList.empty()) {
-        Solliter::Warn("SCAN:ClsDB", "3x brute-force scan found no valid HashMap candidates");
+        Solitaer::Warn("SCAN:ClsDB", "3x brute-force scan found no valid HashMap candidates");
         return 0;
     }
 
@@ -603,11 +603,11 @@ static uintptr_t ScanBssForClassDB3x() {
     // Validate with class name sampling
     for (auto& c : candidateList) {
         int classLike = SampleHashMapClassNames3x(c.hashTable, c.power, 10);
-        Solliter::Debug("SCAN:ClsDB", "  3x Candidate %p (%u elems): %d/10 CamelCase class names",
+        Solitaer::Debug("SCAN:ClsDB", "  3x Candidate %p (%u elems): %d/10 CamelCase class names",
             reinterpret_cast<void*>(c.addr), c.elements, classLike);
 
         if (classLike >= 5) {
-            Solliter::Info("SCAN:ClsDB", "3x brute-force found ClassDB at %p with %u elements (%d/10 class names)",
+            Solitaer::Info("SCAN:ClsDB", "3x brute-force found ClassDB at %p with %u elements (%d/10 class names)",
                 reinterpret_cast<void*>(c.addr), c.elements, classLike);
             return c.addr;
         }
@@ -615,7 +615,7 @@ static uintptr_t ScanBssForClassDB3x() {
 
     // Fallback: use largest candidate
     auto& best = candidateList[0];
-    Solliter::Warn("SCAN:ClsDB", "3x: using largest candidate %p (%u elements)",
+    Solitaer::Warn("SCAN:ClsDB", "3x: using largest candidate %p (%u elements)",
         reinterpret_cast<void*>(best.addr), best.elements);
     return best.addr;
 }
@@ -674,7 +674,7 @@ static uintptr_t ScanBssForClassDB3x() {
 
     if (validVtables < 3) return false;
 
-    Solliter::Info("SCAN:ObjDB", "ValidateObjectDB3x: power=%u elements=%u "
+    Solitaer::Info("SCAN:ObjDB", "ValidateObjectDB3x: power=%u elements=%u "
         "sampled=%d validVtables=%d hashTable=%p",
         power, elements, sampled, validVtables,
         reinterpret_cast<void*>(hashTable));
@@ -687,7 +687,7 @@ static uintptr_t ScanBssForObjectDB3x() {
     auto data = Zoltraak::GetDataSection();
     EnsureModuleInfo();
 
-    Solliter::Info("SCAN:ObjDB", "Brute-force scanning for 3.x ObjectDB HashMap (16B inline)");
+    Solitaer::Info("SCAN:ObjDB", "Brute-force scanning for 3.x ObjectDB HashMap (16B inline)");
 
     struct Candidate { uintptr_t addr; uint32_t elements; int validVtables; };
     std::vector<Candidate> candidateList;
@@ -741,7 +741,7 @@ static uintptr_t ScanBssForObjectDB3x() {
             }
 
             if (validVtables >= 3) {
-                Solliter::Debug("SCAN:ObjDB", "3x ObjectDB candidate at %p: power=%u elements=%u vtables=%d",
+                Solitaer::Debug("SCAN:ObjDB", "3x ObjectDB candidate at %p: power=%u elements=%u vtables=%d",
                     reinterpret_cast<void*>(probeAddr), power, elements, validVtables);
                 candidateList.push_back({ probeAddr, elements, validVtables });
             }
@@ -752,7 +752,7 @@ static uintptr_t ScanBssForObjectDB3x() {
     if (data.size > 0) scanSection(data.baseAddr, data.size);
 
     if (candidateList.empty()) {
-        Solliter::Warn("SCAN:ObjDB", "3x brute-force scan found no valid ObjectDB candidates");
+        Solitaer::Warn("SCAN:ObjDB", "3x brute-force scan found no valid ObjectDB candidates");
         return 0;
     }
 
@@ -761,7 +761,7 @@ static uintptr_t ScanBssForObjectDB3x() {
         [](const Candidate& a, const Candidate& b) { return a.elements > b.elements; });
 
     auto& best = candidateList[0];
-    Solliter::Info("SCAN:ObjDB", "3x brute-force found ObjectDB at %p with %u elements (%d vtables, %d candidates)",
+    Solitaer::Info("SCAN:ObjDB", "3x brute-force found ObjectDB at %p with %u elements (%d vtables, %d candidates)",
         reinterpret_cast<void*>(best.addr), best.elements, best.validVtables,
         static_cast<int>(candidateList.size()));
     return best.addr;
@@ -775,12 +775,12 @@ static uintptr_t ScanBssForObjectDB() {
     auto data = Zoltraak::GetDataSection();
 
     if (bss.size == 0 && data.size == 0) {
-        Solliter::Warn("SCAN:ObjDB", "No .bss or .data section found for ObjectDB brute-force scan");
+        Solitaer::Warn("SCAN:ObjDB", "No .bss or .data section found for ObjectDB brute-force scan");
         return 0;
     }
 
     EnsureModuleInfo();
-    Solliter::Info("SCAN:ObjDB", "Brute-force scanning .bss + .data for ObjectDB");
+    Solitaer::Info("SCAN:ObjDB", "Brute-force scanning .bss + .data for ObjectDB");
 
     uintptr_t bestAddr = 0;
     int bestValidCount = 0;
@@ -819,7 +819,7 @@ static uintptr_t ScanBssForObjectDB() {
                 bestValidCount = validCount;
                 bestAddr = varAddr;
                 candidates++;
-                Solliter::Debug("SCAN:ObjDB", "ObjectDB candidate at %p: array=%p %d valid objects",
+                Solitaer::Debug("SCAN:ObjDB", "ObjectDB candidate at %p: array=%p %d valid objects",
                     reinterpret_cast<void*>(varAddr),
                     reinterpret_cast<void*>(arrayPtr), validCount);
             }
@@ -830,10 +830,10 @@ static uintptr_t ScanBssForObjectDB() {
     if (data.size > 0) scanSection(data.baseAddr, data.size);
 
     if (bestAddr) {
-        Solliter::Info("SCAN:ObjDB", "Brute-force found ObjectDB at %p with %d valid objects (%d candidates)",
+        Solitaer::Info("SCAN:ObjDB", "Brute-force found ObjectDB at %p with %d valid objects (%d candidates)",
             reinterpret_cast<void*>(bestAddr), bestValidCount, candidates);
     } else {
-        Solliter::Warn("SCAN:ObjDB", "Brute-force ObjectDB scan found no valid array");
+        Solitaer::Warn("SCAN:ObjDB", "Brute-force ObjectDB scan found no valid array");
     }
     return bestAddr;
 }
@@ -845,7 +845,7 @@ static bool ValidateSceneTree(uintptr_t addr) {
 
     uint64_t treePtr = Zoltraak::ReadSafe<uint64_t>(addr, 0);
     if (!treePtr || !Zoltraak::IsReadable(treePtr)) {
-        Solliter::Debug("SCAN:STree", "ValidateSceneTree: null or unreadable singleton at %p",
+        Solitaer::Debug("SCAN:STree", "ValidateSceneTree: null or unreadable singleton at %p",
             reinterpret_cast<void*>(addr));
         return false;
     }
@@ -854,7 +854,7 @@ static bool ValidateSceneTree(uintptr_t addr) {
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(treePtr, 0);
     bool valid = (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize);
 
-    Solliter::Info("SCAN:STree", "ValidateSceneTree: ptr=%p vtable=%p valid=%s",
+    Solitaer::Info("SCAN:STree", "ValidateSceneTree: ptr=%p vtable=%p valid=%s",
         reinterpret_cast<void*>(treePtr),
         reinterpret_cast<void*>(vtable),
         valid ? "yes" : "no");
@@ -880,14 +880,14 @@ static bool ValidateSceneTreeRelaxed(uintptr_t addr) {
         uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(treePtr, 0);
         bool valid = (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize);
         if (valid) {
-            Solliter::Info("SCAN:STree", "ValidateSceneTreeRelaxed: strict pass ptr=%p vtable=%p",
+            Solitaer::Info("SCAN:STree", "ValidateSceneTreeRelaxed: strict pass ptr=%p vtable=%p",
                 reinterpret_cast<void*>(treePtr), reinterpret_cast<void*>(vtable));
         }
         return valid;
     }
 
     // Pointer is NULL — accept the BSS address for deferred resolution
-    Solliter::Info("SCAN:STree", "ValidateSceneTreeRelaxed: accepting NULL singleton at %p (deferred)",
+    Solitaer::Info("SCAN:STree", "ValidateSceneTreeRelaxed: accepting NULL singleton at %p (deferred)",
         reinterpret_cast<void*>(addr));
     return true;
 }
@@ -905,7 +905,7 @@ static bool ValidateEngine(uintptr_t addr) {
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(enginePtr, 0);
     bool valid = (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize);
 
-    Solliter::Info("SCAN:Eng", "ValidateEngine: ptr=%p vtable=%p valid=%s",
+    Solitaer::Info("SCAN:Eng", "ValidateEngine: ptr=%p vtable=%p valid=%s",
         reinterpret_cast<void*>(enginePtr),
         reinterpret_cast<void*>(vtable),
         valid ? "yes" : "no");
@@ -942,10 +942,10 @@ static uintptr_t TryPattern(const GodotAobSig* sig) {
                 Zoltraak::ResolveRIP(match, sig->instrOffset, sig->opcodeLen, sig->totalLen));
             // Only accept if target is in a writable section (where globals live)
             if (result && Zoltraak::IsInWritableSection(result)) {
-                Solliter::Debug("SCAN", "AOB '%s' matched at %p, RIP resolved to %p (writable)",
+                Solitaer::Debug("SCAN", "AOB '%s' matched at %p, RIP resolved to %p (writable)",
                     sig->id, reinterpret_cast<void*>(match), reinterpret_cast<void*>(result));
             } else if (result) {
-                Solliter::Debug("SCAN", "AOB '%s' matched at %p, RIP resolved to %p (NOT writable, skipping)",
+                Solitaer::Debug("SCAN", "AOB '%s' matched at %p, RIP resolved to %p (NOT writable, skipping)",
                     sig->id, reinterpret_cast<void*>(match), reinterpret_cast<void*>(result));
                 result = 0;
             }
@@ -960,7 +960,7 @@ static uintptr_t TryPattern(const GodotAobSig* sig) {
                 Zoltraak::ResolveRIP(match, sig->instrOffset, sig->opcodeLen, sig->totalLen));
             if (ptr && Zoltraak::IsInWritableSection(ptr)) {
                 result = ptr;
-                Solliter::Debug("SCAN", "AOB '%s' matched at %p, RIP ptr-to-ptr at %p",
+                Solitaer::Debug("SCAN", "AOB '%s' matched at %p, RIP ptr-to-ptr at %p",
                     sig->id, reinterpret_cast<void*>(match), reinterpret_cast<void*>(result));
             }
         }
@@ -971,7 +971,7 @@ static uintptr_t TryPattern(const GodotAobSig* sig) {
         uint64_t match = Zoltraak::AOBScan(sig->pattern);
         if (match) {
             result = static_cast<uintptr_t>(match);
-            Solliter::Debug("SCAN", ".rdata '%s' matched at %p",
+            Solitaer::Debug("SCAN", ".rdata '%s' matched at %p",
                 sig->id, reinterpret_cast<void*>(result));
         }
         break;
@@ -1001,7 +1001,7 @@ static uintptr_t TryPatternMulti(const GodotAobSig* sig, ValidatorFn validator,
     EnsureModuleInfo();
 
     auto matches = Zoltraak::AOBScanAll(sig->pattern, 200);
-    Solliter::Info("SCAN", "MultiMatch '%s': %zu total matches found", sig->id, matches.size());
+    Solitaer::Info("SCAN", "MultiMatch '%s': %zu total matches found", sig->id, matches.size());
 
     int validWritable = 0;
     int validatedOk = 0;
@@ -1021,7 +1021,7 @@ static uintptr_t TryPatternMulti(const GodotAobSig* sig, ValidatorFn validator,
         if (!Zoltraak::IsInWritableSection(resolved)) {
             // Log first few non-writable for diagnostics
             if (nonWritableLogged < 3) {
-                Solliter::Debug("SCAN", "MultiMatch '%s': match %p -> %p (not writable, skipped)",
+                Solitaer::Debug("SCAN", "MultiMatch '%s': match %p -> %p (not writable, skipped)",
                     sig->id, reinterpret_cast<void*>(match), reinterpret_cast<void*>(resolved));
                 nonWritableLogged++;
             }
@@ -1044,13 +1044,13 @@ static uintptr_t TryPatternMulti(const GodotAobSig* sig, ValidatorFn validator,
         if (validator && !validator(resolved)) continue;
         validatedOk++;
 
-        Solliter::Info("SCAN", "MultiMatch '%s': validated at %p (match %p, %d writable, %d excluded, %d validated)",
+        Solitaer::Info("SCAN", "MultiMatch '%s': validated at %p (match %p, %d writable, %d excluded, %d validated)",
             sig->id, reinterpret_cast<void*>(resolved), reinterpret_cast<void*>(match),
             validWritable, excluded, validatedOk);
         return resolved;
     }
 
-    Solliter::Debug("SCAN", "MultiMatch '%s': no valid match (%d writable, %d excluded, %d validated of %zu total)",
+    Solitaer::Debug("SCAN", "MultiMatch '%s': no valid match (%d writable, %d excluded, %d validated of %zu total)",
         sig->id, validWritable, excluded, validatedOk, matches.size());
     return 0;
 }
@@ -1075,7 +1075,7 @@ static uintptr_t ScanForTarget(
     if (hintPatternId && hintPatternId[0]) {
         for (int i = 0; patterns[i]; ++i) {
             if (strcmp(patterns[i]->id, hintPatternId) == 0) {
-                Solliter::Info("SCAN", "Trying hint pattern '%s'", hintPatternId);
+                Solitaer::Info("SCAN", "Trying hint pattern '%s'", hintPatternId);
                 uintptr_t result = 0;
                 if (patterns[i]->resolve == GodotResolve::MultiMatch) {
                     result = TryPatternMulti(patterns[i], validator, excludeAddrs, excludeCount);
@@ -1089,11 +1089,11 @@ static uintptr_t ScanForTarget(
                     outMethod = (patterns[i]->resolve == GodotResolve::SymbolDirect ||
                                  patterns[i]->resolve == GodotResolve::SymbolPrefix)
                                 ? "symbol" : "aob";
-                    Solliter::Info("SCAN", "Hint pattern '%s' succeeded: %p",
+                    Solitaer::Info("SCAN", "Hint pattern '%s' succeeded: %p",
                         hintPatternId, reinterpret_cast<void*>(result));
                     return result;
                 }
-                Solliter::Info("SCAN", "Hint pattern '%s' failed, trying all patterns", hintPatternId);
+                Solitaer::Info("SCAN", "Hint pattern '%s' failed, trying all patterns", hintPatternId);
                 break;
             }
         }
@@ -1107,7 +1107,7 @@ static uintptr_t ScanForTarget(
             continue;
         }
 
-        Solliter::Debug("SCAN", "Trying pattern '%s' (priority %d)",
+        Solitaer::Debug("SCAN", "Trying pattern '%s' (priority %d)",
             patterns[i]->id, patterns[i]->priority);
 
         uintptr_t result = 0;
@@ -1126,13 +1126,13 @@ static uintptr_t ScanForTarget(
             outMethod = (patterns[i]->resolve == GodotResolve::SymbolDirect ||
                          patterns[i]->resolve == GodotResolve::SymbolPrefix)
                         ? "symbol" : "aob";
-            Solliter::Info("SCAN", "Pattern '%s' succeeded: %p",
+            Solitaer::Info("SCAN", "Pattern '%s' succeeded: %p",
                 patterns[i]->id, reinterpret_cast<void*>(result));
             return result;
         }
     }
 
-    Solliter::Warn("SCAN", "All %d patterns exhausted, target not found", outPatternsTried);
+    Solitaer::Warn("SCAN", "All %d patterns exhausted, target not found", outPatternsTried);
     return 0;
 }
 
@@ -1189,7 +1189,7 @@ static std::string DetectVersionFromEngine(uintptr_t engineAddr) {
         // Try reading as a C string first
         std::string s = Zoltraak::ReadString(fieldPtr, 32);
         if (s.size() >= 3 && s[0] >= '1' && s[0] <= '9' && s[1] == '.') {
-            Solliter::Info("SCAN:Ver", "Found version string '%s' at Engine+0x%X",
+            Solitaer::Info("SCAN:Ver", "Found version string '%s' at Engine+0x%X",
                 s.c_str(), offset);
             return s;
         }
@@ -1197,13 +1197,13 @@ static std::string DetectVersionFromEngine(uintptr_t engineAddr) {
         // Try reading as a Godot String (CowData<char32_t>)
         std::string gs = Zoltraak::ReadGodotString(fieldPtr);
         if (gs.size() >= 3 && gs[0] >= '1' && gs[0] <= '9' && gs[1] == '.') {
-            Solliter::Info("SCAN:Ver", "Found Godot String version '%s' at Engine+0x%X",
+            Solitaer::Info("SCAN:Ver", "Found Godot String version '%s' at Engine+0x%X",
                 gs.c_str(), offset);
             return gs;
         }
     }
 
-    Solliter::Debug("SCAN:Ver", "No version string found in Engine object");
+    Solitaer::Debug("SCAN:Ver", "No version string found in Engine object");
     return "";
 }
 
@@ -1234,7 +1234,7 @@ static std::string DetectVersionFromRdata() {
         // Read the version starting after "Godot Engine v" (14 bytes)
         std::string version = TrimVersionString(Zoltraak::ReadString(match + 14, 32));
         if (!version.empty()) {
-            Solliter::Info("SCAN:Ver", "Found .rdata version (Godot Engine v): '%s'", version.c_str());
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (Godot Engine v): '%s'", version.c_str());
             return version;
         }
     }
@@ -1244,7 +1244,7 @@ static std::string DetectVersionFromRdata() {
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
         if (!version.empty() && version[0] == '4') {
-            Solliter::Info("SCAN:Ver", "Found .rdata version (4.x.stable): '%s'", version.c_str());
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (4.x.stable): '%s'", version.c_str());
             return version;
         }
     }
@@ -1254,7 +1254,7 @@ static std::string DetectVersionFromRdata() {
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
         if (!version.empty() && version[0] == '3') {
-            Solliter::Info("SCAN:Ver", "Found .rdata version (3.x.stable): '%s'", version.c_str());
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (3.x.stable): '%s'", version.c_str());
             return version;
         }
     }
@@ -1264,12 +1264,12 @@ static std::string DetectVersionFromRdata() {
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
         if (!version.empty() && version[0] == '3') {
-            Solliter::Info("SCAN:Ver", "Found .rdata version (3.x.dev): '%s'", version.c_str());
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (3.x.dev): '%s'", version.c_str());
             return version;
         }
     }
 
-    Solliter::Debug("SCAN:Ver", "No version string found in .rdata");
+    Solitaer::Debug("SCAN:Ver", "No version string found in .rdata");
     return "";
 }
 
@@ -1278,10 +1278,10 @@ static std::string DetectVersionFromRdata() {
 // ============================================================
 
 bool FindAll(EnginePointers& out, ScanProgressFn progress) {
-    Solliter::Summary("=== Frieren OffsetFinder: Starting scan ===");
+    Solitaer::Summary("=== Frieren OffsetFinder: Starting scan ===");
 
     EnsureModuleInfo();
-    Solliter::Info("SCAN", "Module base: %p, size: 0x%zX",
+    Solitaer::Info("SCAN", "Module base: %p, size: 0x%zX",
         reinterpret_cast<void*>(s_moduleBase), s_moduleSize);
 
     // Log PE section ranges for diagnostics
@@ -1290,7 +1290,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         auto rdata = Zoltraak::GetRdataSection();
         auto data  = Zoltraak::GetDataSection();
         auto bss   = Zoltraak::GetBssSection();
-        Solliter::Info("SCAN", "Sections: .text=%p+%llX .rdata=%p+%llX .data=%p+%llX .bss=%p+%llX",
+        Solitaer::Info("SCAN", "Sections: .text=%p+%llX .rdata=%p+%llX .data=%p+%llX .bss=%p+%llX",
             reinterpret_cast<void*>(text.baseAddr), text.size,
             reinterpret_cast<void*>(rdata.baseAddr), rdata.size,
             reinterpret_cast<void*>(data.baseAddr), data.size,
@@ -1299,7 +1299,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
     // Compute PE hash for hint cache
     Himmel::ComputePEHash(out.peHash, sizeof(out.peHash));
-    Solliter::Info("SCAN", "PE hash: %s", out.peHash);
+    Solitaer::Info("SCAN", "PE hash: %s", out.peHash);
 
     // Load hints from cache
     auto hints = Himmel::LoadHints(out.peHash);
@@ -1313,7 +1313,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         out.enginePatternsTried,
         out.enginePatternId,
         out.engineMethod);
-    Solliter::Info("SCAN:Eng", "Engine: %s at %p (pattern: %s, tried: %d)",
+    Solitaer::Info("SCAN:Eng", "Engine: %s at %p (pattern: %s, tried: %d)",
         out.engineMethod,
         reinterpret_cast<void*>(out.Engine),
         out.enginePatternId ? out.enginePatternId : "none",
@@ -1329,11 +1329,11 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     }
     if (out.godotVersion.empty() && hints.hasVersionHint) {
         out.godotVersion = hints.godotVersion;
-        Solliter::Info("SCAN:Ver", "Using cached version: %s", out.godotVersion.c_str());
+        Solitaer::Info("SCAN:Ver", "Using cached version: %s", out.godotVersion.c_str());
     }
     ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor, out.godotPatch);
     StoreGodotVersion(out.godotMajor, out.godotMinor, out.godotPatch);
-    Solliter::Summary("Godot version: %s (major=%u minor=%u patch=%u)",
+    Solitaer::Summary("Godot version: %s (major=%u minor=%u patch=%u)",
         out.godotVersion.empty() ? "unknown" : out.godotVersion.c_str(),
         out.godotMajor, out.godotMinor, out.godotPatch);
 
@@ -1344,14 +1344,14 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     if (GodotVer::IsGodot45Plus()) {
         DynOff::SDATA_CNAME = 0x08; // cname removed in 4.5+; String name at +0x08
         DynOff::SDATA_NAME  = 0x08;
-        Solliter::Info("SCAN:Ver", "Applied Godot 4.5+ StringName offsets: cname=name=+0x08");
+        Solitaer::Info("SCAN:Ver", "Applied Godot 4.5+ StringName offsets: cname=name=+0x08");
     }
 
     // Phase 3: ObjectDB
     if (progress) progress(3, "Scanning for ObjectDB...");
     if (GodotVer::IsGodot3()) {
         // 3.x ObjectDB is HashMap<ObjectID, Object*> (16B bucket-chain HashMap)
-        Solliter::Info("SCAN:ObjDB", "Godot 3.x detected, using 3.x ObjectDB scanner");
+        Solitaer::Info("SCAN:ObjDB", "Godot 3.x detected, using 3.x ObjectDB scanner");
         out.ObjectDB = ScanBssForObjectDB3x();
         if (out.ObjectDB) {
             out.objectDBPatternId = "BSS_SCAN_3X";
@@ -1366,7 +1366,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
             out.objectDBPatternId,
             out.objectDBMethod);
     }
-    Solliter::Info("SCAN:ObjDB", "ObjectDB: %s at %p (pattern: %s, tried: %d)",
+    Solitaer::Info("SCAN:ObjDB", "ObjectDB: %s at %p (pattern: %s, tried: %d)",
         out.objectDBMethod,
         reinterpret_cast<void*>(out.ObjectDB),
         out.objectDBPatternId ? out.objectDBPatternId : "none",
@@ -1376,7 +1376,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     if (progress) progress(4, "Scanning for ClassDB...");
     if (GodotVer::IsGodot3()) {
         // 3.x ClassDB is HashMap<StringName, ClassInfo> (16B bucket-chain HashMap)
-        Solliter::Info("SCAN:ClsDB", "Godot 3.x detected, using 3.x ClassDB scanner");
+        Solitaer::Info("SCAN:ClsDB", "Godot 3.x detected, using 3.x ClassDB scanner");
         out.ClassDB = ScanBssForClassDB3x();
         if (out.ClassDB) {
             out.classDBPatternId = "BSS_SCAN_3X";
@@ -1394,7 +1394,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
         // Fallback: brute-force scan .bss/.data for ClassDB HashMap
         if (!out.ClassDB) {
-            Solliter::Info("SCAN:ClsDB", "AOB patterns failed, trying brute-force .bss/.data scan");
+            Solitaer::Info("SCAN:ClsDB", "AOB patterns failed, trying brute-force .bss/.data scan");
             out.ClassDB = ScanBssForClassDB();
             if (out.ClassDB) {
                 out.classDBPatternId = "BSS_SCAN";
@@ -1406,7 +1406,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         }
     }
 
-    Solliter::Info("SCAN:ClsDB", "ClassDB: %s at %p (pattern: %s, tried: %d)",
+    Solitaer::Info("SCAN:ClsDB", "ClassDB: %s at %p (pattern: %s, tried: %d)",
         out.classDBMethod,
         reinterpret_cast<void*>(out.ClassDB),
         out.classDBPatternId ? out.classDBPatternId : "none",
@@ -1428,7 +1428,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     // If strict validation failed (SceneTree singleton NULL), try relaxed:
     // accept the BSS address even when Main::start() hasn't populated it yet.
     if (!out.SceneTree) {
-        Solliter::Info("SCAN:STree", "Strict scan failed, trying relaxed validation (accept NULL singleton)...");
+        Solitaer::Info("SCAN:STree", "Strict scan failed, trying relaxed validation (accept NULL singleton)...");
         uintptr_t streeExcludeRelaxed[] = { out.Engine };
         out.SceneTree = ScanForTarget(
             GodotSig::SCENETREE_PATTERNS,
@@ -1443,7 +1443,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         }
     }
 
-    Solliter::Info("SCAN:STree", "SceneTree: %s at %p (pattern: %s, tried: %d)",
+    Solitaer::Info("SCAN:STree", "SceneTree: %s at %p (pattern: %s, tried: %d)",
         out.sceneTreeMethod,
         reinterpret_cast<void*>(out.SceneTree),
         out.sceneTreePatternId ? out.sceneTreePatternId : "none",
@@ -1460,13 +1460,13 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                            (!out.ObjectDB ? 1 : 0);
 
         if (missingCount > 0) {
-            Solliter::Summary("=== Deferred retry: %d targets missing, waiting 3s ===", missingCount);
+            Solitaer::Summary("=== Deferred retry: %d targets missing, waiting 3s ===", missingCount);
             if (progress) progress(6, "Waiting for game initialization...");
             Sleep(3000);
 
             // Retry Engine
             if (!out.Engine) {
-                Solliter::Info("SCAN", "Retry: scanning for Engine...");
+                Solitaer::Info("SCAN", "Retry: scanning for Engine...");
                 out.Engine = ScanForTarget(
                     GodotSig::ENGINE_PATTERNS,
                     hints.enginePatternId.c_str(),
@@ -1475,7 +1475,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                     out.enginePatternId,
                     out.engineMethod);
                 if (out.Engine) {
-                    Solliter::Summary("  Retry Engine: found at %p",
+                    Solitaer::Summary("  Retry Engine: found at %p",
                         reinterpret_cast<void*>(out.Engine));
                     // Also try version detection now
                     if (out.godotVersion.empty()) {
@@ -1490,7 +1490,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
             // Retry SceneTree (with Engine exclusion) — strict then relaxed
             if (!out.SceneTree) {
-                Solliter::Info("SCAN", "Retry: scanning for SceneTree (strict)...");
+                Solitaer::Info("SCAN", "Retry: scanning for SceneTree (strict)...");
                 uintptr_t streeExclude2[] = { out.Engine };
                 out.SceneTree = ScanForTarget(
                     GodotSig::SCENETREE_PATTERNS,
@@ -1501,13 +1501,13 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                     out.sceneTreeMethod,
                     streeExclude2, out.Engine ? 1 : 0);
                 if (out.SceneTree) {
-                    Solliter::Summary("  Retry SceneTree: found at %p",
+                    Solitaer::Summary("  Retry SceneTree: found at %p",
                         reinterpret_cast<void*>(out.SceneTree));
                 }
             }
             // Relaxed retry: accept NULL singleton for deferred resolution
             if (!out.SceneTree) {
-                Solliter::Info("SCAN", "Retry: scanning for SceneTree (relaxed)...");
+                Solitaer::Info("SCAN", "Retry: scanning for SceneTree (relaxed)...");
                 uintptr_t streeExclude3[] = { out.Engine };
                 out.SceneTree = ScanForTarget(
                     GodotSig::SCENETREE_PATTERNS,
@@ -1519,7 +1519,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                     streeExclude3, out.Engine ? 1 : 0);
                 if (out.SceneTree) {
                     out.sceneTreeMethod = "aob_relaxed";
-                    Solliter::Summary("  Retry SceneTree (relaxed): address at %p (deferred)",
+                    Solitaer::Summary("  Retry SceneTree (relaxed): address at %p (deferred)",
                         reinterpret_cast<void*>(out.SceneTree));
                 }
             }
@@ -1527,14 +1527,14 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
             // Retry ObjectDB (strict first, then relaxed)
             if (!out.ObjectDB) {
                 if (GodotVer::IsGodot3()) {
-                    Solliter::Info("SCAN", "Retry: 3.x brute-force .bss scan for ObjectDB...");
+                    Solitaer::Info("SCAN", "Retry: 3.x brute-force .bss scan for ObjectDB...");
                     out.ObjectDB = ScanBssForObjectDB3x();
                     if (out.ObjectDB) {
                         out.objectDBPatternId = "BSS_SCAN_3X";
                         out.objectDBMethod = "bss_scan_3x";
                     }
                 } else {
-                Solliter::Info("SCAN", "Retry: scanning for ObjectDB (strict)...");
+                Solitaer::Info("SCAN", "Retry: scanning for ObjectDB (strict)...");
                 out.ObjectDB = ScanForTarget(
                     GodotSig::OBJECTDB_PATTERNS,
                     hints.objectDBPatternId.c_str(),
@@ -1545,7 +1545,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
                 // Try brute-force .bss scan
                 if (!out.ObjectDB) {
-                    Solliter::Info("SCAN", "Retry: brute-force .bss scan for ObjectDB...");
+                    Solitaer::Info("SCAN", "Retry: brute-force .bss scan for ObjectDB...");
                     out.ObjectDB = ScanBssForObjectDB();
                     if (out.ObjectDB) {
                         out.objectDBPatternId = "BSS_SCAN";
@@ -1555,7 +1555,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
 
                 // Last resort: relaxed validation (accept empty arrays)
                 if (!out.ObjectDB) {
-                    Solliter::Info("SCAN", "Retry: scanning for ObjectDB (relaxed)...");
+                    Solitaer::Info("SCAN", "Retry: scanning for ObjectDB (relaxed)...");
                     out.ObjectDB = ScanForTarget(
                         GodotSig::OBJECTDB_PATTERNS,
                         hints.objectDBPatternId.c_str(),
@@ -1570,7 +1570,7 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
                 } // end else (4.x ObjectDB retry)
 
                 if (out.ObjectDB) {
-                    Solliter::Summary("  Retry ObjectDB: found at %p (%s)",
+                    Solitaer::Summary("  Retry ObjectDB: found at %p (%s)",
                         reinterpret_cast<void*>(out.ObjectDB), out.objectDBMethod);
                 }
             }
@@ -1609,16 +1609,16 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
     Himmel::SaveResults(out.peHash, out, procNameA);
 
     // Summary
-    Solliter::Summary("=== Scan complete ===");
-    Solliter::Summary("  ObjectDB:  %s at %p",
+    Solitaer::Summary("=== Scan complete ===");
+    Solitaer::Summary("  ObjectDB:  %s at %p",
         out.objectDBMethod, reinterpret_cast<void*>(out.ObjectDB));
-    Solliter::Summary("  ClassDB:   %s at %p",
+    Solitaer::Summary("  ClassDB:   %s at %p",
         out.classDBMethod, reinterpret_cast<void*>(out.ClassDB));
-    Solliter::Summary("  SceneTree: %s at %p",
+    Solitaer::Summary("  SceneTree: %s at %p",
         out.sceneTreeMethod, reinterpret_cast<void*>(out.SceneTree));
-    Solliter::Summary("  Engine:    %s at %p",
+    Solitaer::Summary("  Engine:    %s at %p",
         out.engineMethod, reinterpret_cast<void*>(out.Engine));
-    Solliter::Summary("  Version:   %s",
+    Solitaer::Summary("  Version:   %s",
         out.godotVersion.empty() ? "unknown" : out.godotVersion.c_str());
 
     // Cache results
@@ -1678,14 +1678,14 @@ std::string DetectVersion() {
 }
 
 bool ValidateAndFixOffsets() {
-    Solliter::Info("OFFS", "ValidateAndFixOffsets: Probing Object layout...");
+    Solitaer::Info("OFFS", "ValidateAndFixOffsets: Probing Object layout...");
 
     // Step 1: Validate basic Object layout using ObjectDB
     if (s_cachedPointers.ObjectDB) {
         // Dereference object_slots pointer to get array base
         uint64_t arrayBase = Zoltraak::ReadSafe<uint64_t>(s_cachedPointers.ObjectDB, 0);
         if (!arrayBase || !Zoltraak::IsReadable(arrayBase)) {
-            Solliter::Warn("OFFS", "ObjectDB pointer at %p is null/unreadable, skipping layout probing",
+            Solitaer::Warn("OFFS", "ObjectDB pointer at %p is null/unreadable, skipping layout probing",
                 reinterpret_cast<void*>(s_cachedPointers.ObjectDB));
             arrayBase = 0;
         }
@@ -1706,7 +1706,7 @@ bool ValidateAndFixOffsets() {
             uint64_t objectId = Zoltraak::ReadSafe<uint64_t>(
                 objPtr + DynOff::OBJECT_INSTANCE_ID, 0);
             if (objectId != 0) {
-                Solliter::Info("OFFS", "Object at %p: vtable=%p, ObjectID=%llu - layout confirmed",
+                Solitaer::Info("OFFS", "Object at %p: vtable=%p, ObjectID=%llu - layout confirmed",
                     reinterpret_cast<void*>(objPtr),
                     reinterpret_cast<void*>(vtable),
                     objectId);
@@ -1717,7 +1717,7 @@ bool ValidateAndFixOffsets() {
             for (int probe = 0x10; probe <= 0x30; probe += 8) {
                 objectId = Zoltraak::ReadSafe<uint64_t>(objPtr + probe, 0);
                 if (objectId != 0 && objectId < 0x1000000) {  // Reasonable ObjectID range
-                    Solliter::Warn("OFFS", "ObjectID found at +0x%X (expected +0x%X), adjusting DynOff",
+                    Solitaer::Warn("OFFS", "ObjectID found at +0x%X (expected +0x%X), adjusting DynOff",
                         probe, DynOff::OBJECT_INSTANCE_ID);
                     DynOff::OBJECT_INSTANCE_ID = probe;
                     break;
@@ -1738,13 +1738,13 @@ bool ValidateAndFixOffsets() {
             uint64_t sampleDataPtr = Zoltraak::ReadSafe<uint64_t>(headElem + 0x10, 0);
             if (sampleDataPtr && Zoltraak::IsReadable(sampleDataPtr)) {
                 Flamme::ProbeLayout(sampleDataPtr);
-                Solliter::Info("OFFS", "StringName probed via ClassDB: SDATA_NAME=0x%X",
+                Solitaer::Info("OFFS", "StringName probed via ClassDB: SDATA_NAME=0x%X",
                     DynOff::SDATA_NAME);
             } else {
-                Solliter::Warn("OFFS", "ClassDB head element has no valid StringName _Data*");
+                Solitaer::Warn("OFFS", "ClassDB head element has no valid StringName _Data*");
             }
         } else {
-            Solliter::Warn("OFFS", "ClassDB head element not readable, using default SDATA_NAME=0x%X",
+            Solitaer::Warn("OFFS", "ClassDB head element not readable, using default SDATA_NAME=0x%X",
                 DynOff::SDATA_NAME);
         }
     }
@@ -1753,12 +1753,12 @@ bool ValidateAndFixOffsets() {
     // This will be done in Phase 3 (Serie) when we have SceneTree access
     // For now, mark Node offsets as unvalidated
     if (DynOff::NODE_DATA_OFFSET == -1) {
-        Solliter::Info("OFFS", "Node offsets not yet validated (will be probed in Phase 3)");
+        Solitaer::Info("OFFS", "Node offsets not yet validated (will be probed in Phase 3)");
     }
 
     // Mark basic offsets as validated
     DynOff::bOffsetsValidated.store(true, std::memory_order_release);
-    Solliter::Info("OFFS", "Basic offsets validated successfully");
+    Solitaer::Info("OFFS", "Basic offsets validated successfully");
 
     return true;
 }

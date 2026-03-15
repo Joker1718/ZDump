@@ -1,6 +1,6 @@
 #pragma once
 
-// Solliter — 索莉緹爾 (Mana Concealment — Logger)
+// Solitaer — 索莉緹爾 (Mana Concealment — Logger)
 // 5-category per-process logging system for Zolt-Dump.
 // Categories: Init, Scan, Offsets, Pipe, Walk
 // Logs to %LOCALAPPDATA%\ZoltDump\Logs\{ProcessName}\
@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <string>
 
-namespace Zolt::Solliter {
+namespace Zolt::Solitaer {
 
 // Initialize the logger: enables early buffering.
 // Must be called from DllMain before any logging.
@@ -63,11 +63,11 @@ void LogOffsets(const char* msg);
 void LogPipe(const char* msg);
 void LogWalk(const char* msg);
 
-} // namespace Zolt::Solliter
+} // namespace Zolt::Solitaer
 
 // Timing macro: creates a scoped timer that logs on scope exit
 #define LOG_TIMED(cat, label) \
-    Zolt::Solliter::ScopedTimer _logTimer_##__LINE__(cat, label)
+    Zolt::Solitaer::ScopedTimer _logTimer_##__LINE__(cat, label)
 
 // ============================================================
 // Convenience macros (same pattern as UE5CEDumper)
@@ -78,8 +78,8 @@ void LogWalk(const char* msg);
 #define LOG_CAT ""
 #endif
 
-#define LOG_INFO(fmt, ...)    Zolt::Solliter::Info(LOG_CAT, fmt, ##__VA_ARGS__)
-#define LOG_ERROR(fmt, ...)   Zolt::Solliter::Error(LOG_CAT, fmt, ##__VA_ARGS__)
-#define LOG_WARN(fmt, ...)    Zolt::Solliter::Warn(LOG_CAT, fmt, ##__VA_ARGS__)
-#define LOG_DEBUG(fmt, ...)   Zolt::Solliter::Debug(LOG_CAT, fmt, ##__VA_ARGS__)
-#define LOG_SUMMARY(fmt, ...) Zolt::Solliter::Summary(fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)    Zolt::Solitaer::Info(LOG_CAT, fmt, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...)   Zolt::Solitaer::Error(LOG_CAT, fmt, ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...)    Zolt::Solitaer::Warn(LOG_CAT, fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...)   Zolt::Solitaer::Debug(LOG_CAT, fmt, ##__VA_ARGS__)
+#define LOG_SUMMARY(fmt, ...) Zolt::Solitaer::Summary(fmt, ##__VA_ARGS__)

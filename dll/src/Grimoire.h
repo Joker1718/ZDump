@@ -116,7 +116,7 @@ namespace DynOff {
     inline int STREE_ROOT_OFFSET   = -1;    // Window* root within SceneTree (probe required)
     inline int STREE_SCENE_OFFSET  = -1;    // Node* current_scene within SceneTree (probe required)
 
-    // ----- ClassInfo layout offsets (probed by DiAgolze::ProbeClassInfoLayout) -----
+    // ----- ClassInfo layout offsets (probed by Diagoldze::ProbeClassInfoLayout) -----
     inline int CLASSINFO_NAME_OFFSET      = -1;  // StringName 'name' field within ClassInfo
     inline int CLASSINFO_INHERITS_OFFSET  = -1;  // StringName 'inherits' field within ClassInfo
     inline int CLASSINFO_PROPLIST_OFFSET  = -1;  // List<PropertyInfo> property_list within ClassInfo
@@ -139,7 +139,7 @@ namespace DynOff {
 
 // ============================================================
 // GodotVer — Detected Godot version state (set by Frieren after scan)
-// Used by Flamme, Ubel, DiAgolze for version-specific behavior.
+// Used by Flamme, Ubel, Diagoldze for version-specific behavior.
 // ============================================================
 namespace GodotVer {
     inline uint32_t Major = 0;

@@ -13,9 +13,9 @@ Zolt-Dump/
 │   ├── CMakeLists.txt           # C++23, MSVC, Ninja, static CRT
 │   └── src/                     # 17 source modules (Frieren-named)
 │       ├── Zoltraak.cpp/.h      # Memory: AOBScan, SEH reads
-│       ├── Solliter.cpp/.h      # Logger: 5-category, rotation
+│       ├── Solitaer.cpp/.h      # Logger: 5-category, rotation
 │       ├── Ausetiese.cpp/.h     # ObjectDB: slot enumeration
-│       ├── DiAgolze.cpp/.h      # ClassDB: class registry
+│       ├── Diagoldze.cpp/.h      # ClassDB: class registry
 │       ├── Flamme.cpp/.h        # StringName: interned strings
 │       ├── Serie.cpp/.h         # SceneTree: node hierarchy
 │       ├── Ubel.cpp/.h          # Variant: property values

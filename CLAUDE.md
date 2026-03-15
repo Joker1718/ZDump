@@ -94,12 +94,12 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 |      +-- Fern (PipeServer)    <- Named Pipe IPC      |
 |      +-- Frieren (OffsetFinder) <- ObjectDB/ClassDB  |
 |      +-- Ausetiese (ObjectDB) <- Sparse array enum   |
-|      +-- DiAgolze (ClassDB)   <- Class registry      |
+|      +-- Diagoldze (ClassDB)   <- Class registry      |
 |      +-- Flamme (StringName)  <- String resolution   |
 |      +-- Serie (SceneTree)    <- Node hierarchy      |
 |      +-- Ubel (PropertyWalker)<- Variant values      |
 |      +-- Zoltraak (Memory)    <- AOBScan + SEH R/W   |
-|      +-- Solliter (Logger)    <- 5-category logging  |
+|      +-- Solitaer (Logger)    <- 5-category logging  |
 +----------------------+-------------------------------+
                        | Named Pipe: \\.\pipe\ZoltDumpBfx
                        | JSON over pipe (newline-delimited)
@@ -125,8 +125,8 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 |----------|-------------|---------|-------|
 | Core operations | **Zoltraak** (栔爾朵列) | Attack magic | Memory scanning, AOB, SEH reads |
 | Resource management | **Ausetiese** (服從之秤) | Aura's scales | Object enumeration, DB scanning |
-| Constants & statics | **DiAgolze** (黃金化) | Mahat's gold | ClassDB, immutable registry |
-| Obfuscation & security | **Solliter** (索莉緹爾) | Mana concealment | Logging, trace hiding |
+| Constants & statics | **Diagoldze** (黃金化) | Mahat's gold | ClassDB, immutable registry |
+| Obfuscation & security | **Solitaer** (索莉緹爾) | Mana concealment | Logging, trace hiding |
 | Documentation & libs | **Grimoire** (魔導書) | Grimoire | Constants, magic strings |
 | Error handling | **Mimic** (寶箱怪) | Chest mimic | Error types, trap results |
 | String resolution | **Flamme** (芙拉梅) | Great mage master | StringName resolver |

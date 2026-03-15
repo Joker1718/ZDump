@@ -2,7 +2,7 @@
 // Polling-based communication channel for CE Lua scripts.
 
 #include "Qual.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 #include <Windows.h>
 #include <atomic>
@@ -13,7 +13,7 @@ static HANDLE            s_hThread = nullptr;
 static std::atomic<bool> s_running{false};
 
 static DWORD WINAPI MailboxThreadProc(LPVOID /*param*/) {
-    Solliter::LogPipe("Qual: Mailbox polling thread started");
+    Solitaer::LogPipe("Qual: Mailbox polling thread started");
 
     // TODO: Create mailbox named pipe (Grimoire::MAILBOX_NAME)
     // TODO: Poll for incoming CE Lua commands
@@ -25,14 +25,14 @@ static DWORD WINAPI MailboxThreadProc(LPVOID /*param*/) {
         Sleep(100);  // Placeholder to avoid busy-wait
     }
 
-    Solliter::LogPipe("Qual: Mailbox polling thread exiting");
+    Solitaer::LogPipe("Qual: Mailbox polling thread exiting");
     return 0;
 }
 
 void StartPolling() {
     if (s_running.load()) return;
 
-    Solliter::LogPipe("Qual: Starting mailbox polling");
+    Solitaer::LogPipe("Qual: Starting mailbox polling");
     s_running.store(true);
     s_hThread = CreateThread(nullptr, 0, MailboxThreadProc, nullptr, 0, nullptr);
 }
@@ -40,7 +40,7 @@ void StartPolling() {
 void StopPolling() {
     if (!s_running.load()) return;
 
-    Solliter::LogPipe("Qual: Stopping mailbox polling");
+    Solitaer::LogPipe("Qual: Stopping mailbox polling");
     s_running.store(false);
 
     if (s_hThread) {

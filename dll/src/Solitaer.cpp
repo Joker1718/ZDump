@@ -1,4 +1,4 @@
-// Solliter — 索莉緹爾 (Mana Concealment — Logger)
+// Solitaer — 索莉緹爾 (Mana Concealment — Logger)
 // 5-category per-process logging system for Zolt-Dump.
 // Ported from UE5CEDumper Logger.cpp with adaptations for Godot targets.
 //
@@ -9,7 +9,7 @@
 //   pipe-0.log    - Named pipe IPC events
 //   walk-0.log    - Scene tree traversal, object enumeration, property walking
 
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 #include "Zoltraak.h"
 
@@ -25,7 +25,7 @@
 
 namespace fs = std::filesystem;
 
-namespace Zolt::Solliter {
+namespace Zolt::Solitaer {
 
 // ============================================================
 // Log file enumeration (5 categories)
@@ -460,4 +460,4 @@ void LogOffsets(const char* msg) { Info("OFFS", "%s", msg); }
 void LogPipe(const char* msg)    { Info("PIPE", "%s", msg); }
 void LogWalk(const char* msg)    { Info("WALK", "%s", msg); }
 
-} // namespace Zolt::Solliter
+} // namespace Zolt::Solitaer

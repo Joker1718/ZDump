@@ -17,9 +17,9 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 | File | Frieren Term | Character/Spell | Actual Function | Why This Name |
 |---|---|---|---|---|
 | **Zoltraak.cpp** | 殺人魔法 | Attack magic | Core memory scanning: AOBScan, SEH reads, RIP resolution | The attack that deconstructs — core destructuring tool |
-| **Solliter.cpp** | 索莉塔 | (Original: Solitär) Mana concealment magic | Logger: 5-category file logging with rotation | Conceals traces — records hidden observations |
+| **Solitaer.cpp** | 索莉塔 | (Original: Solitär) Mana concealment magic | Logger: 5-category file logging with rotation | Conceals traces — records hidden observations |
 | **Ausetiese.cpp** | 服從之秤 | Aura's obedience scale | ObjectDB enumeration: slot scanning, validation | Weighs and sorts all objects (like Aura's power scale) |
-| **DiAgolze.cpp** | 黃金化 | Mahat's golden transmutation | ClassDB scanner: immutable class registry | Immutable like gold — static class definitions |
+| **Diagoldze.cpp** | 黃金化 | Mahat's golden transmutation | ClassDB scanner: immutable class registry | Immutable like gold — static class definitions |
 | **Flamme.cpp** | 弗蘭梅 | Great mage, Frieren's master | StringName resolver: interned string lookup | Ancient knowledge keeper — resolves name origins |
 | **Serie.cpp** | 賽莉耶 | Great mage, living history | SceneTree / Node hierarchy walker | Sees all history and hierarchy — living memory |
 | **Ubel.cpp** | 尤蓓爾 | Special ops assassin | Variant value reader & property walker | Precise extraction — surgical data retrieval |
@@ -88,9 +88,9 @@ public static class Grimoire
 ```
 Zolt::                      // Root namespace
   Zoltraak::                // Memory operations
-  Solliter::                // Logging
+  Solitaer::                // Logging
   Ausetiese::               // Object enumeration
-  DiAgolze::                // Class registry
+  Diagoldze::                // Class registry
   Flamme::                  // String resolution
   Serie::                   // Scene tree
   Ubel::                    // Property/Variant reading

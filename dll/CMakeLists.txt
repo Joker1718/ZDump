@@ -104,11 +104,11 @@ add_library(ZoltDumper SHARED
     src/dllmain.cpp
     src/Macht.cpp
     src/Zoltraak.cpp
-    src/Solliter.cpp
+    src/Solitaer.cpp
     src/Frieren.cpp
     src/Ausetiese.cpp
     src/Flamme.cpp
-    src/DiAgolze.cpp
+    src/Diagoldze.cpp
     src/Serie.cpp
     src/Ubel.cpp
     src/Stark.cpp
@@ -186,11 +186,11 @@ if(BUILD_PROXY_DLL)
         src/dllmain.cpp
         src/Eisen.cpp
         src/Zoltraak.cpp
-        src/Solliter.cpp
+        src/Solitaer.cpp
         src/Frieren.cpp
         src/Ausetiese.cpp
         src/Flamme.cpp
-        src/DiAgolze.cpp
+        src/Diagoldze.cpp
         src/Serie.cpp
         src/Ubel.cpp
         src/Stark.cpp

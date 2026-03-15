@@ -41,7 +41,7 @@ public static class Grimoire
     public const string AobMakerPipeName = @"\\.\pipe\AOBMaker";
 
     // ============================================================
-    // Logging — Solliter (索莉緹爾) trace concealment
+    // Logging — Solitaer (索莉緹爾) trace concealment
     // ============================================================
 
     /// <summary>Log directory name under %LOCALAPPDATA%</summary>

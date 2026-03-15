@@ -14,7 +14,7 @@
 #include "Ausetiese.h"
 #include "Zoltraak.h"
 #include "Flamme.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <atomic>
@@ -92,7 +92,7 @@ static bool ProbeSlotCounters(uint64_t objectDBAddr) {
     if (best.count > 0) {
         s_slotCountOff = best.countOff;
         s_slotMaxOff   = best.maxOff;
-        Solliter::Info("OBJDB", "Slot counters found: count=%u (at +0x%X), max=%u (at +0x%X)",
+        Solitaer::Info("OBJDB", "Slot counters found: count=%u (at +0x%X), max=%u (at +0x%X)",
             best.count, best.countOff, best.max, best.maxOff);
         return true;
     }
@@ -126,15 +126,15 @@ static bool ReadHashMapFields3x(uint64_t objectDBAddr) {
         objectDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, 0);
 
     if (!s_hashTable3x || !Zoltraak::IsReadable(s_hashTable3x)) {
-        Solliter::Warn("OBJDB", "3x: invalid hash_table pointer");
+        Solitaer::Warn("OBJDB", "3x: invalid hash_table pointer");
         return false;
     }
     if (s_power3x < 4 || s_power3x > 20) {
-        Solliter::Warn("OBJDB", "3x: invalid power %u", s_power3x);
+        Solitaer::Warn("OBJDB", "3x: invalid power %u", s_power3x);
         return false;
     }
 
-    Solliter::Info("OBJDB", "3x HashMap: hashTable=%p power=%u elements=%u",
+    Solitaer::Info("OBJDB", "3x HashMap: hashTable=%p power=%u elements=%u",
         reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
     return true;
 }
@@ -178,7 +178,7 @@ static bool ForEachEx3x(const std::function<bool(int index, uint64_t objectAddr)
 // Initialize 3.x ObjectDB
 static void Init3x(uint64_t objectDBAddr) {
     if (!ReadHashMapFields3x(objectDBAddr)) {
-        Solliter::Warn("OBJDB", "3x: failed to read HashMap fields");
+        Solitaer::Warn("OBJDB", "3x: failed to read HashMap fields");
         return;
     }
 
@@ -190,7 +190,7 @@ static void Init3x(uint64_t objectDBAddr) {
     });
     s_cachedCount = validCount;
 
-    Solliter::Info("OBJDB", "3x Init: %d valid objects (HashMap elements=%u, power=%u)",
+    Solitaer::Info("OBJDB", "3x Init: %d valid objects (HashMap elements=%u, power=%u)",
         s_cachedCount, s_elements3x, s_power3x);
 }
 
@@ -201,7 +201,7 @@ void Init(uint64_t objectDBAddr) {
     EnsureModuleInfo();
 
     if (!objectDBAddr) {
-        Solliter::Warn("OBJDB", "Init called with null address");
+        Solitaer::Warn("OBJDB", "Init called with null address");
         return;
     }
 
@@ -215,7 +215,7 @@ void Init(uint64_t objectDBAddr) {
     // Dereference to get the ObjectSlot array pointer
     s_slotsArray = Zoltraak::ReadSafe<uint64_t>(objectDBAddr, 0);
     if (!s_slotsArray || !Zoltraak::IsReadable(s_slotsArray)) {
-        Solliter::Warn("OBJDB", "ObjectDB at %p: null or unreadable slots array",
+        Solitaer::Warn("OBJDB", "ObjectDB at %p: null or unreadable slots array",
             reinterpret_cast<void*>(objectDBAddr));
         return;
     }
@@ -223,7 +223,7 @@ void Init(uint64_t objectDBAddr) {
     // Find slot_count and slot_max in nearby memory
     if (!ProbeSlotCounters(objectDBAddr)) {
         // Fallback: estimate slot_max by scanning slots until we find too many empty ones
-        Solliter::Warn("OBJDB", "Could not find slot counters, estimating slot_max by scanning");
+        Solitaer::Warn("OBJDB", "Could not find slot counters, estimating slot_max by scanning");
         int emptyRun = 0;
         int maxFound = 0;
         for (int i = 0; i < 500000 && emptyRun < 1000; ++i) {
@@ -239,7 +239,7 @@ void Init(uint64_t objectDBAddr) {
             }
         }
         s_slotMax = maxFound + 100; // Add buffer
-        Solliter::Info("OBJDB", "Estimated slot_max: %d (last valid slot around %d)",
+        Solitaer::Info("OBJDB", "Estimated slot_max: %d (last valid slot around %d)",
             s_slotMax, maxFound);
     } else {
         s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(
@@ -254,7 +254,7 @@ void Init(uint64_t objectDBAddr) {
     });
     s_cachedCount = validCount;
 
-    Solliter::Info("OBJDB", "Init: %d valid objects in %d slots, array at %p",
+    Solitaer::Info("OBJDB", "Init: %d valid objects in %d slots, array at %p",
         s_cachedCount, s_slotMax,
         reinterpret_cast<void*>(s_slotsArray));
 }
@@ -372,16 +372,16 @@ uint64_t FindByName(const char* name) {
         // This is a best-effort linear scan
 
         // For now, just match by checking if the object has a StringName
-        // that resolves to the target. This will be improved when DiAgolze
+        // that resolves to the target. This will be improved when Diagoldze
         // provides vtable-to-classname mapping.
-        // TODO: Improve with DiAgolze::GetClassName integration
+        // TODO: Improve with Diagoldze::GetClassName integration
         (void)objAddr;
         return true; // continue scanning
     });
 
     (void)target;
     (void)result;
-    Solliter::Debug("OBJDB", "FindByName('%s'): not fully implemented (needs DiAgolze)", name);
+    Solitaer::Debug("OBJDB", "FindByName('%s'): not fully implemented (needs Diagoldze)", name);
     return 0;
 }
 
@@ -404,23 +404,23 @@ void LogDiagnostics() {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return; // One-shot
 
-    Solliter::Info("OBJDB", "=== Ausetiese Diagnostics ===");
-    Solliter::Info("OBJDB", "ObjectDB addr: %p", reinterpret_cast<void*>(s_objectDBAddr));
-    Solliter::Info("OBJDB", "Mode:          %s", s_is3x ? "3.x bucket-chain" : "4.x sparse-set");
+    Solitaer::Info("OBJDB", "=== Ausetiese Diagnostics ===");
+    Solitaer::Info("OBJDB", "ObjectDB addr: %p", reinterpret_cast<void*>(s_objectDBAddr));
+    Solitaer::Info("OBJDB", "Mode:          %s", s_is3x ? "3.x bucket-chain" : "4.x sparse-set");
 
     if (s_is3x) {
-        Solliter::Info("OBJDB", "3x HashMap:    hashTable=%p power=%u elements=%u",
+        Solitaer::Info("OBJDB", "3x HashMap:    hashTable=%p power=%u elements=%u",
             reinterpret_cast<void*>(s_hashTable3x), s_power3x, s_elements3x);
     } else {
-        Solliter::Info("OBJDB", "Slots array:   %p", reinterpret_cast<void*>(s_slotsArray));
-        Solliter::Info("OBJDB", "Slot max:      %d", s_slotMax);
+        Solitaer::Info("OBJDB", "Slots array:   %p", reinterpret_cast<void*>(s_slotsArray));
+        Solitaer::Info("OBJDB", "Slot max:      %d", s_slotMax);
     }
-    Solliter::Info("OBJDB", "Valid objects:  %d", GetObjectCount());
+    Solitaer::Info("OBJDB", "Valid objects:  %d", GetObjectCount());
 
     if (!s_is3x && s_slotCountOff > 0) {
         uint32_t count = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotCountOff, 0);
         uint32_t max   = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotMaxOff, 0);
-        Solliter::Info("OBJDB", "Raw counters: slot_count=%u (at +0x%X), slot_max=%u (at +0x%X)",
+        Solitaer::Info("OBJDB", "Raw counters: slot_count=%u (at +0x%X), slot_max=%u (at +0x%X)",
             count, s_slotCountOff, max, s_slotMaxOff);
     }
 
@@ -433,7 +433,7 @@ void LogDiagnostics() {
         uint64_t objId  = Zoltraak::ReadSafe<uint64_t>(
             objAddr + DynOff::OBJECT_INSTANCE_ID, 0);
 
-        Solliter::Info("OBJDB", "  [%d] addr=%p vtable=%p objectId=%llu",
+        Solitaer::Info("OBJDB", "  [%d] addr=%p vtable=%p objectId=%llu",
             index,
             reinterpret_cast<void*>(objAddr),
             reinterpret_cast<void*>(vtable),

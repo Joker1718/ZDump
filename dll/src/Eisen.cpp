@@ -13,7 +13,7 @@
 #ifdef ZOLT_PROXY_BUILD
 
 #include "Eisen.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include <Windows.h>
 
 // Include generated winmm function pointer table (defines g_pfn_* variables)
@@ -52,9 +52,9 @@ static HMODULE LoadRealDll()
 
     g_realDll = LoadLibraryW(realPath);
     if (!g_realDll) {
-        Solliter::Info("INIT", "Eisen: Failed to load real %s", kRealDllTag);
+        Solitaer::Info("INIT", "Eisen: Failed to load real %s", kRealDllTag);
     } else {
-        Solliter::Info("INIT", "Eisen: Loaded real %s from System32", kRealDllTag);
+        Solitaer::Info("INIT", "Eisen: Loaded real %s from System32", kRealDllTag);
     }
     return g_realDll;
 }

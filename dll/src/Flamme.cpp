@@ -23,7 +23,7 @@
 
 #include "Flamme.h"
 #include "Zoltraak.h"
-#include "Solliter.h"
+#include "Solitaer.h"
 #include "Grimoire.h"
 
 #include <atomic>
@@ -160,12 +160,12 @@ void ProbeLayout(uint64_t sampleDataPtr) {
     if (DynOff::bStringNameProbed.load(std::memory_order_acquire)) return;
 
     if (!sampleDataPtr || !Zoltraak::IsReadable(sampleDataPtr)) {
-        Solliter::Debug("FLAMME", "ProbeLayout: no valid sample _Data pointer, using defaults");
+        Solitaer::Debug("FLAMME", "ProbeLayout: no valid sample _Data pointer, using defaults");
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
     }
 
-    Solliter::Info("FLAMME", "ProbeLayout: probing _Data at %p (Godot %u.%u)",
+    Solitaer::Info("FLAMME", "ProbeLayout: probing _Data at %p (Godot %u.%u)",
         reinterpret_cast<void*>(sampleDataPtr), GodotVer::Major, GodotVer::Minor);
 
     // If version is known, set expected offsets
@@ -173,13 +173,13 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         // 4.5+: no cname, name at +0x08
         DynOff::SDATA_CNAME = 0x08; // Will read String name here (char32 path in TryCname)
         DynOff::SDATA_NAME  = 0x08; // Same offset, String name
-        Solliter::Info("FLAMME", "ProbeLayout: Godot 4.5+ detected — name at +0x08, no cname");
+        Solitaer::Info("FLAMME", "ProbeLayout: Godot 4.5+ detected — name at +0x08, no cname");
     }
 
     // Try resolving with current offsets
     std::string resolved = TryCname(sampleDataPtr);
     if (!resolved.empty()) {
-        Solliter::Info("FLAMME", "ProbeLayout: resolved via cname at +0x%X: '%s'",
+        Solitaer::Info("FLAMME", "ProbeLayout: resolved via cname at +0x%X: '%s'",
             DynOff::SDATA_CNAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
@@ -187,7 +187,7 @@ void ProbeLayout(uint64_t sampleDataPtr) {
 
     resolved = TryName(sampleDataPtr);
     if (IsPlausibleName(resolved)) {
-        Solliter::Info("FLAMME", "ProbeLayout: resolved via name at +0x%X: '%s'",
+        Solitaer::Info("FLAMME", "ProbeLayout: resolved via name at +0x%X: '%s'",
             DynOff::SDATA_NAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
@@ -203,7 +203,7 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         std::string s = Zoltraak::ReadString(ptr, 256);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_CNAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found ASCII cname at +0x%X: '%s'",
+            Solitaer::Info("FLAMME", "ProbeLayout: found ASCII cname at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
@@ -213,7 +213,7 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         s = Zoltraak::ReadChar32String(ptr, 256);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_CNAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found char32 string at +0x%X: '%s'",
+            Solitaer::Info("FLAMME", "ProbeLayout: found char32 string at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
@@ -223,7 +223,7 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         s = Zoltraak::ReadGodotString(ptr);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_NAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found CowData name at +0x%X: '%s'",
+            Solitaer::Info("FLAMME", "ProbeLayout: found CowData name at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
@@ -233,14 +233,14 @@ void ProbeLayout(uint64_t sampleDataPtr) {
         s = ReadGodot3String(ptr);
         if (IsPlausibleName(s) && s.size() >= 2) {
             DynOff::SDATA_NAME = offset;
-            Solliter::Info("FLAMME", "ProbeLayout: found wchar_t name at +0x%X: '%s'",
+            Solitaer::Info("FLAMME", "ProbeLayout: found wchar_t name at +0x%X: '%s'",
                 offset, s.c_str());
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
         }
     }
 
-    Solliter::Warn("FLAMME", "ProbeLayout: no valid string found in sample _Data at %p",
+    Solitaer::Warn("FLAMME", "ProbeLayout: no valid string found in sample _Data at %p",
         reinterpret_cast<void*>(sampleDataPtr));
 
     // Hex dump for debugging
@@ -255,7 +255,7 @@ void ProbeLayout(uint64_t sampleDataPtr) {
             buf[i+4], buf[i+5], buf[i+6], buf[i+7],
             buf[i+8], buf[i+9], buf[i+10], buf[i+11],
             buf[i+12], buf[i+13], buf[i+14], buf[i+15]);
-        Solliter::Warn("FLAMME", "%s", line);
+        Solitaer::Warn("FLAMME", "%s", line);
     }
 
     DynOff::bStringNameProbed.store(true, std::memory_order_release);
@@ -265,26 +265,26 @@ void LogDiagnostics(uint64_t sampleAddr) {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return;  // One-shot
 
-    Solliter::Info("FLAMME", "=== Flamme Diagnostics ===");
-    Solliter::Info("FLAMME", "Godot version: %u.%u.%u", GodotVer::Major, GodotVer::Minor, GodotVer::Patch);
-    Solliter::Info("FLAMME", "SDATA_CNAME offset: 0x%X", DynOff::SDATA_CNAME);
-    Solliter::Info("FLAMME", "SDATA_NAME  offset: 0x%X", DynOff::SDATA_NAME);
-    Solliter::Info("FLAMME", "Probed: %s", DynOff::bStringNameProbed.load() ? "yes" : "no");
+    Solitaer::Info("FLAMME", "=== Flamme Diagnostics ===");
+    Solitaer::Info("FLAMME", "Godot version: %u.%u.%u", GodotVer::Major, GodotVer::Minor, GodotVer::Patch);
+    Solitaer::Info("FLAMME", "SDATA_CNAME offset: 0x%X", DynOff::SDATA_CNAME);
+    Solitaer::Info("FLAMME", "SDATA_NAME  offset: 0x%X", DynOff::SDATA_NAME);
+    Solitaer::Info("FLAMME", "Probed: %s", DynOff::bStringNameProbed.load() ? "yes" : "no");
 
     if (!sampleAddr) {
-        Solliter::Info("FLAMME", "No sample address provided for diagnostics");
+        Solitaer::Info("FLAMME", "No sample address provided for diagnostics");
         return;
     }
 
     // Try to resolve as a StringName
     std::string resolved = Resolve(sampleAddr);
-    Solliter::Info("FLAMME", "Sample StringName at %p: '%s'",
+    Solitaer::Info("FLAMME", "Sample StringName at %p: '%s'",
         reinterpret_cast<void*>(sampleAddr), resolved.c_str());
 
     // Read _Data pointer and hex dump
     uint64_t dataPtr = Zoltraak::ReadSafe<uint64_t>(sampleAddr, 0);
     if (dataPtr && Zoltraak::IsReadable(dataPtr)) {
-        Solliter::Info("FLAMME", "  _Data at %p:", reinterpret_cast<void*>(dataPtr));
+        Solitaer::Info("FLAMME", "  _Data at %p:", reinterpret_cast<void*>(dataPtr));
 
         // Hex dump first 48 bytes of _Data (covers all known fields)
         uint8_t buf[48] = {};
@@ -299,14 +299,14 @@ void LogDiagnostics(uint64_t sampleAddr) {
                 buf[i+4], buf[i+5], buf[i+6], buf[i+7],
                 buf[i+8], buf[i+9], buf[i+10], buf[i+11],
                 buf[i+12], buf[i+13], buf[i+14], buf[i+15]);
-            Solliter::Info("FLAMME", "%s", line);
+            Solitaer::Info("FLAMME", "%s", line);
         }
 
         // Show what we find at each relevant offset
         uint64_t ptr08 = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x08, 0);
         uint64_t ptr10 = Zoltraak::ReadSafe<uint64_t>(dataPtr + 0x10, 0);
 
-        Solliter::Info("FLAMME", "  +0x08: ptr=%p readable=%s ascii='%s' char32='%s'",
+        Solitaer::Info("FLAMME", "  +0x08: ptr=%p readable=%s ascii='%s' char32='%s'",
             reinterpret_cast<void*>(ptr08),
             (ptr08 && Zoltraak::IsReadable(ptr08)) ? "yes" : "no",
             (ptr08 && Zoltraak::IsReadable(ptr08)) ?
@@ -314,7 +314,7 @@ void LogDiagnostics(uint64_t sampleAddr) {
             (ptr08 && Zoltraak::IsReadable(ptr08)) ?
                 Zoltraak::ReadChar32String(ptr08, 64).c_str() : "");
 
-        Solliter::Info("FLAMME", "  +0x10: ptr=%p readable=%s godotStr='%s' char32='%s'",
+        Solitaer::Info("FLAMME", "  +0x10: ptr=%p readable=%s godotStr='%s' char32='%s'",
             reinterpret_cast<void*>(ptr10),
             (ptr10 && Zoltraak::IsReadable(ptr10)) ? "yes" : "no",
             (ptr10 && Zoltraak::IsReadable(ptr10)) ?
