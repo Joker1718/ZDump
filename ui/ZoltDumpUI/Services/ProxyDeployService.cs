@@ -8,7 +8,7 @@ namespace ZoltDumpUI.Services;
 /// Eisen — 艾乍 (Iron Warrior)
 /// Proxy DLL deployment for Godot games via Steam detection.
 /// Detects Steam libraries, finds Godot games (.pck files), and
-/// manages version.dll proxy deployment/undeployment.
+/// manages winmm.dll proxy deployment/undeployment.
 /// </summary>
 public sealed class ProxyDeployService : IProxyDeployService
 {
@@ -113,7 +113,7 @@ public sealed class ProxyDeployService : IProxyDeployService
 
     /// <summary>
     /// Detects Godot games by looking for .pck files next to executables.
-    /// Godot exported games have a {GameName}.pck alongside {GameName}.exe.
+    /// Falls back to checking for embedded PCK inside the exe (GDPC magic marker).
     /// </summary>
     private static void ScanGameFolder(string gameDir, List<GameDeployInfo> games)
     {
@@ -125,38 +125,92 @@ public sealed class ProxyDeployService : IProxyDeployService
             var pckFiles = Directory.EnumerateFiles(gameDir, "*" + Grimoire.GodotPckExtension)
                                     .ToList();
 
-            if (pckFiles.Count == 0)
-                return; // Not a Godot game
-
-            // Find matching executable for each .pck
-            foreach (string pck in pckFiles)
+            if (pckFiles.Count > 0)
             {
-                string baseName = Path.GetFileNameWithoutExtension(pck);
-                string exePath = Path.Combine(gameDir, baseName + ".exe");
-
-                if (!File.Exists(exePath))
+                // Find matching executable for each .pck
+                foreach (string pck in pckFiles)
                 {
-                    // Some games use different exe names — try any .exe in the folder
-                    var exeFiles = Directory.EnumerateFiles(gameDir, "*.exe").ToList();
-                    if (exeFiles.Count == 1)
-                        exePath = exeFiles[0];
-                    else
-                        continue;
+                    string baseName = Path.GetFileNameWithoutExtension(pck);
+                    string exePath = Path.Combine(gameDir, baseName + ".exe");
+
+                    if (!File.Exists(exePath))
+                    {
+                        // Some games use different exe names — try any .exe in the folder
+                        var exeFiles = Directory.EnumerateFiles(gameDir, "*.exe").ToList();
+                        if (exeFiles.Count == 1)
+                            exePath = exeFiles[0];
+                        else
+                            continue;
+                    }
+
+                    games.Add(new GameDeployInfo
+                    {
+                        GameName = gameName,
+                        GamePath = gameDir,
+                        ExePath = exePath,
+                    });
+                    return; // One entry per game folder
                 }
+            }
 
-                games.Add(new GameDeployInfo
+            // Fallback: Some Godot games embed .pck inside the exe.
+            // Check each exe for the GDPC magic marker near end of file.
+            var exeCandidates = Directory.EnumerateFiles(gameDir, "*.exe").ToList();
+            foreach (string exe in exeCandidates)
+            {
+                if (HasEmbeddedPck(exe))
                 {
-                    GameName = gameName,
-                    GamePath = gameDir,
-                    ExePath = exePath,
-                });
-                break; // One entry per game folder
+                    games.Add(new GameDeployInfo
+                    {
+                        GameName = gameName,
+                        GamePath = gameDir,
+                        ExePath = exe,
+                    });
+                    return;
+                }
             }
         }
         catch
         {
             // Skip inaccessible folders
         }
+    }
+
+    /// <summary>
+    /// Checks if an executable has an embedded Godot PCK by looking for
+    /// the "GDPC" magic bytes near the end of the file.
+    /// Godot appends: [pck data...][GDPC marker][offset (8 bytes)] at EOF.
+    /// </summary>
+    private static bool HasEmbeddedPck(string exePath)
+    {
+        try
+        {
+            using var fs = new FileStream(exePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (fs.Length < 16) return false;
+
+            // Godot writes a 12-byte footer: "GDPC" (4B) + data_offset (8B) at EOF
+            // But the PCK data itself also starts with "GDPC" magic.
+            // Scan last 256 bytes for "GDPC" as a quick heuristic.
+            long scanStart = Math.Max(0, fs.Length - 256);
+            int scanLen = (int)(fs.Length - scanStart);
+            fs.Seek(scanStart, SeekOrigin.Begin);
+
+            byte[] tail = new byte[scanLen];
+            int bytesRead = fs.Read(tail, 0, scanLen);
+
+            // Search for "GDPC" (0x47 0x44 0x50 0x43)
+            for (int i = 0; i <= bytesRead - 4; i++)
+            {
+                if (tail[i] == 0x47 && tail[i + 1] == 0x44 &&
+                    tail[i + 2] == 0x50 && tail[i + 3] == 0x43)
+                    return true;
+            }
+        }
+        catch
+        {
+            // File locked or unreadable
+        }
+        return false;
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -178,6 +232,16 @@ public sealed class ProxyDeployService : IProxyDeployService
 
                 if (!File.Exists(targetDll))
                 {
+                    // Check for legacy version.dll — show as outdated so user redeploys
+                    string legacyDll = Path.Combine(game.GamePath, Grimoire.LegacyProxyDllFileName);
+                    if (File.Exists(legacyDll) && IsOurProxyDll(legacyDll))
+                    {
+                        game.Status = DeployStatus.DeployedOutdated;
+                        game.DeployedVersion = GetDllVersion(legacyDll) ?? "";
+                        game.Error = "Legacy version.dll — redeploy to migrate";
+                        continue;
+                    }
+
                     game.Status = DeployStatus.NotDeployed;
                     game.DeployedVersion = "";
                     continue;
@@ -251,6 +315,9 @@ public sealed class ProxyDeployService : IProxyDeployService
             game.Status = DeployStatus.DeployedCurrent;
             game.DeployedVersion = GetDllVersion(targetDll) ?? "";
             game.Error = "";
+
+            // Clean up legacy version.dll if it's ours (prevent mixed proxy state)
+            CleanupLegacyProxy(game.GamePath);
         });
     }
 
@@ -276,10 +343,32 @@ public sealed class ProxyDeployService : IProxyDeployService
             }
 
             File.Delete(targetDll);
+
+            // Also clean up legacy version.dll if it's ours
+            CleanupLegacyProxy(game.GamePath);
+
             game.Status = DeployStatus.NotDeployed;
             game.DeployedVersion = "";
             game.Error = "";
         });
+    }
+
+    /// <summary>
+    /// Remove legacy version.dll proxy if it belongs to us.
+    /// Prevents mixed proxy state when migrating from version.dll to winmm.dll.
+    /// </summary>
+    private void CleanupLegacyProxy(string gameDir)
+    {
+        string legacyDll = Path.Combine(gameDir, Grimoire.LegacyProxyDllFileName);
+        try
+        {
+            if (File.Exists(legacyDll) && IsOurProxyDll(legacyDll))
+                File.Delete(legacyDll);
+        }
+        catch
+        {
+            // Best-effort cleanup — file may be locked
+        }
     }
 
     // ────────────────────────────────────────────────────────────────

@@ -75,8 +75,11 @@ public static class Grimoire
     /// <summary>Main DLL filename</summary>
     public const string DllFileName = "ZoltDumper.dll";
 
-    /// <summary>Proxy DLL filename (version.dll)</summary>
-    public const string ProxyDllFileName = "version.dll";
+    /// <summary>Proxy DLL filename (winmm.dll — primary proxy target)</summary>
+    public const string ProxyDllFileName = "winmm.dll";
+
+    /// <summary>Legacy proxy DLL filename (version.dll — cleaned up on deploy)</summary>
+    public const string LegacyProxyDllFileName = "version.dll";
 
     /// <summary>PE ProductName embedded in proxy DLL for identification</summary>
     public const string ProxyProductName = "Zolt-Dump";
