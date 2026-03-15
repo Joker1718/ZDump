@@ -2,6 +2,8 @@
 // Application constants and magic strings for ZoltDumpUI.
 // All magic strings are centralized here for easy maintenance.
 
+using System.Diagnostics;
+
 namespace ZoltDumpUI;
 
 /// <summary>
@@ -108,4 +110,12 @@ public static class Grimoire
 
     /// <summary>Godot .pck data file extension</summary>
     public const string GodotPckExtension = ".pck";
+
+    /// <summary>
+    /// Directory containing the running executable.
+    /// Uses Process.MainModule for single-file publish compatibility
+    /// (AppDomain.BaseDirectory points to temp extraction dir for single-file apps).
+    /// </summary>
+    public static string AppDir { get; } =
+        Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName)!;
 }

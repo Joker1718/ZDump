@@ -220,7 +220,7 @@ public sealed class ProxyDeployService : IProxyDeployService
     public async Task RefreshDeployStatusAsync(List<GameDeployInfo> games)
     {
         string sourceDll = Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
+            Grimoire.AppDir, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
         string? sourceVersion = GetDllVersion(sourceDll);
 
         await Task.Run(() =>
@@ -284,7 +284,7 @@ public sealed class ProxyDeployService : IProxyDeployService
         await Task.Run(() =>
         {
             string sourceDll = Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
+                Grimoire.AppDir, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
 
             if (!File.Exists(sourceDll))
                 throw new FileNotFoundException($"Proxy DLL not found: {sourceDll}");
