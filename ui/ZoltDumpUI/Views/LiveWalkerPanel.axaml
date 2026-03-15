@@ -125,10 +125,9 @@
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <Button Content="{Binding PtrValue}"
-                                    Command="{Binding $parent[DataGrid].((vm:LiveWalkerViewModel)DataContext).NavigatePointerCommand}"
+                                    Command="{Binding $parent[UserControl].DataContext.NavigatePointerCommand}"
                                     CommandParameter="{Binding}"
                                     IsVisible="{Binding PtrValue, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                                    Classes="link"
                                     Padding="2,0"
                                     Margin="0"
                                     Background="Transparent"
