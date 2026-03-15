@@ -673,92 +673,243 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     uint8_t code[64] = {};
     Zoltraak::ReadSafe(ptrcallAddr, code, sizeof(code));
 
-    // Scan for common x86-64 memory access patterns.
-    // The compiler (MSVC or GCC) may use any base register — ptrcall receives Object*
-    // in rdx (Win x64 ABI) but GCC may move it to another register (rbx, rdi, etc.)
-    //
-    // ModRM byte: [mod(2)|reg(3)|r/m(3)]
-    //   mod=10 → [r/m + disp32], mod=01 → [r/m + disp8], mod=11 → register
-    //   r/m=100 → SIB follows (skip), r/m=other → base register
-    //
-    // We accept ANY base register (r/m != 100) to handle GCC's register allocation.
-    // Filter by offset range (0x40-0xFFFF) to avoid false positives from stack accesses.
+    // Diagnostic: dump first 3 getter functions + MethodBind struct
+    static int s_dumpCount = 0;
+    if (s_dumpCount < 3) {
+        s_dumpCount++;
+        Solitaer::Info("CLSDB", "ExtractMemberAccess #%d: MB=%p ptrcall=%p (vtable[%d])",
+            s_dumpCount, reinterpret_cast<void*>(methodBindAddr),
+            reinterpret_cast<void*>(ptrcallAddr), ptrcallIdx);
+        for (int d = 0; d < 64; d += 16) {
+            Solitaer::Info("CLSDB", "  code+%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
+                d, code[d], code[d+1], code[d+2], code[d+3],
+                code[d+4], code[d+5], code[d+6], code[d+7],
+                code[d+8], code[d+9], code[d+10], code[d+11],
+                code[d+12], code[d+13], code[d+14], code[d+15]);
+        }
+        // Dump MethodBind struct (first 0x80 bytes) — look for member offset field
+        uint8_t mb[0x80] = {};
+        Zoltraak::ReadSafe(methodBindAddr, mb, sizeof(mb));
+        Solitaer::Info("CLSDB", "  MethodBind dump (%p):", reinterpret_cast<void*>(methodBindAddr));
+        for (int d = 0; d < 0x80; d += 16) {
+            uint64_t v0 = *reinterpret_cast<uint64_t*>(&mb[d]);
+            uint64_t v1 = *reinterpret_cast<uint64_t*>(&mb[d+8]);
+            Solitaer::Info("CLSDB", "    +%02X: %016llX %016llX", d, v0, v1);
+        }
+    }
 
-    auto isValidRM = [](uint8_t modrm) -> bool {
-        uint8_t rm = modrm & 0x07;
-        return rm != 0x04; // Skip SIB-encoded
-    };
-    auto isModDisp32 = [](uint8_t modrm) -> bool {
-        return (modrm & 0xC0) == 0x80; // mod=10
-    };
-    auto isModDisp8 = [](uint8_t modrm) -> bool {
-        return (modrm & 0xC0) == 0x40; // mod=01
-    };
-    // Reasonable object member offset: skip [reg+0] through small stack offsets
-    auto isFieldOffset = [](int32_t off) -> bool {
+    // === Strategy A (GCC/Itanium): Follow MethodBind getter function pointer ===
+    //
+    // GCC ptrcall is a generic template:
+    //   mov rax, [rcx+0x48]       ; load getter fn ptr from MethodBind
+    //   add rdx, [rcx+0x50]       ; add member_offset (usually 0)
+    //   test al, 1                ; check if virtual (Itanium ABI tag bit)
+    //   jz direct_call            ; if not virtual, call directly
+    //
+    // When member_offset=0 and fnPtr is direct (bit0=0), the REAL offset
+    // is inside the getter function: getter(Variant* ret=rcx, Object* obj=rdx)
+    //
+    // === Strategy B (MSVC): Inline offset in getter code ===
+    //
+    // MSVC-compiled Godot inlines the offset: mov rax, [rdx+offset]
+
+    auto isFieldOffset = [](int64_t off) -> bool {
         return off >= 0x10 && off < 0x10000;
     };
 
+    // --- Strategy A: find fn ptr and member_offset fields in ptrcall code ---
+    int fnFieldOff = -1, memFieldOff = -1;
+    for (int i = 0; i < 48; i++) {
+        // 48 8B 41 XX or 4C 8B 41 XX = MOV r64, [rcx + disp8] (load fn ptr)
+        if (i + 4 <= 64 && (code[i] == 0x48 || code[i] == 0x4C) &&
+            code[i+1] == 0x8B && code[i+2] == 0x41) {
+            if (fnFieldOff < 0) fnFieldOff = static_cast<uint8_t>(code[i+3]);
+        }
+        // 48 03 51 XX = ADD rdx, [rcx + disp8] (add member_offset)
+        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x03 && code[i+2] == 0x51) {
+            if (memFieldOff < 0) memFieldOff = static_cast<uint8_t>(code[i+3]);
+        }
+    }
+
+    if (fnFieldOff >= 0 && memFieldOff >= 0) {
+        uint64_t fnPtr = Zoltraak::ReadSafe<uint64_t>(methodBindAddr + fnFieldOff, 0);
+        int64_t memberOff = Zoltraak::ReadSafe<int64_t>(methodBindAddr + memFieldOff, -1);
+
+        if (s_dumpCount <= 3) {
+            Solitaer::Info("CLSDB", "  Strategy A: fnField=+0x%X memField=+0x%X fnPtr=%p(tag=%d) memOff=%lld",
+                fnFieldOff, memFieldOff, reinterpret_cast<void*>(fnPtr),
+                (int)(fnPtr & 1), memberOff);
+        }
+
+        // Case 1: member_offset non-zero → direct field offset
+        if (isFieldOffset(memberOff)) {
+            result.offset = static_cast<int>(memberOff);
+            result.size = 8;
+            return result;
+        }
+
+        // Case 2: member_offset=0, fnPtr is direct (bit0=0) → follow getter function
+        if (memberOff == 0 && fnPtr && !(fnPtr & 1) && Zoltraak::IsReadable(fnPtr)) {
+            uint8_t gc[96] = {};
+            Zoltraak::ReadSafe(fnPtr, gc, sizeof(gc));
+
+            if (s_dumpCount <= 3) {
+                Solitaer::Info("CLSDB", "  Following getter at %p:", reinterpret_cast<void*>(fnPtr));
+                for (int d = 0; d < 32; d += 16)
+                    Solitaer::Info("CLSDB", "    +%02X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X",
+                        d, gc[d],gc[d+1],gc[d+2],gc[d+3],gc[d+4],gc[d+5],gc[d+6],gc[d+7],
+                        gc[d+8],gc[d+9],gc[d+10],gc[d+11],gc[d+12],gc[d+13],gc[d+14],gc[d+15]);
+            }
+
+            // Determine which register holds Object* in the getter:
+            //   Struct-return ptrcall: mov rcx, <buffer>; call → Object in rdx (r/m=2)
+            //   Simple-return ptrcall: mov rcx, rdx; call   → Object in rcx (r/m=1)
+            //
+            // Detect ptrcall variant by scanning for "48 89 D1" (mov rcx, rdx) before call.
+            // If found, Object is in rcx inside the getter.
+            bool objInRcx = false;
+            for (int ci = 0; ci < 48; ci++) {
+                if (code[ci] == 0x48 && ci + 2 < 64 && code[ci+1] == 0x89 && code[ci+2] == 0xD1) {
+                    objInRcx = true;
+                    break;
+                }
+            }
+
+            // Find the end of this getter function — stop at ret (C3) or int3 (CC)
+            // to avoid matching instructions from the next function
+            int gcEnd = 80;
+            for (int ei = 0; ei < 80; ei++) {
+                if (gc[ei] == 0xC3 || gc[ei] == 0xCC) {
+                    gcEnd = ei;
+                    break;
+                }
+            }
+
+            auto gMod = [](uint8_t m) -> uint8_t { return (m >> 6) & 3; };
+            // Match Object register: rcx (r/m=1) for simple return, rdx (r/m=2) for struct return
+            auto gObj = [objInRcx](uint8_t m) -> bool {
+                return objInRcx ? ((m & 7) == 1) : ((m & 7) == 2);
+            };
+
+            for (int gi = 0; gi < gcEnd; gi++) {
+                bool gW = false; int gp = gi;
+                uint8_t rexB = 0;
+                if (gc[gi] >= 0x40 && gc[gi] <= 0x4F) {
+                    gW = (gc[gi] & 0x08) != 0;
+                    rexB = gc[gi] & 0x01;  // REX.B extends r/m field
+                    gp = gi + 1;
+                }
+                if (gp + 1 >= 96) continue;
+                uint8_t go = gc[gp];
+
+                // Skip if REX.B set (changes r/m meaning: rcx→r9, rdx→r10)
+                if (rexB) continue;
+
+                // MOV reg, [obj+disp32]
+                if (go == 0x8B && gp+5 < 96 && gMod(gc[gp+1]) == 2 && gObj(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = gW ? 8 : 4; return result; }
+                }
+                // MOV reg, [obj+disp8]
+                if (go == 0x8B && gp+2 < 96 && gMod(gc[gp+1]) == 1 && gObj(gc[gp+1])) {
+                    int8_t off = static_cast<int8_t>(gc[gp+2]);
+                    if (off >= 0x10) { result.offset = off; result.size = gW ? 8 : 4; return result; }
+                }
+                // LEA reg, [obj+disp32]
+                if (gW && go == 0x8D && gp+5 < 96 && gMod(gc[gp+1]) == 2 && gObj(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
+                }
+                // MOVZX byte [obj+disp32]
+                if (go == 0x0F && gp+6 < 96 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 2 && gObj(gc[gp+2])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+3]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
+                }
+                // MOVZX byte [obj+disp8]
+                if (go == 0x0F && gp+3 < 96 && gc[gp+1] == 0xB6 && gMod(gc[gp+2]) == 1 && gObj(gc[gp+2])) {
+                    int8_t off = static_cast<int8_t>(gc[gp+3]);
+                    if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
+                }
+                // MOVSXD [obj+disp32]
+                if (gW && go == 0x63 && gp+6 < 96 && gMod(gc[gp+1]) == 2 && gObj(gc[gp+1])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gp+2]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
+                }
+                // MOVSS [obj+disp32]
+                if (gc[gi] == 0xF3 && gi+8 < 96 && gc[gi+1] == 0x0F && gc[gi+2] == 0x10 &&
+                    gMod(gc[gi+3]) == 2 && gObj(gc[gi+3])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gi+4]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
+                }
+                // MOVSD [obj+disp32]
+                if (gc[gi] == 0xF2 && gi+8 < 96 && gc[gi+1] == 0x0F && gc[gi+2] == 0x10 &&
+                    gMod(gc[gi+3]) == 2 && gObj(gc[gi+3])) {
+                    int32_t off = *reinterpret_cast<int32_t*>(&gc[gi+4]);
+                    if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
+                }
+            }
+        }
+    }
+
+    // --- Strategy B: scan for direct mov/lea on rdx (MSVC inline offset) ---
+    // Only match rdx (r/m=2) as base register — MSVC keeps Object* in rdx.
+    auto modOf = [](uint8_t m) -> uint8_t { return (m >> 6) & 3; };
+    auto rmOf  = [](uint8_t m) -> uint8_t { return m & 7; };
+    auto isRdx = [&](uint8_t modrm) -> bool { return rmOf(modrm) == 2; }; // rdx only
+
     for (int i = 0; i < 56; i++) {
-        // MOVSXD: 48 63 ModRM disp32 → sign-extend int32 to int64 (4-byte member)
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x63 &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        bool rexW = false;
+        int pi = i;
+        if (code[i] >= 0x40 && code[i] <= 0x4F) {
+            rexW = (code[i] & 0x08) != 0;
+            pi = i + 1;
+        }
+        if (pi + 1 >= 64) continue;
+        uint8_t op = code[pi];
+
+        // MOVSXD: 63 ModRM disp32 (sign-extend int32)
+        if (rexW && op == 0x63 && pi + 6 <= 64 && modOf(code[pi+1]) == 2 && isRdx(code[pi+1])) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // REX.W + MOV reg, [base + disp32]: 48 8B ModRM → 8-byte read
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        // MOV reg, [rdx + disp32]: 8B ModRM disp32
+        if (op == 0x8B && pi + 5 <= 64 && modOf(code[pi+1]) == 2 && isRdx(code[pi+1])) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
+            if (isFieldOffset(off)) { result.offset = off; result.size = rexW ? 8 : 4; return result; }
+        }
+        // MOV reg, [rdx + disp8]: 8B ModRM disp8
+        if (op == 0x8B && pi + 2 <= 64 && modOf(code[pi+1]) == 1 && isRdx(code[pi+1])) {
+            int8_t off = static_cast<int8_t>(code[pi+2]);
+            if (off >= 0x10) { result.offset = off; result.size = rexW ? 8 : 4; return result; }
+        }
+        // LEA reg, [rdx + disp32]: 8D ModRM disp32
+        if (rexW && op == 0x8D && pi + 5 <= 64 && modOf(code[pi+1]) == 2 && isRdx(code[pi+1])) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOV r32, [base + disp32]: 8B ModRM → 4-byte read
-        if (i + 6 <= 64 && code[i] == 0x8B &&
-            isModDisp32(code[i+1]) && isValidRM(code[i+1])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+2]);
-            if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
-        }
-        // REX.W + MOV reg, [base + disp8]: 48 8B ModRM byte → 8-byte read
-        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
-            int8_t off = static_cast<int8_t>(code[i+3]);
-            if (off >= 0x10) { result.offset = off; result.size = 8; return result; }
-        }
-        // MOV r32, [base + disp8]: 8B ModRM byte → 4-byte read
-        if (i + 3 <= 64 && code[i] == 0x8B &&
-            isModDisp8(code[i+1]) && isValidRM(code[i+1])) {
-            int8_t off = static_cast<int8_t>(code[i+2]);
-            if (off >= 0x10) { result.offset = off; result.size = 4; return result; }
-        }
-        // MOVSS xmm, [base + disp32]: F3 0F 10 ModRM → 4-byte float
-        if (i + 8 <= 64 && code[i] == 0xF3 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
+        // MOVSS xmm, [rdx + disp32]: F3 0F 10 ModRM disp32
+        if (!rexW && code[i] == 0xF3 && i + 8 <= 64 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            modOf(code[i+3]) == 2 && isRdx(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // MOVSD xmm, [base + disp32]: F2 0F 10 ModRM → 8-byte double
-        if (i + 8 <= 64 && code[i] == 0xF2 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
+        // MOVSD xmm, [rdx + disp32]: F2 0F 10 ModRM disp32
+        if (!rexW && code[i] == 0xF2 && i + 8 <= 64 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            modOf(code[i+3]) == 2 && isRdx(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOVZX r32, byte [base + disp32]: 0F B6 ModRM → 1-byte (bool)
-        if (i + 7 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        // MOVZX r32, byte [rdx + disp32]: 0F B6 ModRM disp32
+        if (op == 0x0F && pi + 6 <= 64 && code[pi+1] == 0xB6 &&
+            modOf(code[pi+2]) == 2 && isRdx(code[pi+2])) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+3]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
         }
-        // MOVZX r32, byte [base + disp8]: 0F B6 ModRM byte → 1-byte
-        if (i + 4 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
-            int8_t off = static_cast<int8_t>(code[i+3]);
+        // MOVZX r32, byte [rdx + disp8]: 0F B6 ModRM disp8
+        if (op == 0x0F && pi + 3 <= 64 && code[pi+1] == 0xB6 &&
+            modOf(code[pi+2]) == 1 && isRdx(code[pi+2])) {
+            int8_t off = static_cast<int8_t>(code[pi+3]);
             if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
-        }
-        // REX.W + LEA reg, [base + disp32]: 48 8D ModRM → address calc (ptr)
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8D &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
     }
 
