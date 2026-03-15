@@ -9,6 +9,7 @@
 #include "Serie.h"
 #include "Flamme.h"
 #include "Fern.h"
+#include "Heiter.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
 #include "BuildInfo.h"
@@ -136,6 +137,14 @@ int Zolt_AutoStart() {
     // Start Fern pipe server for UI communication
     Zolt::Fern::Start();
 
+    // Initialize Heiter game thread dispatcher (WH_GETMESSAGE hook)
+    {
+        extern HMODULE Zolt_GetDllModule();
+        bool hookReady = Zolt::Heiter::Init(Zolt_GetDllModule());
+        Zolt::Solitaer::Info("INIT", "Heiter: %s",
+            hookReady ? "hook installed" : "deferred (no window yet)");
+    }
+
     // If SceneTree BSS address was found but singleton is NULL,
     // spawn a background thread to periodically retry resolution.
     if (s_sceneTreeAddr && !Zolt::Serie::GetRoot()) {
@@ -164,6 +173,7 @@ int Zolt_AutoStart() {
         Zolt::DynOff::PROPINFO_HINT_OFFSET,
         Zolt::DynOff::PROPINFO_USAGE_OFFSET,
         Zolt::DynOff::PROPINFO_TOTAL_SIZE);
+    Zolt::Solitaer::Summary("  Heiter:    %s", Zolt::Heiter::IsReady() ? "hook active" : "deferred");
     Zolt::Solitaer::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
     Zolt::Solitaer::Summary("==========================================================");
 
@@ -172,6 +182,7 @@ int Zolt_AutoStart() {
 
 void Zolt_Shutdown() {
     Zolt::Solitaer::LogInit("Zolt_Shutdown called");
+    Zolt::Heiter::Shutdown();   // Before Fern — unblock any sync waiters first
     Zolt::Fern::Stop();
     Zolt::Solitaer::Shutdown();
     s_initialized = false;
