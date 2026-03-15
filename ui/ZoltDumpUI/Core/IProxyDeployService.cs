@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 
 namespace ZoltDumpUI.Core;
 
@@ -19,7 +21,7 @@ public interface IProxyDeployService
 
 /// <summary>Deployment info for a single Godot game.</summary>
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
-public sealed class GameDeployInfo
+public sealed class GameDeployInfo : INotifyPropertyChanged
 {
     public string GameName { get; set; } = "";
     public string GamePath { get; set; } = "";
@@ -27,7 +29,17 @@ public sealed class GameDeployInfo
     public DeployStatus Status { get; set; }
     public string DeployedVersion { get; set; } = "";
     public string Error { get; set; } = "";
-    public bool IsSelected { get; set; }
+
+    private bool _isSelected;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(); } }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 public enum DeployStatus

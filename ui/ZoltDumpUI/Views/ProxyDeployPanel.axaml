@@ -39,7 +39,14 @@
                   Foreground="#D4D4D4"
                   FontSize="12">
             <DataGrid.Columns>
-                <DataGridCheckBoxColumn Header="" Binding="{Binding IsSelected}" Width="40" />
+                <DataGridTemplateColumn Header="" Width="40">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding IsSelected}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Game" Binding="{Binding GameName}" Width="200" IsReadOnly="True" />
                 <DataGridTextColumn Header="Path" Binding="{Binding GamePath}" Width="300" IsReadOnly="True" />
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120" IsReadOnly="True" />

@@ -25,7 +25,7 @@ public partial class ProxyDeployViewModel : ViewModelBase
         _deploy = deploy;
         _log = log;
 
-        var dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Grimoire.ProxyDllFileName);
+        var dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Grimoire.ProxyDllSubdir, Grimoire.ProxyDllFileName);
         SourceVersion = _deploy.GetDllVersion(dllPath) ?? "N/A";
     }
 

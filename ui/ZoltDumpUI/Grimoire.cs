@@ -78,6 +78,9 @@ public static class Grimoire
     /// <summary>Proxy DLL filename (winmm.dll — primary proxy target)</summary>
     public const string ProxyDllFileName = "winmm.dll";
 
+    /// <summary>Subdirectory containing proxy DLL relative to app base</summary>
+    public const string ProxyDllSubdir = "proxy";
+
     /// <summary>Legacy proxy DLL filename (version.dll — cleaned up on deploy)</summary>
     public const string LegacyProxyDllFileName = "version.dll";
 
