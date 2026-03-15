@@ -674,91 +674,104 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     Zoltraak::ReadSafe(ptrcallAddr, code, sizeof(code));
 
     // Scan for common x86-64 memory access patterns.
-    // The compiler (MSVC or GCC) may use any base register — ptrcall receives Object*
-    // in rdx (Win x64 ABI) but GCC may move it to another register (rbx, rdi, etc.)
+    // Win x64 ABI: ptrcall(MethodBind* this=rcx, Object* p_obj=rdx, args=r8, ret=r9)
+    // Object* arrives in rdx (r/m = 2). GCC may move it to another register first:
+    //   48 89 D3 = mov rbx, rdx    (r/m for rbx = 3)
+    //   48 89 D7 = mov rdi, rdx    (r/m for rdi = 7)
+    //   49 89 D6 = mov r14, rdx    (REX.WB, r/m for r14 = 6+8)
     //
-    // ModRM byte: [mod(2)|reg(3)|r/m(3)]
-    //   mod=10 → [r/m + disp32], mod=01 → [r/m + disp8], mod=11 → register
-    //   r/m=100 → SIB follows (skip), r/m=other → base register
-    //
-    // We accept ANY base register (r/m != 100) to handle GCC's register allocation.
-    // Filter by offset range (0x40-0xFFFF) to avoid false positives from stack accesses.
+    // Strategy: first scan preamble for "mov REG, rdx", track the target register,
+    // then only accept rdx or that register as base for memory accesses.
 
-    auto isValidRM = [](uint8_t modrm) -> bool {
-        uint8_t rm = modrm & 0x07;
-        return rm != 0x04; // Skip SIB-encoded
-    };
-    auto isModDisp32 = [](uint8_t modrm) -> bool {
-        return (modrm & 0xC0) == 0x80; // mod=10
-    };
-    auto isModDisp8 = [](uint8_t modrm) -> bool {
-        return (modrm & 0xC0) == 0x40; // mod=01
-    };
-    // Reasonable object member offset: skip [reg+0] through small stack offsets
+    // ModRM helpers
+    auto modOf   = [](uint8_t m) -> uint8_t { return (m >> 6) & 3; };
+    auto rmOf    = [](uint8_t m) -> uint8_t { return m & 7; };
+    // Reasonable object member offset: above Object header, below 64K
     auto isFieldOffset = [](int32_t off) -> bool {
         return off >= 0x10 && off < 0x10000;
     };
 
+    // Step 1: Find which register Object* (rdx) was moved to in the preamble
+    // Scan first 20 bytes for: REX? 89 D? (mov reg, rdx) or REX? 8B ?2 (mov reg, rdx)
+    uint8_t objReg = 2; // default: rdx (r/m=2)
+    for (int i = 0; i < 16 && i + 3 <= 64; i++) {
+        // 48 89 Dx = MOV r64, rdx (ModRM: mod=11 reg=010 r/m=x → 0xD0|x)
+        if (code[i] == 0x48 && code[i+1] == 0x89 && (code[i+2] & 0xF8) == 0xD0) {
+            objReg = code[i+2] & 0x07;
+            break;
+        }
+        // 49 89 Dx = MOV r64(ext), rdx (REX.WB → r/m is R8-R15)
+        if (code[i] == 0x49 && code[i+1] == 0x89 && (code[i+2] & 0xF8) == 0xD0) {
+            objReg = (code[i+2] & 0x07) | 0x08; // mark extended
+            break;
+        }
+    }
+
+    // Step 2: Match memory access patterns using only the Object register
+    auto isObjReg = [&](uint8_t modrm, bool hasREXB = false) -> bool {
+        uint8_t rm = rmOf(modrm);
+        if (rm == 4) return false; // SIB-encoded, skip
+        uint8_t fullRM = hasREXB ? (rm | 0x08) : rm;
+        return fullRM == objReg;
+    };
+
     for (int i = 0; i < 56; i++) {
-        // MOVSXD: 48 63 ModRM disp32 → sign-extend int32 to int64 (4-byte member)
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x63 &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        bool rexW = false, rexB = false;
+        int pi = i; // pattern start
+
+        // Check for REX prefix (0x40-0x4F)
+        if (code[i] >= 0x40 && code[i] <= 0x4F) {
+            rexW = (code[i] & 0x08) != 0;
+            rexB = (code[i] & 0x01) != 0;
+            pi = i + 1;
+        }
+
+        if (pi + 1 >= 64) continue;
+        uint8_t op = code[pi];
+
+        // MOVSXD: 63 ModRM disp → sign-extend int32 (requires REX.W)
+        if (rexW && op == 0x63 && pi + 6 <= 64 && modOf(code[pi+1]) == 2 && isObjReg(code[pi+1], rexB)) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // REX.W + MOV reg, [base + disp32]: 48 8B ModRM → 8-byte read
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        // MOV reg, [base + disp32]: 8B ModRM disp32
+        if (op == 0x8B && pi + 5 <= 64 && modOf(code[pi+1]) == 2 && isObjReg(code[pi+1], rexB)) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
+            if (isFieldOffset(off)) { result.offset = off; result.size = rexW ? 8 : 4; return result; }
+        }
+        // MOV reg, [base + disp8]: 8B ModRM disp8
+        if (op == 0x8B && pi + 2 <= 64 && modOf(code[pi+1]) == 1 && isObjReg(code[pi+1], rexB)) {
+            int8_t off = static_cast<int8_t>(code[pi+2]);
+            if (off >= 0x10) { result.offset = off; result.size = rexW ? 8 : 4; return result; }
+        }
+        // LEA reg, [base + disp32]: 8D ModRM disp32 (address calc for ptr/struct)
+        if (rexW && op == 0x8D && pi + 5 <= 64 && modOf(code[pi+1]) == 2 && isObjReg(code[pi+1], rexB)) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+2]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOV r32, [base + disp32]: 8B ModRM → 4-byte read
-        if (i + 6 <= 64 && code[i] == 0x8B &&
-            isModDisp32(code[i+1]) && isValidRM(code[i+1])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+2]);
-            if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
-        }
-        // REX.W + MOV reg, [base + disp8]: 48 8B ModRM byte → 8-byte read
-        if (i + 4 <= 64 && code[i] == 0x48 && code[i+1] == 0x8B &&
-            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
-            int8_t off = static_cast<int8_t>(code[i+3]);
-            if (off >= 0x10) { result.offset = off; result.size = 8; return result; }
-        }
-        // MOV r32, [base + disp8]: 8B ModRM byte → 4-byte read
-        if (i + 3 <= 64 && code[i] == 0x8B &&
-            isModDisp8(code[i+1]) && isValidRM(code[i+1])) {
-            int8_t off = static_cast<int8_t>(code[i+2]);
-            if (off >= 0x10) { result.offset = off; result.size = 4; return result; }
-        }
-        // MOVSS xmm, [base + disp32]: F3 0F 10 ModRM → 4-byte float
-        if (i + 8 <= 64 && code[i] == 0xF3 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
+        // MOVSS xmm, [base + disp32]: F3 0F 10 ModRM disp32
+        if (!rexW && code[i] == 0xF3 && i + 8 <= 64 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            modOf(code[i+3]) == 2 && isObjReg(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 4; return result; }
         }
-        // MOVSD xmm, [base + disp32]: F2 0F 10 ModRM → 8-byte double
-        if (i + 8 <= 64 && code[i] == 0xF2 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
-            isModDisp32(code[i+3]) && isValidRM(code[i+3])) {
+        // MOVSD xmm, [base + disp32]: F2 0F 10 ModRM disp32
+        if (!rexW && code[i] == 0xF2 && i + 8 <= 64 && code[i+1] == 0x0F && code[i+2] == 0x10 &&
+            modOf(code[i+3]) == 2 && isObjReg(code[i+3])) {
             int32_t off = *reinterpret_cast<int32_t*>(&code[i+4]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
-        // MOVZX r32, byte [base + disp32]: 0F B6 ModRM → 1-byte (bool)
-        if (i + 7 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
+        // MOVZX r32, byte [base + disp32]: 0F B6 ModRM disp32
+        if (op == 0x0F && pi + 6 <= 64 && code[pi+1] == 0xB6 &&
+            modOf(code[pi+2]) == 2 && isObjReg(code[pi+2], rexB)) {
+            int32_t off = *reinterpret_cast<int32_t*>(&code[pi+3]);
             if (isFieldOffset(off)) { result.offset = off; result.size = 1; return result; }
         }
-        // MOVZX r32, byte [base + disp8]: 0F B6 ModRM byte → 1-byte
-        if (i + 4 <= 64 && code[i] == 0x0F && code[i+1] == 0xB6 &&
-            isModDisp8(code[i+2]) && isValidRM(code[i+2])) {
-            int8_t off = static_cast<int8_t>(code[i+3]);
+        // MOVZX r32, byte [base + disp8]: 0F B6 ModRM disp8
+        if (op == 0x0F && pi + 3 <= 64 && code[pi+1] == 0xB6 &&
+            modOf(code[pi+2]) == 1 && isObjReg(code[pi+2], rexB)) {
+            int8_t off = static_cast<int8_t>(code[pi+3]);
             if (off >= 0x10) { result.offset = off; result.size = 1; return result; }
-        }
-        // REX.W + LEA reg, [base + disp32]: 48 8D ModRM → address calc (ptr)
-        if (i + 7 <= 64 && code[i] == 0x48 && code[i+1] == 0x8D &&
-            isModDisp32(code[i+2]) && isValidRM(code[i+2])) {
-            int32_t off = *reinterpret_cast<int32_t*>(&code[i+3]);
-            if (isFieldOffset(off)) { result.offset = off; result.size = 8; return result; }
         }
     }
 
