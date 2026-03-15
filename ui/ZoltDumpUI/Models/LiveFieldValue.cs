@@ -13,6 +13,8 @@ public sealed class LiveFieldValue
     public string Address { get; init; } = "";
     public int Offset { get; init; }
     public int Size { get; init; }
+    public int BitShift { get; init; }
+    public int BitMask { get; init; }
 
     // Navigation hints
     public string PtrValue { get; init; } = "";
