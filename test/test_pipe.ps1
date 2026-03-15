@@ -37,14 +37,14 @@ $editors = @(
 )
 
 $games = @(
-    @{ Name="Brotato (3.7dev)";          Exe="D:\SteamLibrary\steamapps\common\Brotato\Brotato.exe";                         Args=$null; LogDir="Brotato";                   ProxyDir="D:\SteamLibrary\steamapps\common\Brotato" },
-    @{ Name="20 Small Mazes (3.5.3)";    Exe="D:\SteamLibrary\steamapps\common\20 Small Mazes\20SM.exe";                     Args=$null; LogDir="20SM";                      ProxyDir="D:\SteamLibrary\steamapps\common\20 Small Mazes" },
-    @{ Name="Magic Archery (4.2.2)";     Exe="D:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";             Args=$null; LogDir="Magic Archery";             ProxyDir="D:\SteamLibrary\steamapps\common\Magic Archery" },
-    @{ Name="One Potion Please (4.3)";   Exe="D:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="D:\SteamLibrary\steamapps\common\One Potion Please" },
-    @{ Name="Virtual Cottage";           Exe="D:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="D:\SteamLibrary\steamapps\common\Virtual Cottage" },
-    @{ Name="Upload Labs";               Exe="D:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="D:\SteamLibrary\steamapps\common\Upload Labs" },
-    @{ Name="Holo X Break";              Exe="D:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="D:\SteamLibrary\steamapps\common\Holo X Break" },
-    @{ Name="Dome Keeper";               Exe="D:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="D:\SteamLibrary\steamapps\common\Dome Keeper" }
+    @{ Name="Brotato (3.7dev)";          Exe="H:\SteamLibrary\steamapps\common\Brotato\Brotato.exe";                         Args=$null; LogDir="Brotato";                   ProxyDir="H:\SteamLibrary\steamapps\common\Brotato" },
+    @{ Name="20 Small Mazes (3.5.3)";    Exe="H:\SteamLibrary\steamapps\common\20 Small Mazes\20SM.exe";                     Args=$null; LogDir="20SM";                      ProxyDir="H:\SteamLibrary\steamapps\common\20 Small Mazes" },
+    @{ Name="Magic Archery (4.2.2)";     Exe="H:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";             Args=$null; LogDir="Magic Archery";             ProxyDir="H:\SteamLibrary\steamapps\common\Magic Archery" },
+    @{ Name="One Potion Please (4.3)";   Exe="H:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="H:\SteamLibrary\steamapps\common\One Potion Please" },
+    @{ Name="Virtual Cottage";           Exe="H:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="H:\SteamLibrary\steamapps\common\Virtual Cottage" },
+    @{ Name="Upload Labs";               Exe="H:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="H:\SteamLibrary\steamapps\common\Upload Labs" },
+    @{ Name="Holo X Break";              Exe="H:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="H:\SteamLibrary\steamapps\common\Holo X Break" },
+    @{ Name="Dome Keeper";               Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" }
 )
 
 $targets = @()

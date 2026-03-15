@@ -33,6 +33,9 @@ namespace Zolt::Macht {
 static HMODULE g_hModule = nullptr;
 static volatile LONG g_autoStartOnce = 0;  // InterlockedExchange guard
 
+// Accessor for DLL module handle (used by Heiter for SetWindowsHookEx)
+extern "C" HMODULE Zolt_GetDllModule() { return g_hModule; }
+
 static DWORD WINAPI AutoStartThreadProc(LPVOID /*param*/) {
     // Prevent double invocation (e.g. if DllMain is called twice)
     if (InterlockedCompareExchange(&g_autoStartOnce, 1, 0) != 0) {

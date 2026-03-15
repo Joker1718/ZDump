@@ -161,4 +161,15 @@ namespace GodotVer {
     }
 }
 
+// ============================================================
+// Heiter — 海塔 (Priest — GameThread Dispatch) constants
+// ============================================================
+namespace Heiter {
+    constexpr unsigned long      SYNC_TIMEOUT_MS   = 5000;    // Default sync dispatch timeout
+    constexpr unsigned long long DRAIN_BUDGET_MS   = 2;       // Max ms to drain work queue per frame
+    constexpr int                RETRY_ATTEMPTS    = 60;      // Window discovery retries (60 × 500ms = 30s)
+    constexpr unsigned long      RETRY_INTERVAL_MS = 500;     // ms between window discovery retries
+    constexpr size_t             MAX_QUEUE_SIZE    = 256;     // Max queued work items (overflow protection)
+}
+
 } // namespace Zolt
