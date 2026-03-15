@@ -147,26 +147,9 @@ static std::string SafeStr(const std::string& s) {
     return out;
 }
 
-// Read object name (StringName) by probing node name offsets
+// Read object name — delegates to Serie::GetNodeName (unified probe logic)
 static std::string ReadObjectName(uint64_t objAddr) {
-    if (!objAddr) return "";
-
-    if (DynOff::NODE_NAME >= 0) {
-        std::string name = Flamme::Resolve(objAddr + DynOff::NODE_NAME);
-        if (!name.empty()) return name;
-    }
-
-    for (int off = 0x80; off <= 0x300; off += 8) {
-        uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(objAddr + off, 0);
-        if (!candidate || candidate < 0x10000) continue;
-        if (!Zoltraak::IsReadable(candidate)) continue;
-        std::string name = Flamme::ResolveAt(candidate);
-        if (!name.empty() && name.size() >= 1 && name.size() <= 64) {
-            return name;
-        }
-    }
-
-    return "";
+    return Serie::GetNodeName(objAddr);
 }
 
 // Godot Variant::Type enum to string name mapping

@@ -59,7 +59,8 @@ static bool IsValidObject(uint64_t addr) {
 // Node inherits Object (which has ~0x50-0x100 bytes of base fields depending on version),
 // then Node::Data starts at some offset.
 // Within Data, the 'name' StringName is after parent, owner, children HashMap.
-static std::string ProbeNodeName(uint64_t nodeAddr) {
+// Internal probe with option to cache offset (only safe for confirmed Nodes)
+static std::string ProbeNodeNameInternal(uint64_t nodeAddr, bool allowCache) {
     if (!nodeAddr) return "";
 
     // Quick check for known NODE_NAME offset
@@ -68,16 +69,27 @@ static std::string ProbeNodeName(uint64_t nodeAddr) {
         if (!name.empty()) return name;
     }
 
-    // Probe: scan for StringName fields that resolve to plausible names.
-    // A StringName is 8 bytes containing a _Data* pointer.
+    // Probe: scan for StringName fields that resolve to plausible node names.
     for (int off = 0x80; off <= 0x500; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(nodeAddr + off, 0);
         if (!candidate || candidate < 0x10000) continue;
         if (!Zoltraak::IsReadable(candidate)) continue;
 
-        // Check if it's a _Data* by trying to resolve it
         std::string name = Flamme::ResolveAt(candidate);
-        if (!name.empty() && name.size() >= 1 && name.size() <= 64) {
+        if (name.empty() || name.size() > 64) continue;
+
+        // Node names: "root", "Camera3D", "@Label@123", "Player", "_internal"
+        // Start with letter, '@', or '_'. Reject unlikely patterns.
+        char first = name[0];
+        bool plausibleNodeName = (first >= 'A' && first <= 'Z') ||
+                                 (first >= 'a' && first <= 'z') ||
+                                 first == '@' || first == '_';
+        if (plausibleNodeName) {
+            // Only cache when we know this is a confirmed Node object
+            if (allowCache && DynOff::NODE_NAME < 0) {
+                DynOff::NODE_NAME = off;
+                Solitaer::Info("STREE", "Probed NODE_NAME at +0x%X = '%s'", off, name.c_str());
+            }
             return name;
         }
     }
@@ -85,10 +97,26 @@ static std::string ProbeNodeName(uint64_t nodeAddr) {
     return "";
 }
 
+// Probe for a node name — used by ProbeRootNode (confirmed Node-derived objects)
+static std::string ProbeNodeName(uint64_t nodeAddr) {
+    return ProbeNodeNameInternal(nodeAddr, true);
+}
+
+// Probe for any object's name — used by Fern for generic objects (no offset caching)
+static std::string ProbeObjectName(uint64_t objAddr) {
+    return ProbeNodeNameInternal(objAddr, false);
+}
+
 // Probe for the root Window node within SceneTree
 // SceneTree inherits Object → MainLoop → SceneTree, so the root pointer
 // can be at a large offset (0x100-0xC00+) depending on version.
 // Godot 4.3+ has ProcessGroup, PagedAllocator, CallQueue, etc. before root.
+//
+// Scoring strategy:
+//   1. Object with name=="root" AND Node-derived class → immediate accept
+//   2. Node-derived Object with class Window/Viewport → strong candidate
+//   3. Node-derived Object (any class) → weak candidate
+//   4. Non-Node objects (NativeMenu, MethodBind, Signal, etc.) → rejected
 static uint64_t ProbeRootNode(uint64_t sceneTree) {
     if (!sceneTree) return 0;
     EnsureModuleInfo();
@@ -104,70 +132,100 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
     Solitaer::Debug("STREE", "Probing for root node in SceneTree at %p (range 0x40-0x%X)",
         reinterpret_cast<void*>(sceneTree), Grimoire::STREE_PROBE_MAX);
 
-    // Diagnostic hexdump: dump key memory regions of SceneTree
+    // Diagnostic hexdump
     Solitaer::Info("STREE", "SceneTree hexdump (first 0x80 bytes at %p):",
         reinterpret_cast<void*>(sceneTree));
     Solitaer::HexDump("STREE", sceneTree, 0x80);
-    Solitaer::Info("STREE", "SceneTree hexdump (0x700-0x900, likely root area):");
-    Solitaer::HexDump("STREE", sceneTree + 0x700, 0x200);
 
     // Collect all Object pointers found
-    struct ObjCandidate { int offset; uint64_t addr; std::string name; };
+    struct ObjCandidate {
+        int offset;
+        uint64_t addr;
+        std::string name;
+        std::string className;
+        bool isNode;
+        int score;  // higher = better candidate
+    };
     std::vector<ObjCandidate> candidates;
 
-    // Extended range: SceneTree has large fields before root (ProcessGroup, CallQueue, etc.)
     for (int off = 0x40; off <= Grimoire::STREE_PROBE_MAX; off += 8) {
         uint64_t candidate = Zoltraak::ReadSafe<uint64_t>(sceneTree + off, 0);
         if (!IsValidObject(candidate)) continue;
-
-        // Avoid self-references (SceneTree pointing to itself)
         if (candidate == sceneTree) continue;
 
+        std::string cls = Diagoldze::GetObjectClass(candidate);
+        bool isNode = Diagoldze::IsNodeDerived(cls);
+        bool classUnknown = cls.empty();
+        bool isKnownNonNode = !classUnknown && !isNode;
+
+        // Skip objects with a known non-Node class (NativeMenu, MethodBind, etc.)
+        if (isKnownNonNode) {
+            if (candidates.size() < 25) {
+                candidates.push_back({ off, candidate, "", cls, false, 0 });
+            }
+            continue;
+        }
+
+        // Probe name for Node-derived or unknown-class objects
         std::string name = ProbeNodeName(candidate);
 
-        if (name == "root") {
+        // Score: name="root" + Node → 100, Window/Viewport → 50,
+        //        any confirmed Node → 10, unknown class → 5
+        int score = classUnknown ? 5 : 10;
+        if (isNode) {
+            if (cls == "Window" || cls == "Viewport" || cls == "SubViewport")
+                score = 50;
+        }
+        if (name == "root")
+            score = 100;
+
+        // Immediate accept: name="root"
+        if (score == 100) {
             DynOff::STREE_ROOT_OFFSET = off;
-            Solitaer::Info("STREE", "Found root node at SceneTree+0x%X = %p (name='root')",
-                off, reinterpret_cast<void*>(candidate));
+            Solitaer::Info("STREE", "Found root node at SceneTree+0x%X = %p (name='root', class='%s')",
+                off, reinterpret_cast<void*>(candidate), cls.c_str());
             return candidate;
         }
 
         if (candidates.size() < 25) {
-            candidates.push_back({ off, candidate, name });
+            candidates.push_back({ off, candidate, name, cls, isNode, score });
         }
     }
 
-    // Log all Object candidates found for debugging
+    // Log all candidates for debugging
     if (!candidates.empty()) {
-        Solitaer::Info("STREE", "No 'root' name found. %d Object candidates in SceneTree:",
+        Solitaer::Info("STREE", "No 'root'-named Node found. %d Object candidates in SceneTree:",
             static_cast<int>(candidates.size()));
         for (auto& c : candidates) {
-            std::string cls = Diagoldze::GetObjectClass(c.addr);
-            Solitaer::Info("STREE", "  +0x%04X: %p name='%s' class='%s'",
-                c.offset, reinterpret_cast<void*>(c.addr), c.name.c_str(), cls.c_str());
+            Solitaer::Info("STREE", "  +0x%04X: %p name='%s' class='%s' isNode=%s score=%d",
+                c.offset, reinterpret_cast<void*>(c.addr),
+                c.name.c_str(), c.className.c_str(),
+                c.isNode ? "yes" : "no", c.score);
         }
-
-        // Fallback: use the first candidate that has a Window-like class
-        for (auto& c : candidates) {
-            std::string cls = Diagoldze::GetObjectClass(c.addr);
-            if (cls == "Window" || cls == "Viewport" || cls == "SubViewport") {
-                DynOff::STREE_ROOT_OFFSET = c.offset;
-                Solitaer::Info("STREE", "Using %s at SceneTree+0x%X = %p as root (class match)",
-                    cls.c_str(), c.offset, reinterpret_cast<void*>(c.addr));
-                return c.addr;
-            }
-        }
-
-        // Last resort: first Object pointer
-        DynOff::STREE_ROOT_OFFSET = candidates[0].offset;
-        Solitaer::Warn("STREE", "Using first Object at SceneTree+0x%X = %p as root (name='%s', unconfirmed)",
-            candidates[0].offset, reinterpret_cast<void*>(candidates[0].addr),
-            candidates[0].name.c_str());
-        return candidates[0].addr;
     }
 
-    Solitaer::Warn("STREE", "Could not find any Object pointers in SceneTree (probed 0x40-0x%X)",
-        Grimoire::STREE_PROBE_MAX);
+    // Select best candidate by score (highest wins, first among ties)
+    ObjCandidate* best = nullptr;
+    for (auto& c : candidates) {
+        if (c.score > 0 && (!best || c.score > best->score)) {
+            best = &c;
+        }
+    }
+
+    if (best) {
+        DynOff::STREE_ROOT_OFFSET = best->offset;
+        Solitaer::Info("STREE", "Selected root at SceneTree+0x%X = %p (name='%s', class='%s', score=%d)",
+            best->offset, reinterpret_cast<void*>(best->addr),
+            best->name.c_str(), best->className.c_str(), best->score);
+        return best->addr;
+    }
+
+    int skippedNonNode = 0;
+    for (auto& c : candidates) {
+        if (c.score == 0) skippedNonNode++;
+    }
+    Solitaer::Warn("STREE", "Could not find any Node-like Object in SceneTree (probed 0x40-0x%X, %d non-Node objects skipped)",
+        Grimoire::STREE_PROBE_MAX, skippedNonNode);
     return 0;
 }
 
@@ -302,6 +360,14 @@ uint64_t GetRoot() {
         s_rootNode = ProbeRootNode(s_sceneTree);
     }
     return s_rootNode;
+}
+
+std::string GetNodeName(uint64_t nodeAddr) {
+    // Use the non-caching variant — callers may pass non-Node objects
+    // (e.g. Fern's ReadObjectName for get_object_list).
+    // NODE_NAME offset is only cached from confirmed Node-derived objects
+    // during ProbeRootNode/ReadChildrenHashMap.
+    return ProbeObjectName(nodeAddr);
 }
 
 std::vector<NodeInfo> GetChildren(uint64_t nodeAddr) {

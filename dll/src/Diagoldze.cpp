@@ -1524,6 +1524,21 @@ std::string GetObjectClass(uint64_t objectAddr) {
     return className;
 }
 
+bool IsNodeDerived(const std::string& className) {
+    if (className.empty()) return false;
+    // Walk the parent chain up to 30 levels (guard against cycles)
+    std::string current = className;
+    for (int depth = 0; depth < 30; ++depth) {
+        if (current == "Node" || current == "Window" || current == "Viewport")
+            return true;
+        auto it = s_classMap.find(current);
+        if (it == s_classMap.end() || it->second.parentName.empty())
+            return false;
+        current = it->second.parentName;
+    }
+    return false;
+}
+
 void LogDiagnostics() {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return; // One-shot
