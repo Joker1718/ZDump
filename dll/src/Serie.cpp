@@ -242,7 +242,9 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
         }
     }
 
-    if (best) {
+    if (best && best->score >= 10) {
+        // Only accept if at least a confirmed Node class (score >= 10).
+        // Score 5 = unknown class Object pointer — too unreliable, fall through to ObjectDB.
         DynOff::STREE_ROOT_OFFSET = best->offset;
         Solitaer::Info("STREE", "Selected root at SceneTree+0x%X = %p (name='%s', class='%s', score=%d)",
             best->offset, reinterpret_cast<void*>(best->addr),
