@@ -1156,16 +1156,33 @@ static void ReadGDScriptMembers(uint64_t objAddr,
     // Try to get member names from GDScript object
     auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
 
-    Solitaer::Debug("WALK", "GDScript members: %u variables, %d names resolved",
-        count, static_cast<int>(nameMap.size()));
+    Solitaer::Info("WALK", "GDScript members: %u variables, %d names resolved (membersPtr=%p)",
+        count, static_cast<int>(nameMap.size()),
+        reinterpret_cast<void*>(membersPtr));
+    for (auto& kv : nameMap) {
+        Solitaer::Debug("WALK", "  member[%d] = '%s'", kv.first, kv.second.c_str());
+    }
 
     int variantStride = DynOff::VARIANT_STRIDE;
     for (uint32_t i = 0; i < count; i++) {
         uint64_t varAddr = membersPtr + i * variantStride;
         VariantValue val = ReadVariant(varAddr);
 
-        // Skip NIL/null entries
-        if (val.type == 0 && val.value.empty()) continue;
+        // Always emit — never skip. Even NIL entries matter for address mapping,
+        // and some apparently-NIL entries may contain valid data that ReadVariant
+        // doesn't fully decode (e.g. complex containers).
+
+        // Diagnostic: hexdump Variants that read as NIL but have non-zero data
+        if (val.type == 0) {
+            uint64_t d0 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x08, 0);
+            uint64_t d1 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x10, 0);
+            uint64_t d2 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x18, 0);
+            if (d0 || d1 || d2) {
+                Solitaer::Info("WALK", "  member[%u] type=NIL but data non-zero: "
+                    "+0x08=%016llX +0x10=%016llX +0x18=%016llX (at %p)",
+                    i, d0, d1, d2, reinterpret_cast<void*>(varAddr));
+            }
+        }
 
         FieldEntry entry;
         auto nameIt = nameMap.find(static_cast<int>(i));
