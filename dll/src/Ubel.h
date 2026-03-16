@@ -51,4 +51,16 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName);
 // Ubel — 優貝爾 (Assassin Specialist) — Early script probe for GDScript member access
 void ProbeScriptInstanceEarly();
 
+// Result for ScriptInstance member address lookup
+struct ScriptMemberMatch {
+    uint64_t objectAddr   = 0;    // Owning Object address
+    int      memberIndex  = -1;   // Index within members Vector
+    int      variantOffset = 0;   // Byte offset within the Variant (addr - variantStart)
+};
+
+// Search ObjectDB for an Object whose ScriptInstance members Vector contains 'addr'.
+// Used when a user has a GDScript variable address (e.g. Money from CE) and wants
+// to find the owning Object. Returns empty match if not found.
+ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr);
+
 } // namespace Zolt::Ubel

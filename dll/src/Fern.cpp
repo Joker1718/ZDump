@@ -438,35 +438,62 @@ static json HandleFindObject(int id, const json& req) {
 }
 
 // cmd: find_by_address
-// Supports exact match and range-based lookup (finds the Object containing the address).
-// When the address is inside an Object (not at its start), returns the Object's address
-// plus the member_offset displacement.
+// Three-phase lookup:
+//   1. Exact Object address match in ObjectDB
+//   2. Range search: find Object whose body contains the address
+//   3. ScriptInstance search: find Object whose GDScript members Vector contains the address
+// When a match is found inside an Object/member, returns the Object's address
+// plus member_offset displacement and match_type indicator.
 static json HandleFindByAddress(int id, const json& req) {
     std::string addrStr = GetAddrField(req);
     if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
 
-    // Try range-based lookup (includes exact match as fast path)
+    // Phase 1+2: Range-based lookup (includes exact match as fast path)
     auto match = Ausetiese::FindByAddressRange(addr);
 
-    if (match.slotIndex < 0) {
+    if (match.slotIndex >= 0) {
+        std::string name      = ReadObjectName(match.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(match.objectAddr);
+
         json resp = OkResponse(id);
-        resp["found"]   = false;
-        resp["address"] = addrStr;
+        resp["found"]         = true;
+        resp["match_type"]    = (match.memberOffset == 0) ? "exact" : "range";
+        resp["address"]       = AddrToHex(match.objectAddr);
+        resp["name"]          = SafeStr(name);
+        resp["class_name"]    = SafeStr(className);
+        resp["slot_index"]    = match.slotIndex;
+        resp["member_offset"] = match.memberOffset;
         return resp;
     }
 
-    std::string name      = ReadObjectName(match.objectAddr);
-    std::string className = Diagoldze::GetObjectClass(match.objectAddr);
+    // Phase 3: ScriptInstance members search (GDScript variables are heap-allocated
+    // in a separate Vector<Variant>, not within the Object body)
+    auto scriptMatch = Ubel::FindScriptMemberByAddress(addr);
 
+    if (scriptMatch.objectAddr) {
+        std::string name      = ReadObjectName(scriptMatch.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(scriptMatch.objectAddr);
+        int slotIndex = Ausetiese::FindByAddress(scriptMatch.objectAddr);
+
+        json resp = OkResponse(id);
+        resp["found"]          = true;
+        resp["match_type"]     = "script_member";
+        resp["address"]        = AddrToHex(scriptMatch.objectAddr);
+        resp["name"]           = SafeStr(name);
+        resp["class_name"]     = SafeStr(className);
+        resp["slot_index"]     = slotIndex;
+        resp["member_offset"]  = 0;
+        resp["script_member"]  = scriptMatch.memberIndex;
+        resp["variant_offset"] = scriptMatch.variantOffset;
+        return resp;
+    }
+
+    // Not found in any phase
     json resp = OkResponse(id);
-    resp["found"]         = true;
-    resp["address"]       = AddrToHex(match.objectAddr);
-    resp["name"]          = SafeStr(name);
-    resp["class_name"]    = SafeStr(className);
-    resp["slot_index"]    = match.slotIndex;
-    resp["member_offset"] = match.memberOffset;
+    resp["found"]   = false;
+    resp["address"] = addrStr;
     return resp;
 }
 

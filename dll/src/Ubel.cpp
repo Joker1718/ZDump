@@ -1466,4 +1466,61 @@ void ProbeScriptInstanceEarly() {
     Solitaer::Info("WALK", "=== Early ScriptInstance probe complete ===");
 }
 
+// ============================================================
+// FindScriptMemberByAddress — Reverse-lookup a GDScript variable address
+// to its owning Object. Scans all Objects in ObjectDB for ScriptInstance
+// whose members Vector contains the target address.
+// ============================================================
+ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
+    ScriptMemberMatch result;
+    if (!addr || DynOff::OBJECT_SCRIPT_INSTANCE < 0) return result;
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        // Read ScriptInstance pointer from Object
+        uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+            objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+        if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+
+        // Verify owner backlink
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+        if (owner != objAddr) return true;
+
+        // Read members Vector (CowData pointer)
+        uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+        if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) return true;
+
+        // Read count
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+        if (count == 0 || count > 500) return true;
+
+        // Check if addr falls within [membersPtr, membersPtr + count * variantStride)
+        uint64_t rangeStart = membersPtr;
+        uint64_t rangeEnd   = membersPtr + static_cast<uint64_t>(count) * variantStride;
+
+        if (addr >= rangeStart && addr < rangeEnd) {
+            uint64_t displacement = addr - rangeStart;
+            result.objectAddr    = objAddr;
+            result.memberIndex   = static_cast<int>(displacement / variantStride);
+            result.variantOffset = static_cast<int>(displacement % variantStride);
+
+            Solitaer::Debug("WALK", "FindScriptMemberByAddress: %p → Object %p, "
+                "member[%d] + 0x%X (members at %p, count=%u)",
+                reinterpret_cast<void*>(addr),
+                reinterpret_cast<void*>(objAddr),
+                result.memberIndex, result.variantOffset,
+                reinterpret_cast<void*>(membersPtr), count);
+            return false; // found — stop
+        }
+
+        return true; // continue
+    });
+
+    return result;
+}
+
 } // namespace Zolt::Ubel
