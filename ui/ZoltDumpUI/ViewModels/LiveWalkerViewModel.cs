@@ -36,6 +36,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [ObservableProperty] private int _autoRefreshInterval = 1000;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _statusMessage = "";
+    [ObservableProperty] private bool _isNode;
 
     /// <summary>Module name (process name) for CE XML export address formatting.</summary>
     public string ModuleName { get; set; } = "";
@@ -92,6 +93,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
             CurrentName = result.Name;
             CurrentClassName = result.ClassName;
             ParentAddr = result.ParentAddr;
+            IsNode = result.IsNode;
 
             Fields.Clear();
             foreach (var f in result.Fields)
@@ -241,30 +243,45 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             ClearError();
             string memberName = field.Name;
-            string nodeName = CurrentName;  // Node name (e.g. "Main", "Player") — unique in scene tree
-            string symbolName = CeLuaScriptService.MakeSymbolName(nodeName, memberName);
+            string script;
+            string label;
 
-            // Two-step script: FIND_NODE by node name → GET_MEMBER_ADDR
-            // This handles duplicate class names (Player HP vs Enemy HP)
-            var script = _ceLua.GenerateMemberScript(nodeName, memberName, symbolName);
+            if (IsNode)
+            {
+                // Node-derived: use FIND_NODE by node name → GET_MEMBER_ADDR
+                // This handles duplicate class names (Player HP vs Enemy HP)
+                string nodeName = CurrentName;
+                string symbolName = CeLuaScriptService.MakeSymbolName(nodeName, memberName);
+                script = _ceLua.GenerateMemberScript(nodeName, memberName, symbolName);
+                label = $"{nodeName}.{memberName}";
+            }
+            else
+            {
+                // Non-Node (Reference, Resource, etc.): use direct address + GET_MEMBER_ADDR
+                // Can't use FIND_INSTANCE for common classes like "Reference" — would find wrong instance
+                string className = CurrentClassName;
+                string symbolName = CeLuaScriptService.MakeSymbolName(className, memberName);
+                script = _ceLua.GenerateDirectMemberScript(CurrentAddress, className, memberName, symbolName);
+                label = $"{className}.{memberName}";
+            }
 
             // Always copy to clipboard so user has the script
             await _platform.CopyToClipboardAsync(script);
 
             // Also try AOBMaker: send AA script + create memory record using the symbol
-            bool sent = await TrySendToAobMakerAsync(
-                $"ZoltDump: {nodeName}.{memberName}", script);
+            string symbolForRecord = CeLuaScriptService.MakeSymbolName(
+                IsNode ? CurrentName : CurrentClassName, memberName);
+            bool sent = await TrySendToAobMakerAsync($"ZoltDump: {label}", script);
 
             if (sent)
             {
                 // Create a memory record that references the registered symbol as address.
-                // The AA script registers symbolName → CE resolves it to the runtime address.
                 var ceType = MapGodotTypeToCeValueType(field.Type);
                 try
                 {
                     await _aobMaker.CreateMemoryRecordAsync(
-                        $"{nodeName}.{memberName}",
-                        symbolName,
+                        label,
+                        symbolForRecord,
                         ceType,
                         isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
                 }
@@ -275,8 +292,8 @@ public partial class LiveWalkerViewModel : ViewModelBase
             }
 
             SetStatus(sent
-                ? $"CE script + memory record for '{nodeName}.{memberName}' sent to AOBMaker"
-                : $"CE script for '{nodeName}.{memberName}' copied to clipboard");
+                ? $"CE script + memory record for '{label}' sent to AOBMaker"
+                : $"CE script for '{label}' copied to clipboard");
         }
         catch (Exception ex)
         {
@@ -302,11 +319,23 @@ public partial class LiveWalkerViewModel : ViewModelBase
         if (string.IsNullOrEmpty(CurrentName)) return;
         try
         {
-            // Use FIND_NODE (by node name) — more reliable than FIND_INSTANCE (by class name)
-            var script = _ceLua.GenerateFindNodeScript(CurrentName);
+            string script;
+            string label;
 
-            bool sent = await TrySendToAobMakerAsync(
-                $"ZoltDump: Find {CurrentName}", script);
+            if (IsNode)
+            {
+                // Node-derived: use FIND_NODE (by node name) — unique in scene tree
+                script = _ceLua.GenerateFindNodeScript(CurrentName);
+                label = $"Find {CurrentName}";
+            }
+            else
+            {
+                // Non-Node: use FIND_INSTANCE (by class name)
+                script = _ceLua.GenerateFindInstanceScript(CurrentClassName);
+                label = $"Find {CurrentClassName}";
+            }
+
+            bool sent = await TrySendToAobMakerAsync($"ZoltDump: {label}", script);
 
             if (!sent)
                 await _platform.CopyToClipboardAsync(script);

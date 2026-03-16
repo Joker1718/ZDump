@@ -696,6 +696,7 @@ static json HandleWalkInstance(int id, const json& req) {
     resp["name"]       = SafeStr(name);
     resp["class_name"] = SafeStr(className);
     resp["parent_addr"] = parentAddr;
+    resp["is_node"]    = Diagoldze::IsNodeDerived(className);
     resp["fields"]     = std::move(fields);
     return resp;
 }
@@ -777,8 +778,8 @@ static json HandleFindInstances(int id, const json& req) {
     if (query.empty()) return ErrorResponse(id, "Missing 'class_name' field");
 
     bool exact = req.value("exact", false);
-    int limit = req.value("limit", 100);
-    if (limit <= 0) limit = 100;
+    int limit = req.value("limit", 1000);
+    if (limit <= 0) limit = 1000;
     if (limit > 10000) limit = 10000;
 
     // Pre-compute lowercase query for partial matching

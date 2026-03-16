@@ -891,6 +891,28 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
     Solitaer::Info("WALK", "=== Probing ScriptInstance offset (attempt %d/%d) ===",
         attempt + 1, MAX_PROBE_ATTEMPTS);
 
+    // GDScriptInstance layout differs between versions:
+    //   4.x: vtable(8) + owner_id(8) + owner(8) + script(8) + members(8...)
+    //        → owner at +0x10, script at +0x18, members at +0x20
+    //   3.x: vtable(8) + owner(8) + script(8) + members(8...)
+    //        → owner at +0x08, script at +0x10, members at +0x18  (no owner_id)
+    // Try both layouts when probing (preferred version first)
+    struct InstanceLayout {
+        int ownerOff;   // Offset of Object* owner within GDScriptInstance
+        int scriptOff;  // Offset of Ref<GDScript> script
+        int membersOff; // Offset of Vector<Variant> members
+        const char* tag;
+    };
+    InstanceLayout layouts[] = {
+        { 0x08, 0x10, 0x18, "3.x" },  // Godot 3.x: no owner_id
+        { 0x10, 0x18, 0x20, "4.x" },  // Godot 4.x: has owner_id at +0x08
+    };
+    // Prefer the matching version first
+    int layoutOrder[2] = { 0, 1 };
+    if (!GodotVer::IsGodot3()) {
+        layoutOrder[0] = 1; layoutOrder[1] = 0;
+    }
+
     // Scan from +0x20 to +0x500 (ScriptInstance* is after the fixed Object header)
     // Godot 4.5+ may have moved script_instance further due to Object refactoring
     for (int off = 0x20; off <= 0x500; off += 8) {
@@ -905,81 +927,94 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
         // Skip if it's a common value or null-ish
         if (candidateVtable < 0x10000) continue;
 
-        // Key validation: GDScriptInstance has Object* owner at +0x10
-        // This should point back to our Object
-        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(candidate + DynOff::GDSCRIPT_OWNER_OFF, 0);
-        if (owner != objAddr) continue;
+        // Try each layout variant (3.x and 4.x have different GDScriptInstance layouts)
+        for (int li = 0; li < 2; li++) {
+            auto& lay = layouts[layoutOrder[li]];
 
-        // Additional check: owner_id at +0x08 should be non-zero
-        uint64_t ownerId = Zoltraak::ReadSafe<uint64_t>(candidate + 0x08, 0);
-        if (ownerId == 0) continue;
+            // Key validation: owner pointer should point back to our Object
+            uint64_t owner = Zoltraak::ReadSafe<uint64_t>(candidate + lay.ownerOff, 0);
+            if (owner != objAddr) continue;
 
-        // Check that script pointer at +0x18 is also valid
-        uint64_t scriptPtr = Zoltraak::ReadSafe<uint64_t>(candidate + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
-        if (!scriptPtr || !Zoltraak::IsReadable(scriptPtr)) continue;
-
-        // Found it!
-        DynOff::OBJECT_SCRIPT_INSTANCE = off;
-        DynOff::bScriptInstanceProbed.store(true); // Mark as found — no more retries
-        Solitaer::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p)",
-            off, reinterpret_cast<void*>(candidate), reinterpret_cast<void*>(scriptPtr));
-
-        // Hexdump first 0x50 bytes of GDScriptInstance for layout diagnosis
-        Solitaer::Info("WALK", "  GDScriptInstance hexdump (first 0x50 bytes at %p):",
-            reinterpret_cast<void*>(candidate));
-        for (int doff = 0; doff < 0x50; doff += 8) {
-            uint64_t val = Zoltraak::ReadSafe<uint64_t>(candidate + doff, 0);
-            Solitaer::Info("WALK", "    +0x%02X: %016llX%s",
-                doff, val,
-                (doff == 0x00) ? "  <- vtable" :
-                (doff == 0x08) ? "  <- owner_id" :
-                (doff == 0x10) ? "  <- owner" :
-                (doff == 0x18) ? "  <- script (Ref)" : "");
-        }
-
-        // Probe members Vector offset dynamically:
-        // Scan from +0x20 to +0x48 for a valid CowData pointer (aligned, readable, sensible count)
-        int probedMembersOff = -1;
-        for (int moff = 0x20; moff <= 0x48; moff += 8) {
-            uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(candidate + moff, 0);
-            if (!mptr || !Zoltraak::IsReadable(mptr)) continue;
-            // CowData._ptr must be reasonably aligned (at least 8-byte for Variant data)
-            if (mptr % 8 != 0) {
-                Solitaer::Debug("WALK", "  +0x%02X: ptr=%p SKIP (not 8-byte aligned)", moff,
-                    reinterpret_cast<void*>(mptr));
-                continue;
+            // For 4.x layout, check owner_id at +0x08 is non-zero
+            if (lay.ownerOff == 0x10) {
+                uint64_t ownerId = Zoltraak::ReadSafe<uint64_t>(candidate + 0x08, 0);
+                if (ownerId == 0) continue;
             }
-            // Read size from CowData header
-            int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-            uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
-            if (cnt == 0 || cnt > 1000) continue;
-            // Validate: first Variant::Type should be in range [0, VariantTypeMax)
-            int32_t firstType = Zoltraak::ReadSafe<int32_t>(mptr, -1);
-            if (firstType < 0 || firstType >= GodotVer::VariantTypeMax()) continue;
 
-            probedMembersOff = moff;
-            Solitaer::Info("WALK", "  Members Vector probed at +0x%02X: ptr=%p count=%u firstType=%d",
-                moff, reinterpret_cast<void*>(mptr), cnt, firstType);
-            break;
-        }
+            // Check that script pointer is also valid
+            uint64_t scriptPtr = Zoltraak::ReadSafe<uint64_t>(candidate + lay.scriptOff, 0);
+            if (!scriptPtr || !Zoltraak::IsReadable(scriptPtr)) continue;
 
-        if (probedMembersOff >= 0 && probedMembersOff != DynOff::GDSCRIPT_MEMBERS_OFF) {
-            Solitaer::Info("WALK", "  Updating GDSCRIPT_MEMBERS_OFF: 0x%X -> 0x%X",
-                DynOff::GDSCRIPT_MEMBERS_OFF, probedMembersOff);
-            DynOff::GDSCRIPT_MEMBERS_OFF = probedMembersOff;
-        } else if (probedMembersOff < 0) {
-            // Fallback: log all readable pointers for manual analysis
-            Solitaer::Warn("WALK", "  Could not probe members Vector offset (all candidates failed)");
-            uint64_t defaultPtr = Zoltraak::ReadSafe<uint64_t>(
-                candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
-            Solitaer::Warn("WALK", "  Default +0x%X value: %p (aligned=%s)",
-                DynOff::GDSCRIPT_MEMBERS_OFF,
-                reinterpret_cast<void*>(defaultPtr),
-                (defaultPtr % 8 == 0) ? "yes" : "NO");
-        }
+            // Found it! Apply the detected layout offsets
+            DynOff::OBJECT_SCRIPT_INSTANCE = off;
+            DynOff::GDSCRIPT_OWNER_OFF     = lay.ownerOff;
+            DynOff::GDSCRIPT_SCRIPT_OFF    = lay.scriptOff;
+            DynOff::GDSCRIPT_MEMBERS_OFF   = lay.membersOff;
+            DynOff::bScriptInstanceProbed.store(true);
+            Solitaer::Info("WALK", "  ScriptInstance offset = +0x%X (inst=%p, script=%p) [%s layout]",
+                off, reinterpret_cast<void*>(candidate), reinterpret_cast<void*>(scriptPtr), lay.tag);
+            Solitaer::Info("WALK", "  GDScriptInstance offsets: owner=+0x%X script=+0x%X members=+0x%X",
+                lay.ownerOff, lay.scriptOff, lay.membersOff);
 
-        Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
-        return;
+            // Hexdump first 0x50 bytes of GDScriptInstance for layout diagnosis
+            Solitaer::Info("WALK", "  GDScriptInstance hexdump (first 0x50 bytes at %p):",
+                reinterpret_cast<void*>(candidate));
+            for (int doff = 0; doff < 0x50; doff += 8) {
+                uint64_t val = Zoltraak::ReadSafe<uint64_t>(candidate + doff, 0);
+                const char* label = "";
+                if (doff == 0x00) label = "  <- vtable";
+                else if (doff == lay.ownerOff) label = "  <- owner";
+                else if (doff == lay.scriptOff) label = "  <- script (Ref)";
+                else if (doff == lay.membersOff) label = "  <- members";
+                Solitaer::Info("WALK", "    +0x%02X: %016llX%s", doff, val, label);
+            }
+
+            // Probe members Vector offset dynamically:
+            // Scan from the expected offset (and nearby) for a valid CowData pointer
+            int probedMembersOff = -1;
+            int searchStart = lay.membersOff;
+            int searchEnd   = lay.membersOff + 0x28;
+            for (int moff = searchStart; moff <= searchEnd; moff += 8) {
+                uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(candidate + moff, 0);
+                if (!mptr || !Zoltraak::IsReadable(mptr)) continue;
+                // CowData._ptr must be reasonably aligned (at least 8-byte for Variant data)
+                if (mptr % 8 != 0) {
+                    Solitaer::Debug("WALK", "  +0x%02X: ptr=%p SKIP (not 8-byte aligned)", moff,
+                        reinterpret_cast<void*>(mptr));
+                    continue;
+                }
+                // Read size from CowData header
+                int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
+                if (cnt == 0 || cnt > 1000) continue;
+                // Validate: first Variant::Type should be in range [0, VariantTypeMax)
+                int32_t firstType = Zoltraak::ReadSafe<int32_t>(mptr, -1);
+                if (firstType < 0 || firstType >= GodotVer::VariantTypeMax()) continue;
+
+                probedMembersOff = moff;
+                Solitaer::Info("WALK", "  Members Vector probed at +0x%02X: ptr=%p count=%u firstType=%d",
+                    moff, reinterpret_cast<void*>(mptr), cnt, firstType);
+                break;
+            }
+
+            if (probedMembersOff >= 0 && probedMembersOff != DynOff::GDSCRIPT_MEMBERS_OFF) {
+                Solitaer::Info("WALK", "  Updating GDSCRIPT_MEMBERS_OFF: 0x%X -> 0x%X",
+                    DynOff::GDSCRIPT_MEMBERS_OFF, probedMembersOff);
+                DynOff::GDSCRIPT_MEMBERS_OFF = probedMembersOff;
+            } else if (probedMembersOff < 0) {
+                // Fallback: log all readable pointers for manual analysis
+                Solitaer::Warn("WALK", "  Could not probe members Vector offset (all candidates failed)");
+                uint64_t defaultPtr = Zoltraak::ReadSafe<uint64_t>(
+                    candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+                Solitaer::Warn("WALK", "  Default +0x%X value: %p (aligned=%s)",
+                    DynOff::GDSCRIPT_MEMBERS_OFF,
+                    reinterpret_cast<void*>(defaultPtr),
+                    (defaultPtr % 8 == 0) ? "yes" : "NO");
+            }
+
+            Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
+            return;
+        }  // end layout loop
     }
 
     // Not found on this object — DON'T set bScriptInstanceProbed, allow retry on next object
@@ -1002,50 +1037,141 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
     // where keys resolve to StringNames and values start with small ints (indices 0-N)
 
     if (GodotVer::IsGodot3()) {
-        // 3.x: bucket-chain HashMap (16B inline)
-        for (int off = 0x40; off <= 0x600; off += 8) {
-            uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off, 0);
-            uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(gdscriptAddr + off + 0x08, 0);
-            uint32_t count = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x0C, 0);
-            if (!ht || !Zoltraak::IsReadable(ht)) continue;
-            if (pw < 1 || pw > 12 || count < 1 || count > 200) continue;
+        // 3.x: GDScript::member_indices is Map<StringName, MemberInfo> (red-black tree),
+        // NOT a HashMap. Map uses _Data { _root*(8B) + _nil*(8B) + size_cache(4B) }.
+        //
+        // Map::Element layout varies by build. We probe multiple candidates:
+        //   Layout A (color-first): color(4+4pad) + right(8) + left(8) + parent(8) + _next(8) + _prev(8) + key(8) + val
+        //   Layout B (ptrs-first):  left(8) + right(8) + parent(8) + _next(8) + _prev(8) + color(4+4pad) + key(8) + val
+        //   Layout C (compact):     left(8) + right(8) + parent(8) + _next(8) + _prev(8) + key(8) + val
+        struct MapElemLayout {
+            int leftOff, nextOff, keyOff, valOff;
+            const char* tag;
+        };
+        constexpr MapElemLayout mapLayouts[] = {
+            { 0x10, 0x20, 0x30, 0x38, "color-first" },  // color(4+4pad), right, left, parent, next, prev, key, val
+            { 0x00, 0x18, 0x28, 0x30, "ptrs-first" },   // left, right, parent, next, prev, key, val (no leading color)
+            { 0x00, 0x18, 0x30, 0x38, "ptrs+color" },   // left, right, parent, next, prev, color(4+4pad), key, val
+            { 0x08, 0x20, 0x30, 0x38, "alt-color" },    // color(4+4pad), left, right, parent, next, prev, key, val
+        };
 
-            // Validate: first non-null bucket element key resolves to a StringName,
-            // and value starts with a small int (index)
-            int buckets = 1 << pw;
-            bool valid = false;
-            for (int b = 0; b < buckets && !valid; ++b) {
-                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
-                if (!elem || !Zoltraak::IsReadable(elem)) continue;
-
-                std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
-                if (name.empty() || name.size() > 64) continue;
-
-                int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
-                if (idx < 0 || idx >= static_cast<int>(count)) continue;
-
-                valid = true;
+        // Hex-dump first 0x200 bytes of GDScript object for diagnostics
+        Solitaer::Debug("WALK", "  GDScript object hexdump (first 0x100 bytes at %p):",
+            reinterpret_cast<void*>(gdscriptAddr));
+        for (int d = 0; d < 0x100; d += 8) {
+            uint64_t val = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + d, 0);
+            if (val != 0) {
+                Solitaer::Debug("WALK", "    +0x%03X: %016llX%s",
+                    d, val, Zoltraak::IsReadable(val) ? " (ptr)" : "");
             }
-            if (!valid) continue;
+        }
 
-            // Read all entries
-            for (int b = 0; b < buckets; ++b) {
-                uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
-                while (elem && Zoltraak::IsReadable(elem)) {
-                    std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
-                    int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
+        for (int off = 0x40; off <= 0x600; off += 8) {
+            uint64_t root  = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off, 0);
+            uint64_t nil   = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off + 0x08, 0);
+            uint32_t count = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x10, 0);
+
+            if (count < 1 || count > 200) continue;
+            if (!root || !nil) continue;
+            if (root == nil) continue;  // empty tree
+            if (!Zoltraak::IsReadable(root)) continue;
+
+            // Try each Element layout variant
+            for (const auto& lay : mapLayouts) {
+                // Validate: root element key resolves to a StringName with valid index
+                std::string rootName = Flamme::Resolve(root + lay.keyOff);
+                if (rootName.empty() || rootName.size() > 64) continue;
+
+                int32_t rootIdx = Zoltraak::ReadSafe<int32_t>(root + lay.valOff, -1);
+                if (rootIdx < 0 || rootIdx >= static_cast<int>(count)) continue;
+
+                Solitaer::Debug("WALK", "  Map candidate at GDScript+0x%X [%s]: root=%p nil=%p count=%u rootKey='%s' rootIdx=%d",
+                    off, lay.tag, reinterpret_cast<void*>(root), reinterpret_cast<void*>(nil), count,
+                    rootName.c_str(), rootIdx);
+
+                // Hex-dump root element for layout verification
+                Solitaer::Debug("WALK", "  Root element hexdump at %p:", reinterpret_cast<void*>(root));
+                for (int d = 0; d < 0x48; d += 8) {
+                    uint64_t val = Zoltraak::ReadSafe<uint64_t>(root + d, 0);
+                    Solitaer::Debug("WALK", "    +0x%02X: %016llX%s", d, val,
+                        Zoltraak::IsReadable(val) ? " (ptr)" : "");
+                }
+
+                // Find leftmost element by following left pointers
+                uint64_t cur = root;
+                for (int i = 0; i < 30; i++) {
+                    uint64_t left = Zoltraak::ReadSafe<uint64_t>(cur + lay.leftOff, 0);
+                    if (!left || left == nil || !Zoltraak::IsReadable(left)) break;
+                    cur = left;
+                }
+
+                // Walk _next chain to traverse all elements in order
+                int walked = 0;
+                while (cur && cur != nil && walked < static_cast<int>(count) + 5) {
+                    if (!Zoltraak::IsReadable(cur)) break;
+                    std::string name = Flamme::Resolve(cur + lay.keyOff);
+                    int32_t idx = Zoltraak::ReadSafe<int32_t>(cur + lay.valOff, -1);
                     if (!name.empty() && idx >= 0 && idx < 200) {
                         indexToName[idx] = name;
                     }
-                    uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
-                    if (next == elem) break;
-                    elem = next;
+                    uint64_t next = Zoltraak::ReadSafe<uint64_t>(cur + lay.nextOff, 0);
+                    if (next == cur || next == 0) break;
+                    cur = next;
+                    walked++;
                 }
+
+                if (!indexToName.empty()) {
+                    Solitaer::Info("WALK", "  GDScript member_indices (Map/%s): %d/%u names at GDScript+0x%X",
+                        lay.tag, static_cast<int>(indexToName.size()), count, off);
+                    break;
+                }
+                // Clear for next layout attempt
+                indexToName.clear();
             }
-            if (!indexToName.empty()) {
-                Solitaer::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
-                    static_cast<int>(indexToName.size()), off);
-                break;
+            if (!indexToName.empty()) break;
+        }
+
+        // Fallback: try HashMap layout (some 3.x forks may use HashMap instead of Map)
+        if (indexToName.empty()) {
+            Solitaer::Debug("WALK", "  Map scan failed, trying HashMap fallback for 3.x");
+            for (int off = 0x40; off <= 0x600; off += 8) {
+                uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off, 0);
+                uint8_t  pw    = Zoltraak::ReadSafe<uint8_t>(gdscriptAddr + off + 0x08, 0);
+                uint32_t count = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x0C, 0);
+                if (!ht || !Zoltraak::IsReadable(ht)) continue;
+                if (pw < 1 || pw > 12 || count < 1 || count > 200) continue;
+
+                int buckets = 1 << pw;
+                bool valid = false;
+                for (int b = 0; b < buckets && !valid; ++b) {
+                    uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                    if (!elem || !Zoltraak::IsReadable(elem)) continue;
+                    std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                    if (name.empty() || name.size() > 64) continue;
+                    int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
+                    if (idx < 0 || idx >= static_cast<int>(count)) continue;
+                    valid = true;
+                }
+                if (!valid) continue;
+
+                for (int b = 0; b < buckets; ++b) {
+                    uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                    while (elem && Zoltraak::IsReadable(elem)) {
+                        std::string name = Flamme::Resolve(elem + DynOff::ELEM_3X_KEY_OFF);
+                        int32_t idx = Zoltraak::ReadSafe<int32_t>(elem + DynOff::ELEM_3X_VALUE_OFF, -1);
+                        if (!name.empty() && idx >= 0 && idx < 200) {
+                            indexToName[idx] = name;
+                        }
+                        uint64_t next = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                        if (next == elem) break;
+                        elem = next;
+                    }
+                }
+                if (!indexToName.empty()) {
+                    Solitaer::Info("WALK", "  GDScript member_indices (HashMap): %d names at +0x%X",
+                        static_cast<int>(indexToName.size()), off);
+                    break;
+                }
             }
         }
     } else {
