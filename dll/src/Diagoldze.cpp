@@ -416,6 +416,7 @@ static int s_inheritsOffset   = -1;
 static int s_propListOffset   = -1;
 static int s_methodMapOffset  = -1;
 static int s_propSetGetOffset = -1;  // HashMap<StringName, PropertySetGet>
+static bool s_propSetGetIsAHashMap = false; // true if property_setget is AHashMap (Godot 4.6+)
 static bool s_isItaniumABI    = false; // Detected ABI (for vtable indexing)
 
 // PropertyInfo layout within List::Element (probed)
@@ -424,6 +425,9 @@ static int s_propHintOffset   = -1;   // PropertyHint offset within PropertyInfo
 static int s_propUsageOffset  = -1;   // usage offset within PropertyInfo
 static int s_propTotalSize    = -1;   // total PropertyInfo size
 static int s_elemNextOffset   = -1;   // next_ptr offset within Element (after PropertyInfo)
+
+// Known property names from the probed class (used to cross-validate property_setget)
+static std::vector<std::string> s_knownPropNames;
 
 // Validate that a pointer looks like a List<PropertyInfo>._Data*
 // _Data = { Element* first, Element* last, int size_cache }
@@ -526,6 +530,25 @@ static bool ProbePropertyInfoLayout(uint64_t dataPtr, const std::string& /*expec
                                     Solitaer::Info("CLSDB", "  Chain validation: walked %d == count %d ✓",
                                         walked, count);
 
+                                    // Collect known property names for cross-validating property_setget
+                                    s_knownPropNames.clear();
+                                    {
+                                        uint64_t cn = first;
+                                        int ci = 0;
+                                        while (cn && ci < count) {
+                                            uint64_t sp = Zoltraak::ReadSafe<uint64_t>(cn + nameOff, 0);
+                                            if (sp && Zoltraak::IsReadable(sp)) {
+                                                std::string pn = Zoltraak::ReadGodotString(sp);
+                                                if (pn.empty()) pn = Flamme::ResolveAt(sp);
+                                                if (!pn.empty()) s_knownPropNames.push_back(pn);
+                                            }
+                                            uint64_t nx = Zoltraak::ReadSafe<uint64_t>(cn + nextOff, 0);
+                                            if (nx == cn) break;
+                                            cn = nx;
+                                            ci++;
+                                        }
+                                    }
+
                                     // Derive hint and usage offsets from the known PropertyInfo layout.
                                     // PropertyInfo { type(8B), name(8B), class_name(8B), hint(8B), hint_string(8B), usage(8B) }
                                     // So: hint = nameOff + 16, usage = nameOff + 32
@@ -619,6 +642,24 @@ static uint64_t LookupGetterMethodBind(uint64_t infoAddr, const std::string& pro
                 elem = next;
             }
         }
+    } else if (s_propSetGetIsAHashMap) {
+        // 4.6+: AHashMap (flat array of KeyValue<StringName, PropertySetGet>)
+        // Inline layout: _elements*(8B), _metadata*(8B), _capacity_mask(4B), _size(4B) = 24B
+        uint64_t elements = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_propSetGetOffset, 0);
+        uint32_t size     = Zoltraak::ReadSafe<uint32_t>(infoAddr + s_propSetGetOffset + 0x14, 0);
+        if (!elements || !Zoltraak::IsReadable(elements) || size == 0) return 0;
+
+        // Each element: key(StringName 8B) + PropertySetGet(index 4B+pad 4B, setter 8B, getter 8B, _setptr 8B, _getptr 8B, type 4B+pad 4B) = 0x38
+        constexpr int ELEM_SIZE = 0x38;
+        for (uint32_t i = 0; i < size; i++) {
+            uint64_t elemAddr = elements + static_cast<uint64_t>(i) * ELEM_SIZE;
+            if (!Zoltraak::IsReadable(elemAddr)) break;
+
+            std::string name = Flamme::Resolve(elemAddr); // key at +0x00
+            if (name == propName) {
+                return Zoltraak::ReadSafe<uint64_t>(elemAddr + 0x28, 0); // _getptr at key+0x28
+            }
+        }
     } else {
         // 4.x: robin-hood HashMap with linked list
         uint64_t head = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_propSetGetOffset + 0x10, 0);
@@ -690,8 +731,9 @@ static MemberAccess ExtractMemberAccess(uint64_t methodBindAddr) {
     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(methodBindAddr, 0);
     if (!vtable || !Zoltraak::IsReadable(vtable)) return result;
 
-    // ptrcall is at vtable[2] for MSVC, vtable[3] for Itanium (GCC)
-    int ptrcallIdx = s_isItaniumABI ? 3 : 2;
+    // ptrcall vtable index: default is vtable[2] for MSVC, vtable[3] for Itanium (GCC 4.x)
+    // For 3.x Itanium, ScanObjectVtables probes the correct index (typically 4 or 5)
+    int ptrcallIdx = DynOff::METHODBIND_PTRCALL_VTIDX;
     uint64_t ptrcallAddr = Zoltraak::ReadSafe<uint64_t>(vtable + ptrcallIdx * 8, 0);
     if (!ptrcallAddr || !Zoltraak::IsReadable(ptrcallAddr)) return result;
 
@@ -1159,6 +1201,17 @@ static void ProbeClassInfoLayout() {
             }
         } else {
             // 4.x: robin-hood HashMap (40B)
+            // Try multiple candidates and cross-validate against known property names
+            struct SetGetCandidate {
+                int off;
+                uint32_t num;
+                std::string firstName;
+                std::string getter;
+                uint64_t getptr;
+                int matchCount;  // How many known props found in this HashMap
+            };
+            std::vector<SetGetCandidate> candidates;
+
             for (int off = psgSearchStart; off < psgSearchEnd; off += 8) {
                 if (off == s_methodMapOffset) continue; // Skip method_map
 
@@ -1177,11 +1230,119 @@ static void ProbeClassInfoLayout() {
                 uint64_t getptr = Zoltraak::ReadSafe<uint64_t>(head + 0x38, 0);
 
                 if (!getter.empty() && getptr && Zoltraak::IsReadable(getptr)) {
+                    // Cross-validate: look up known property names in this HashMap
+                    int matchCount = 0;
+                    if (!s_knownPropNames.empty()) {
+                        uint64_t cur = head;
+                        int walked = 0;
+                        std::vector<std::string> hmKeys;
+                        hmKeys.reserve(num);
+                        while (cur && walked < static_cast<int>(num) + 10) {
+                            if (!Zoltraak::IsReadable(cur)) break;
+                            std::string k = Flamme::Resolve(cur + 0x10);
+                            if (!k.empty()) hmKeys.push_back(k);
+                            uint64_t nx = Zoltraak::ReadSafe<uint64_t>(cur, 0);
+                            if (nx == cur) break;
+                            cur = nx;
+                            walked++;
+                        }
+                        for (auto& pn : s_knownPropNames) {
+                            for (auto& hk : hmKeys) {
+                                if (hk == pn) { matchCount++; break; }
+                            }
+                            if (matchCount >= 3) break; // Enough to confirm
+                        }
+                    }
+
+                    candidates.push_back({ off, num, name, getter, getptr, matchCount });
+                    Solitaer::Debug("CLSDB", "  Candidate property_setget at +0x%X: num=%u first='%s' getter='%s' propMatches=%d",
+                        off, num, name.c_str(), getter.c_str(), matchCount);
+                }
+            }
+
+            // Select best candidate: highest matchCount, or first if no cross-validation data
+            SetGetCandidate* best = nullptr;
+            for (auto& c : candidates) {
+                if (!best || c.matchCount > best->matchCount) best = &c;
+            }
+            if (best) {
+                // Reject candidates with 0 known prop matches when we have known props
+                if (!s_knownPropNames.empty() && best->matchCount == 0) {
+                    Solitaer::Warn("CLSDB", "  Rejecting property_setget candidate at +0x%X "
+                        "(num=%u, first='%s'): 0 known property matches — likely method_map or wrong HashMap",
+                        best->off, best->num, best->firstName.c_str());
+                    best = nullptr;
+                }
+            }
+            if (best) {
+                s_propSetGetOffset = best->off;
+                Solitaer::Info("CLSDB", "  Found 'property_setget' at ClassInfo+0x%X "
+                    "(num=%u, first='%s', getter='%s', _getptr=%p, propMatches=%d)",
+                    best->off, best->num, best->firstName.c_str(), best->getter.c_str(),
+                    reinterpret_cast<void*>(best->getptr), best->matchCount);
+            }
+        }
+
+        // Fallback: try AHashMap detection (Godot 4.6+ changed property_setget to AHashMap)
+        // AHashMap inline: _elements*(8B), _metadata*(8B), _capacity_mask(4B), _size(4B) = 24B
+        if (s_propSetGetOffset < 0) {
+            Solitaer::Info("CLSDB", "  HashMap scan failed, trying AHashMap detection (Godot 4.6+)...");
+            constexpr int AHASHMAP_ELEM_SIZE = 0x38; // KeyValue<StringName, PropertySetGet>
+
+            for (int off = psgSearchStart; off < psgSearchEnd; off += 8) {
+                if (off == s_methodMapOffset) continue;
+
+                uint64_t elemPtr     = Zoltraak::ReadSafe<uint64_t>(infoAddr + off, 0);
+                uint64_t metaPtr     = Zoltraak::ReadSafe<uint64_t>(infoAddr + off + 0x08, 0);
+                uint32_t capMask     = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x10, 0);
+                uint32_t size        = Zoltraak::ReadSafe<uint32_t>(infoAddr + off + 0x14, 0);
+
+                // Validate AHashMap pattern
+                if (!elemPtr || !Zoltraak::IsReadable(elemPtr)) continue;
+                if (!metaPtr || !Zoltraak::IsReadable(metaPtr)) continue;
+                if (elemPtr == metaPtr) continue; // They should be different arrays
+                // capacity_mask should be 2^n - 1 (e.g., 15, 31, 63, 127, 255, 511)
+                if (capMask < 7 || (capMask & (capMask + 1)) != 0) continue;
+                if (size < 3 || size > 500) continue;
+                if (size > capMask + 1) continue; // size can't exceed capacity
+
+                // Read first element: key (StringName at +0x00)
+                std::string firstName = Flamme::Resolve(elemPtr);
+                if (firstName.empty() || firstName.size() > 64) continue;
+
+                // Read getter from first element (value.getter at key+0x18)
+                std::string getter = Flamme::Resolve(elemPtr + 0x18);
+                uint64_t getptr = Zoltraak::ReadSafe<uint64_t>(elemPtr + 0x28, 0); // _getptr
+
+                if (getter.empty() || !getptr || !Zoltraak::IsReadable(getptr)) continue;
+
+                // Cross-validate against known property names
+                int matchCount = 0;
+                if (!s_knownPropNames.empty()) {
+                    for (uint32_t i = 0; i < size && i < 100; i++) {
+                        uint64_t eAddr = elemPtr + static_cast<uint64_t>(i) * AHASHMAP_ELEM_SIZE;
+                        if (!Zoltraak::IsReadable(eAddr)) break;
+                        std::string k = Flamme::Resolve(eAddr);
+                        if (k.empty()) continue;
+                        for (auto& pn : s_knownPropNames) {
+                            if (k == pn) { matchCount++; break; }
+                        }
+                        if (matchCount >= 3) break;
+                    }
+                }
+
+                Solitaer::Debug("CLSDB", "  AHashMap candidate at +0x%X: size=%u capMask=%u "
+                    "first='%s' getter='%s' propMatches=%d",
+                    off, size, capMask, firstName.c_str(), getter.c_str(), matchCount);
+
+                // Accept if we have prop matches or no known props to validate against
+                if (matchCount > 0 || s_knownPropNames.empty()) {
                     s_propSetGetOffset = off;
-                    Solitaer::Info("CLSDB", "  Found 'property_setget' at ClassInfo+0x%X "
-                        "(num=%u, first='%s', getter='%s', _getptr=%p)",
-                        off, num, name.c_str(), getter.c_str(),
-                        reinterpret_cast<void*>(getptr));
+                    s_propSetGetIsAHashMap = true;
+                    Solitaer::Info("CLSDB", "  Found 'property_setget' AHashMap at ClassInfo+0x%X "
+                        "(size=%u, first='%s', getter='%s', _getptr=%p, propMatches=%d)",
+                        off, size, firstName.c_str(), getter.c_str(),
+                        reinterpret_cast<void*>(getptr), matchCount);
                     break;
                 }
             }
@@ -1883,6 +2044,101 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
     Solitaer::Info("CLSDB", "  Scanned %d objects, %d unique vtables, %d identified (MSVC=%d Itanium=%d), %d misses",
         scanned, static_cast<int>(seenVtables.size()), identified, msvcHits, itaniumHits, misses);
     Solitaer::Info("CLSDB", "=== RTTI Vtable Scan Complete ===");
+
+    // Probe ptrcall vtable index for Godot 3.x (must run AFTER ABI detection above)
+    // Godot 3.x MethodBind has extra virtual methods (_gen_argument_type,
+    // _gen_argument_type_info, get_instance_class, and optionally get_argument_meta)
+    // before call() and ptrcall(). This shifts ptrcall from vtable[3] to vtable[4] or [5].
+    // Detect by finding the vtable entry that accesses [rcx+XX] (this without hidden return).
+    Solitaer::Info("CLSDB", "3x ptrcall probe check: is3x=%d isItanium=%d propSetGetOff=%d",
+        s_is3x ? 1 : 0, s_isItaniumABI ? 1 : 0, s_propSetGetOffset);
+    if (s_is3x && s_isItaniumABI && s_propSetGetOffset >= 0) {
+        Solitaer::Info("CLSDB", "Probing 3.x ptrcall vtable index (Itanium ABI)...");
+        // Get a sample MethodBind from the first property_setget entry
+        uint64_t sampleMB = 0;
+        auto nodeIt = s_classMap.find("Node");
+        if (nodeIt == s_classMap.end()) nodeIt = s_classMap.find("Object");
+        if (nodeIt != s_classMap.end()) {
+            uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(nodeIt->second.infoAddr + s_propSetGetOffset, 0);
+            uint8_t  power = Zoltraak::ReadSafe<uint8_t>(nodeIt->second.infoAddr + s_propSetGetOffset + 8, 0);
+            if (ht && power >= 1 && power <= 15) {
+                int buckets = 1 << power;
+                for (int b = 0; b < buckets && !sampleMB; b++) {
+                    uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+                    if (elem && Zoltraak::IsReadable(elem)) {
+                        sampleMB = Zoltraak::ReadSafe<uint64_t>(
+                            elem + DynOff::ELEM_3X_VALUE_OFF + 0x20, 0); // _getptr
+                    }
+                }
+            }
+        }
+
+        if (sampleMB && Zoltraak::IsReadable(sampleMB)) {
+            uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(sampleMB, 0);
+            if (vtable && Zoltraak::IsReadable(vtable)) {
+                Solitaer::Info("CLSDB", "  Sample MethodBind=%p vtable=%p",
+                    reinterpret_cast<void*>(sampleMB), reinterpret_cast<void*>(vtable));
+                int foundIdx = -1;
+                for (int idx = 2; idx <= 8; idx++) {
+                    uint64_t fn = Zoltraak::ReadSafe<uint64_t>(vtable + idx * 8, 0);
+                    if (!fn || !Zoltraak::IsReadable(fn)) continue;
+
+                    uint8_t code[48] = {};
+                    Zoltraak::ReadSafe(fn, code, sizeof(code));
+
+                    // Look for ptrcall pattern: accesses [rcx + disp8] where disp8 ≈ 0x30-0x60
+                    // ptrcall has this in rcx (no hidden struct return).
+                    // call() has this in rdx (hidden Variant return shifts params).
+                    for (int ci = 0; ci < 36; ci++) {
+                        int pi = ci;
+                        if (code[ci] >= 0x40 && code[ci] <= 0x4F) {
+                            // Skip if REX.B is set (changes r/m meaning)
+                            if (code[ci] & 0x01) { pi = ci + 1; continue; }
+                            pi = ci + 1;
+                        }
+                        if (pi + 2 >= 48) break;
+
+                        // MOV r64, [rcx + disp8]: opcode 8B, modrm with mod=01 rm=001
+                        // modrm & 0xC7 masks out reg field, keeping mod(2b) and rm(3b)
+                        // 0x41 = mod=01 rm=001 (rcx)
+                        if (code[pi] == 0x8B && (code[pi+1] & 0xC7) == 0x41) {
+                            uint8_t off = code[pi+2];
+                            if (off >= 0x30 && off <= 0x60) {
+                                foundIdx = idx;
+                                Solitaer::Info("CLSDB", "  vtable[%d]: MOV r64,[rcx+0x%02X] at fn+%d -> ptrcall candidate",
+                                    idx, off, ci);
+                                break;
+                            }
+                        }
+                        // ADD r64, [rcx + disp8]: opcode 03, modrm with mod=01 rm=001
+                        if (code[pi] == 0x03 && (code[pi+1] & 0xC7) == 0x41) {
+                            uint8_t off = code[pi+2];
+                            if (off >= 0x30 && off <= 0x60) {
+                                foundIdx = idx;
+                                Solitaer::Info("CLSDB", "  vtable[%d]: ADD r64,[rcx+0x%02X] at fn+%d -> ptrcall candidate",
+                                    idx, off, ci);
+                                break;
+                            }
+                        }
+                    }
+                    if (foundIdx >= 0) break;
+                }
+
+                if (foundIdx >= 0 && foundIdx != DynOff::METHODBIND_PTRCALL_VTIDX) {
+                    Solitaer::Info("CLSDB", "  Probed 3.x ptrcall vtable index: %d (was %d)",
+                        foundIdx, DynOff::METHODBIND_PTRCALL_VTIDX);
+                    DynOff::METHODBIND_PTRCALL_VTIDX = foundIdx;
+                } else if (foundIdx >= 0) {
+                    Solitaer::Info("CLSDB", "  Confirmed ptrcall vtable index: %d", foundIdx);
+                } else {
+                    Solitaer::Warn("CLSDB", "  Could not probe 3.x ptrcall vtable index, keeping %d",
+                        DynOff::METHODBIND_PTRCALL_VTIDX);
+                }
+            }
+        } else {
+            Solitaer::Warn("CLSDB", "  No sample MethodBind found for 3.x ptrcall probe");
+        }
+    }
 }
 
 } // namespace Zolt::Diagoldze
