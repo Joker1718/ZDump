@@ -7,5 +7,6 @@ public sealed class InstanceWalkResult
     public string Name { get; init; } = "";
     public string ClassName { get; init; } = "";
     public string ParentAddr { get; init; } = "";
+    public bool IsNode { get; init; }
     public List<LiveFieldValue> Fields { get; init; } = [];
 }

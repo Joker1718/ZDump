@@ -130,7 +130,7 @@ public sealed class DumpService : IDumpService
 
     public async Task<FindInstancesResult> FindInstancesAsync(string className, bool exactMatch = false, CancellationToken ct = default)
     {
-        var payload = new JsonObject { ["class_name"] = className, ["exact"] = exactMatch };
+        var payload = new JsonObject { ["class_name"] = className, ["exact"] = exactMatch, ["limit"] = 5000 };
         var resp = await _pipe.SendAsync("find_instances", payload, ct);
         var instances = new List<ObjectEntry>();
         if (resp["instances"] is JsonArray arr)
@@ -381,6 +381,7 @@ public sealed class DumpService : IDumpService
             Name = resp["name"]?.GetValue<string>() ?? "",
             ClassName = resp["class_name"]?.GetValue<string>() ?? "",
             ParentAddr = resp["parent_addr"]?.GetValue<string>() ?? "",
+            IsNode = resp["is_node"]?.GetValue<bool>() ?? false,
             Fields = fields
         };
     }

@@ -64,7 +64,9 @@ namespace DynOff {
     inline int OBJECT_SCRIPT_INSTANCE  = -1;    // ScriptInstance* (version-dependent, probe required)
 
     // ----- GDScriptInstance layout -----
-    // GDScriptInstance { vtable(8), owner_id(8), owner(8), script(8), members(8...) }
+    // 4.x: GDScriptInstance { vtable(8), owner_id(8), owner(8), script(8), members(8...) }
+    // 3.x: GDScriptInstance { vtable(8), owner(8), script(8), members(8...) } — no owner_id
+    // Defaults are for 4.x; adjusted at init for 3.x
     inline int GDSCRIPT_OWNER_OFF    = 0x10;  // Object* owner within GDScriptInstance
     inline int GDSCRIPT_SCRIPT_OFF   = 0x18;  // Ref<GDScript> script
     inline int GDSCRIPT_MEMBERS_OFF  = 0x20;  // Vector<Variant> members (CowData pointer)
