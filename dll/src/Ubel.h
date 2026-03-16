@@ -46,4 +46,9 @@ void WalkInstance(uint64_t objAddr,
 // Get a single field value by property name
 VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName);
 
+// Proactively scan ObjectDB for scripted nodes and probe ScriptInstance offset.
+// Called during init to discover the offset early, before any walk_instance call.
+// Ubel — 優貝爾 (Assassin Specialist) — Early script probe for GDScript member access
+void ProbeScriptInstanceEarly();
+
 } // namespace Zolt::Ubel

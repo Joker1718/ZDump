@@ -8,6 +8,7 @@
 //   Godot 4.5+: 39 types (0-38, added PackedVector4Array)
 
 #include "Ubel.h"
+#include "Ausetiese.h"
 #include "Zoltraak.h"
 #include "Diagoldze.h"
 #include "Flamme.h"
@@ -878,7 +879,7 @@ static void EnsureModuleInfo() {
 // Allows retry on up to MAX_PROBE_ATTEMPTS different objects, since not all objects
 // have GDScript attached (e.g. Engine, InputMap are engine singletons without scripts).
 static std::atomic<int> s_probeAttempts{0};
-static constexpr int MAX_PROBE_ATTEMPTS = 10;
+static constexpr int MAX_PROBE_ATTEMPTS = 60;
 
 static void ProbeScriptInstanceOffset(uint64_t objAddr) {
     if (DynOff::bScriptInstanceProbed.load()) return; // Already found
@@ -1392,6 +1393,77 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
     }
 
     return {};
+}
+
+// ============================================================
+// ProbeScriptInstanceEarly — Scan ObjectDB at init time to find
+// the ScriptInstance offset before any walk_instance call.
+// Ubel — 優貝爾 — Early script probe for GDScript member access
+// ============================================================
+void ProbeScriptInstanceEarly() {
+    if (DynOff::bScriptInstanceProbed.load()) return; // Already found
+
+    Solitaer::Info("WALK", "=== Early ScriptInstance probe: scanning ObjectDB ===");
+
+    // Collect candidate objects — prefer game-specific nodes (likely have scripts)
+    struct Candidate { uint64_t addr; std::string className; };
+    std::vector<Candidate> candidates;
+    candidates.reserve(100);
+
+    // Set of engine-only classes unlikely to have scripts attached
+    static const char* engineSkip[] = {
+        "Window", "Viewport", "World2D", "World3D", "SubViewport",
+        "InputMap", "IP", "TranslationServer", "NavigationServer2D",
+        "NavigationServer3D", "PhysicsServer2D", "PhysicsServer3D",
+        "RenderingServer", "AudioServer", "DisplayServer", "EditorNode",
+        "ThemeDB", "ResourceLoader", "ResourceSaver", "ClassDB",
+        nullptr
+    };
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        if (candidates.size() >= 100) return false; // enough candidates
+
+        std::string cls = Diagoldze::GetObjectClass(objAddr);
+        if (cls.empty()) return true;
+
+        // Skip common engine singletons
+        bool skip = false;
+        for (int i = 0; engineSkip[i]; i++) {
+            if (cls == engineSkip[i]) { skip = true; break; }
+        }
+        if (skip) return true;
+
+        // Prioritize Node-derived classes (game objects with scripts)
+        bool isNode = Diagoldze::IsNodeDerived(cls);
+        if (isNode) {
+            candidates.push_back({ objAddr, std::move(cls) });
+        }
+
+        return true;
+    });
+
+    Solitaer::Info("WALK", "  Found %d Node candidates to probe", static_cast<int>(candidates.size()));
+
+    int probed = 0;
+    for (auto& c : candidates) {
+        if (DynOff::bScriptInstanceProbed.load()) break; // Found!
+
+        // Reset attempt counter so ProbeScriptInstanceOffset doesn't refuse
+        // (it checks s_probeAttempts against MAX_PROBE_ATTEMPTS)
+        ProbeScriptInstanceOffset(c.addr);
+        probed++;
+
+        if (probed >= 50) break; // Don't spend too long
+    }
+
+    if (DynOff::bScriptInstanceProbed.load()) {
+        Solitaer::Info("WALK", "  Early probe SUCCESS: ScriptInstance at Object+0x%X (after %d objects)",
+            DynOff::OBJECT_SCRIPT_INSTANCE, probed);
+    } else {
+        Solitaer::Info("WALK", "  Early probe: no ScriptInstance found (probed %d objects). "
+            "Will retry on walk_instance calls.", probed);
+    }
+    Solitaer::Info("WALK", "=== Early ScriptInstance probe complete ===");
 }
 
 } // namespace Zolt::Ubel

@@ -7,6 +7,7 @@
 #include "Ausetiese.h"
 #include "Diagoldze.h"
 #include "Serie.h"
+#include "Ubel.h"
 #include "Flamme.h"
 #include "Fern.h"
 #include "Heiter.h"
@@ -132,6 +133,13 @@ int Zolt_AutoStart() {
             return sampleAddrs.size() < 200;
         });
         Zolt::Diagoldze::ScanObjectVtables(sampleAddrs);
+    }
+
+    // Probe ScriptInstance offset early by scanning ObjectDB for scripted nodes
+    // Ubel — 優貝爾 — Early script probe for GDScript member access
+    if (s_objectDBAddr && s_classDBAddr) {
+        LOG_TIMED("INIT", "Ubel::ProbeScriptInstanceEarly");
+        Zolt::Ubel::ProbeScriptInstanceEarly();
     }
 
     // Start Fern pipe server for UI communication

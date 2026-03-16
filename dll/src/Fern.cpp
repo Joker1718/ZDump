@@ -438,29 +438,35 @@ static json HandleFindObject(int id, const json& req) {
 }
 
 // cmd: find_by_address
+// Supports exact match and range-based lookup (finds the Object containing the address).
+// When the address is inside an Object (not at its start), returns the Object's address
+// plus the member_offset displacement.
 static json HandleFindByAddress(int id, const json& req) {
     std::string addrStr = GetAddrField(req);
     if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
-    int slotIndex = Ausetiese::FindByAddress(addr);
 
-    if (slotIndex < 0) {
+    // Try range-based lookup (includes exact match as fast path)
+    auto match = Ausetiese::FindByAddressRange(addr);
+
+    if (match.slotIndex < 0) {
         json resp = OkResponse(id);
         resp["found"]   = false;
         resp["address"] = addrStr;
         return resp;
     }
 
-    std::string name      = ReadObjectName(addr);
-    std::string className = Diagoldze::GetObjectClass(addr);
+    std::string name      = ReadObjectName(match.objectAddr);
+    std::string className = Diagoldze::GetObjectClass(match.objectAddr);
 
     json resp = OkResponse(id);
-    resp["found"]      = true;
-    resp["address"]    = AddrToHex(addr);
-    resp["name"]       = SafeStr(name);
-    resp["class_name"] = SafeStr(className);
-    resp["slot_index"] = slotIndex;
+    resp["found"]         = true;
+    resp["address"]       = AddrToHex(match.objectAddr);
+    resp["name"]          = SafeStr(name);
+    resp["class_name"]    = SafeStr(className);
+    resp["slot_index"]    = match.slotIndex;
+    resp["member_offset"] = match.memberOffset;
     return resp;
 }
 

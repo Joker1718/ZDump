@@ -107,7 +107,9 @@ public partial class InstanceFinderViewModel : ViewModelBase
                     SlotIndex = result.SlotIndex
                 });
                 InstanceCount = 1;
-                StatusText = $"Found: {result.Name} ({result.ClassName})";
+                StatusText = result.OffsetFromBase > 0
+                    ? $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}"
+                    : $"Found: {result.Name} ({result.ClassName})";
             }
             else
             {

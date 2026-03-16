@@ -31,8 +31,20 @@ bool ForEachEx(const std::function<bool(int index, uint64_t objectAddr)>& callba
 // Find an object by its class/node name (linear scan)
 uint64_t FindByName(const char* name);
 
-// Find an object slot index by its address
+// Find an object slot index by its address (exact match)
 int FindByAddress(uint64_t addr);
+
+// Result for range-based address lookup
+struct AddressMatch {
+    int      slotIndex    = -1;   // ObjectDB slot index (-1 = not found)
+    uint64_t objectAddr   = 0;    // Start address of containing Object
+    int      memberOffset = 0;    // Displacement: addr - objectAddr
+};
+
+// Find the Object whose address range contains 'addr'.
+// Falls back to sorted binary search when exact match fails.
+// Used when the user has a member variable address (e.g. from CE) and wants to find the owning Object.
+AddressMatch FindByAddressRange(uint64_t addr);
 
 // One-shot diagnostics dump
 void LogDiagnostics();

@@ -461,6 +461,64 @@ int FindByAddress(uint64_t addr) {
     return foundIndex;
 }
 
+AddressMatch FindByAddressRange(uint64_t addr) {
+    AddressMatch result;
+    if (!addr) return result;
+
+    // Step 1: Try exact match first (fast path)
+    int exactIdx = FindByAddress(addr);
+    if (exactIdx >= 0) {
+        result.slotIndex    = exactIdx;
+        result.objectAddr   = addr;
+        result.memberOffset = 0;
+        return result;
+    }
+
+    // Step 2: Collect all valid object addresses and sort them
+    struct ObjSlot { uint64_t addr; int index; };
+    std::vector<ObjSlot> sorted;
+    sorted.reserve(static_cast<size_t>(s_slotMax > 0 ? s_slotMax : 4096));
+
+    ForEachEx([&](int index, uint64_t objAddr) {
+        sorted.push_back({ objAddr, index });
+        return true;
+    });
+
+    if (sorted.empty()) return result;
+
+    std::sort(sorted.begin(), sorted.end(),
+        [](const ObjSlot& a, const ObjSlot& b) { return a.addr < b.addr; });
+
+    // Step 3: Binary search — find largest objAddr <= addr
+    auto it = std::upper_bound(sorted.begin(), sorted.end(), addr,
+        [](uint64_t val, const ObjSlot& slot) { return val < slot.addr; });
+
+    if (it == sorted.begin()) return result; // addr is before all objects
+    --it; // now it->addr <= addr
+
+    uint64_t objAddr = it->addr;
+    uint64_t offset  = addr - objAddr;
+
+    // Sanity: cap max displacement at 64KB — anything larger is unlikely a member
+    constexpr uint64_t MAX_OBJECT_SIZE = 0x10000;
+    if (offset > MAX_OBJECT_SIZE) return result;
+
+    // Additional validation: if there's a next object, verify addr is before it
+    auto next = it + 1;
+    if (next != sorted.end() && addr >= next->addr) return result; // shouldn't happen after upper_bound
+
+    result.slotIndex    = it->index;
+    result.objectAddr   = objAddr;
+    result.memberOffset = static_cast<int>(offset);
+
+    Solitaer::Debug("OBJDB", "FindByAddressRange: %p → Object at %p (slot %d, offset +0x%X)",
+        reinterpret_cast<void*>(addr),
+        reinterpret_cast<void*>(objAddr),
+        result.slotIndex, result.memberOffset);
+
+    return result;
+}
+
 void LogDiagnostics() {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return; // One-shot
