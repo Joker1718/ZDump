@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Zolt::Ubel {
@@ -62,5 +63,9 @@ struct ScriptMemberMatch {
 // Used when a user has a GDScript variable address (e.g. Money from CE) and wants
 // to find the owning Object. Returns empty match if not found.
 ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr);
+
+// Get GDScript member names from a GDScript object (index → name mapping).
+// Public wrapper around internal ReadGDScriptMemberNames for mailbox use.
+std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr);
 
 } // namespace Zolt::Ubel

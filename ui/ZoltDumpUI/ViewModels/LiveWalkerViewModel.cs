@@ -17,6 +17,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private readonly ILoggingService _log;
     private readonly IPlatformService _platform;
     private readonly IAobMakerBridge _aobMaker;
+    private readonly CeLuaScriptService _ceLua;
     private readonly CeXmlExportService _ceXml;
     private readonly CsxExportService _csx;
     private readonly SdkExportService _sdk;
@@ -41,12 +42,14 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private CancellationTokenSource? _refreshCts;
 
     public LiveWalkerViewModel(IDumpService dump, ILoggingService log, IPlatformService platform,
-        IAobMakerBridge aobMaker, CeXmlExportService ceXml, CsxExportService csx, SdkExportService sdk)
+        IAobMakerBridge aobMaker, CeLuaScriptService ceLua,
+        CeXmlExportService ceXml, CsxExportService csx, SdkExportService sdk)
     {
         _dump = dump;
         _log = log;
         _platform = platform;
         _aobMaker = aobMaker;
+        _ceLua = ceLua;
         _ceXml = ceXml;
         _csx = csx;
         _sdk = sdk;
@@ -206,6 +209,79 @@ public partial class LiveWalkerViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
         await _aobMaker.NavigateHexViewAsync(CurrentAddress);
+    }
+
+    // ============================================================
+    // CE Lua script generation (mailbox-based, survives restarts)
+    // ============================================================
+
+    [RelayCommand]
+    private async Task GenerateCeScriptAsync(LiveFieldValue? field)
+    {
+        if (field is null || string.IsNullOrEmpty(CurrentClassName)) return;
+        try
+        {
+            // Use resolved member name (prefer non-script_var_ names)
+            string memberName = field.Name;
+            string className = CurrentName;  // Node name (e.g. "Main"), not class name
+
+            var script = _ceLua.GenerateMemberScript(className, memberName);
+
+            // Try AOBMaker first, fallback to clipboard
+            bool sent = false;
+            try
+            {
+                if (await _aobMaker.CheckAvailabilityAsync())
+                {
+                    await _aobMaker.CreateAAScriptAsync(
+                        $"ZoltDump: {className}.{memberName}", script);
+                    sent = true;
+                    _log.Info("view", $"CE script for '{memberName}' sent to AOBMaker");
+                }
+            }
+            catch { /* AOBMaker unavailable */ }
+
+            if (!sent)
+            {
+                await _platform.CopyToClipboardAsync(script);
+                _log.Info("view", $"CE script for '{memberName}' copied to clipboard");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetError($"CE script generation failed: {ex.Message}");
+            _log.Error("view", "CE script generation failed", ex);
+        }
+    }
+
+    [RelayCommand]
+    private async Task GenerateInstanceScriptAsync()
+    {
+        if (string.IsNullOrEmpty(CurrentName) || string.IsNullOrEmpty(CurrentClassName)) return;
+        try
+        {
+            var script = _ceLua.GenerateFindInstanceScript(CurrentName);
+
+            bool sent = false;
+            try
+            {
+                if (await _aobMaker.CheckAvailabilityAsync())
+                {
+                    await _aobMaker.CreateAAScriptAsync(
+                        $"ZoltDump: Find {CurrentName}", script);
+                    sent = true;
+                }
+            }
+            catch { /* AOBMaker unavailable */ }
+
+            if (!sent)
+                await _platform.CopyToClipboardAsync(script);
+        }
+        catch (Exception ex)
+        {
+            SetError($"Instance script generation failed: {ex.Message}");
+            _log.Error("view", "Instance script generation failed", ex);
+        }
     }
 
     // ============================================================

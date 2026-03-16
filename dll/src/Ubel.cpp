@@ -1613,4 +1613,9 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
     return result;
 }
 
+// Public wrapper for ReadGDScriptMemberNames (used by Qual mailbox)
+std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr) {
+    return ReadGDScriptMemberNames(gdscriptPtr);
+}
+
 } // namespace Zolt::Ubel

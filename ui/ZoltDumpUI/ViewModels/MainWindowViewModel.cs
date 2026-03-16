@@ -53,9 +53,10 @@ public partial class MainWindowViewModel : ViewModelBase
         var ceXml = new CeXmlExportService(dump);
         var csx = new CsxExportService(dump);
         var sdk = new SdkExportService();
+        var ceLua = new CeLuaScriptService();
 
         NodeTree = new NodeTreeViewModel(dump, log, platform);
-        LiveWalker = new LiveWalkerViewModel(dump, log, platform, aobMaker, ceXml, csx, sdk);
+        LiveWalker = new LiveWalkerViewModel(dump, log, platform, aobMaker, ceLua, ceXml, csx, sdk);
         ClassStruct = new ClassStructViewModel(dump, log);
         InstanceFinder = new InstanceFinderViewModel(dump, log, platform, ceXml, sdk);
         Pointers = new PointerPanelViewModel(dump, log, platform, aobMaker);
