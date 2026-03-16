@@ -33,7 +33,9 @@ $editors = @(
     @{ Name="Godot 4.1";   Exe="$testDir\Godot_v4.1-stable_win64.exe";   Args="--headless"; LogDir="Godot_v4.1-stable_win64";   ProxyDir=$testDir },
     @{ Name="Godot 4.2";   Exe="$testDir\Godot_v4.2-stable_win64.exe";   Args="--headless"; LogDir="Godot_v4.2-stable_win64";   ProxyDir=$testDir },
     @{ Name="Godot 4.3";   Exe="$testDir\Godot_v4.3-stable_win64.exe";   Args="--headless"; LogDir="Godot_v4.3-stable_win64";   ProxyDir=$testDir },
-    @{ Name="Godot 4.4.1"; Exe="$testDir\Godot_v4.4.1-stable_win64.exe"; Args="--headless"; LogDir="Godot_v4.4.1-stable_win64"; ProxyDir=$testDir }
+    @{ Name="Godot 4.4.1"; Exe="$testDir\Godot_v4.4.1-stable_win64.exe"; Args="--headless"; LogDir="Godot_v4.4.1-stable_win64"; ProxyDir=$testDir },
+    @{ Name="Godot 4.5.1"; Exe="$testDir\Godot_v4.5.1-stable_win64.exe"; Args="--headless"; LogDir="Godot_v4.5.1-stable_win64"; ProxyDir=$testDir },
+    @{ Name="Godot 4.6.1"; Exe="$testDir\Godot_v4.6.1-stable_win64.exe"; Args="--headless"; LogDir="Godot_v4.6.1-stable_win64"; ProxyDir=$testDir }
 )
 
 $games = @(
@@ -41,7 +43,8 @@ $games = @(
     @{ Name="20 Small Mazes (3.5.3)";    Exe="H:\SteamLibrary\steamapps\common\20 Small Mazes\20SM.exe";                     Args=$null; LogDir="20SM";                      ProxyDir="H:\SteamLibrary\steamapps\common\20 Small Mazes" },
     @{ Name="Magic Archery (4.2.2)";     Exe="H:\SteamLibrary\steamapps\common\Magic Archery\Magic Archery.exe";             Args=$null; LogDir="Magic Archery";             ProxyDir="H:\SteamLibrary\steamapps\common\Magic Archery" },
     @{ Name="One Potion Please (4.3)";   Exe="H:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="H:\SteamLibrary\steamapps\common\One Potion Please" },
-    @{ Name="Virtual Cottage";           Exe="H:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="H:\SteamLibrary\steamapps\common\Virtual Cottage" },
+    # Virtual Cottage excluded: can't auto-close, ClassDB FAIL (special case)
+    # @{ Name="Virtual Cottage";           Exe="H:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="H:\SteamLibrary\steamapps\common\Virtual Cottage" },
     @{ Name="Upload Labs";               Exe="H:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="H:\SteamLibrary\steamapps\common\Upload Labs" },
     @{ Name="Holo X Break";              Exe="H:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="H:\SteamLibrary\steamapps\common\Holo X Break" },
     @{ Name="Dome Keeper";               Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" }

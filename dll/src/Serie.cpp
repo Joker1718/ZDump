@@ -239,18 +239,43 @@ static uint64_t ProbeRootNode(uint64_t sceneTree) {
     // SceneTree memory scanning is unreliable due to version-dependent struct layout.
     Solitaer::Info("STREE", "Searching ObjectDB for root Window/Viewport...");
     uint64_t objdbRoot = 0;
+    uint64_t nameOnlyRoot = 0; // Fallback: object with name="root" but unknown class
+    int nameProbeCount = 0;    // Limit expensive name probes for unknown-class objects
+    constexpr int MAX_NAME_PROBES = 200; // Cap to avoid ~1s+ scan on large ObjectDBs
     Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) -> bool {
         std::string cls = Diagoldze::GetObjectClass(objAddr);
-        if (cls != "Window" && cls != "Viewport" && cls != "SubViewport") return true;
-        std::string name = ProbeObjectName(objAddr);
-        if (name == "root") {
-            Solitaer::Info("STREE", "  Found root via ObjectDB: %p class='%s'",
-                reinterpret_cast<void*>(objAddr), cls.c_str());
-            objdbRoot = objAddr;
-            return false; // stop
+        if (cls == "Window" || cls == "Viewport" || cls == "SubViewport") {
+            std::string name = ProbeObjectName(objAddr);
+            if (name == "root") {
+                Solitaer::Info("STREE", "  Found root via ObjectDB: %p class='%s'",
+                    reinterpret_cast<void*>(objAddr), cls.c_str());
+                objdbRoot = objAddr;
+                return false; // stop
+            }
+        } else if (cls.empty() && !nameOnlyRoot && nameProbeCount < MAX_NAME_PROBES) {
+            // RTTI failed for this object — try name probe as fallback
+            // Limited to MAX_NAME_PROBES to avoid performance regression on large ObjectDBs
+            nameProbeCount++;
+            std::string name = ProbeObjectName(objAddr);
+            if (name == "root") {
+                nameOnlyRoot = objAddr;
+                // Don't stop — keep looking for a class-confirmed match
+            }
         }
         return true; // continue
     });
+
+    if (nameProbeCount > 0) {
+        Solitaer::Debug("STREE", "Name-only fallback probed %d/%d unknown-class objects",
+            nameProbeCount, MAX_NAME_PROBES);
+    }
+
+    // Use class-confirmed root first, fall back to name-only root
+    if (!objdbRoot && nameOnlyRoot) {
+        Solitaer::Info("STREE", "  Found root via ObjectDB (name-only fallback): %p",
+            reinterpret_cast<void*>(nameOnlyRoot));
+        objdbRoot = nameOnlyRoot;
+    }
 
     if (objdbRoot) {
         // Try to determine SceneTree offset for this root (scan back for the pointer)

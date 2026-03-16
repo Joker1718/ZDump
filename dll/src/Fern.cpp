@@ -26,6 +26,8 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 #include <filesystem>
 
 #include <nlohmann/json.hpp>
@@ -203,7 +205,7 @@ static const char* VariantTypeName(int type) {
 // ============================================================
 // Command Handlers
 // ============================================================
-using HandlerFn = std::function<json(int id, const json& req)>;
+using HandlerFn = json(*)(int id, const json& req);
 
 // cmd: init
 static json HandleInit(int id, const json& /*req*/) {
@@ -704,6 +706,14 @@ static json HandleWalkTree(int id, const json& req) {
 
     if (!startAddr) {
         startAddr = Serie::GetRoot();
+
+        // Retry with short waits if root not yet available (deferred SceneTree)
+        if (!startAddr) {
+            for (int retry = 0; retry < 10 && !startAddr; ++retry) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                startAddr = Serie::GetRoot();
+            }
+        }
     }
 
     if (!startAddr)
@@ -968,6 +978,7 @@ static bool WriteLine(HANDLE hPipe, const std::string& line) {
                      &written, nullptr) && written == data.size();
 }
 
+
 // Process a single JSON request and return the response
 static std::string ProcessRequest(const std::string& line) {
     json req;
@@ -999,6 +1010,10 @@ static std::string ProcessRequest(const std::string& line) {
     } catch (const std::exception& e) {
         LOG_ERROR("Handler exception for '%s': %s", cmd.c_str(), e.what());
         return ErrorResponse(id, std::string("Internal error: ") + e.what()).dump();
+    } catch (...) {
+        // With /EHa, this catches SEH exceptions (access violations, etc.)
+        LOG_ERROR("SEH/unknown exception in handler for '%s'", cmd.c_str());
+        return ErrorResponse(id, "SEH exception in handler").dump();
     }
 }
 

@@ -90,6 +90,43 @@ static bool ProbeSlotCounters(uint64_t objectDBAddr) {
     }
 
     if (best.count > 0) {
+        // Validate: scan the slot array to check for objects beyond best.max.
+        // If many objects exist past the candidate's max, the counters are wrong/stale.
+        uint64_t slotsArray = Zoltraak::ReadSafe<uint64_t>(objectDBAddr, 0);
+        if (slotsArray && Zoltraak::IsReadable(slotsArray)) {
+            int beyondCount = 0;
+            int emptyRun = 0;
+            // Scan from best.max onward — if there are real objects beyond the reported max,
+            // the counters are incorrect (likely reading wrong offsets).
+            // Use a large emptyRun threshold (5000) to handle sparse allocation patterns.
+            int startIdx = static_cast<int>(best.max);
+            for (int i = startIdx; i < 500000 && emptyRun < 5000; ++i) {
+                uintptr_t slotAddr = static_cast<uintptr_t>(slotsArray) +
+                    static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
+                uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+                    slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
+                if (objPtr) {
+                    uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
+                    if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
+                        beyondCount++;
+                        emptyRun = 0;
+                    } else {
+                        emptyRun++;
+                    }
+                } else {
+                    emptyRun++;
+                }
+                // Early exit: clearly wrong
+                if (beyondCount > 50) break;
+            }
+
+            if (beyondCount > 10) {
+                Solitaer::Warn("OBJDB", "Slot counters rejected: candidate max=%u but found %d objects beyond that index (false positive at +0x%X/+0x%X)",
+                    best.max, beyondCount, best.countOff, best.maxOff);
+                return false;
+            }
+        }
+
         s_slotCountOff = best.countOff;
         s_slotMaxOff   = best.maxOff;
         Solitaer::Info("OBJDB", "Slot counters found: count=%u (at +0x%X), max=%u (at +0x%X)",
@@ -109,6 +146,28 @@ static void RefreshState() {
     if (s_slotMaxOff > 0) {
         s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(
             s_objectDBAddr + s_slotMaxOff, 0));
+    } else if (s_slotsArray && Zoltraak::IsReadable(s_slotsArray)) {
+        // No counter offsets known — re-scan to find the current extent.
+        // New objects may have been added since Init() (e.g. root Window created after startup).
+        int emptyRun = 0;
+        int maxFound = 0;
+        int startFrom = s_slotMax > 0 ? s_slotMax - 100 : 0;
+        if (startFrom < 0) startFrom = 0;
+        for (int i = startFrom; i < 500000 && emptyRun < 1000; ++i) {
+            uintptr_t slotAddr = static_cast<uintptr_t>(s_slotsArray) +
+                static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
+            uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
+                slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
+            if (objPtr) {
+                emptyRun = 0;
+                maxFound = i + 1;
+            } else {
+                emptyRun++;
+            }
+        }
+        if (maxFound + 100 > s_slotMax) {
+            s_slotMax = maxFound + 100;
+        }
     }
 }
 
@@ -335,6 +394,9 @@ bool ForEachEx(const std::function<bool(int index, uint64_t objectAddr)>& callba
     if (s_is3x) {
         return ForEachEx3x(callback);
     }
+
+    // Refresh slot array and max to pick up newly-added objects
+    RefreshState();
 
     // 4.x: sparse-set slot array
     if (!s_slotsArray || s_slotMax <= 0) return false;

@@ -1178,6 +1178,19 @@ static void ReadGDScriptMembers(uint64_t objAddr,
     }
 }
 
+// SEH-safe ptrcall invocation (separate function to avoid C2712 with C++ objects)
+using PtrcallFn = void(__fastcall*)(void*, void*, const void**, void*);
+static bool SafePtrcallInvoke(PtrcallFn fn, uint64_t methodBind, uint64_t objAddr, uint8_t* retBuf) {
+    __try {
+        fn(reinterpret_cast<void*>(methodBind),
+           reinterpret_cast<void*>(objAddr),
+           nullptr, retBuf);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // ============================================================
 // WalkInstance — Walk all properties of an object instance
 // ============================================================
@@ -1203,6 +1216,16 @@ void WalkInstance(uint64_t objAddr,
     Solitaer::Debug("WALK", "WalkInstance: %s @ %p — %d properties",
         className.c_str(), reinterpret_cast<void*>(objAddr),
         static_cast<int>(properties.size()));
+
+    // Log property summary for diagnostics
+    int withOffset = 0, withGetter = 0, metadataOnly = 0;
+    for (auto& p : properties) {
+        if (p.offset >= 0) withOffset++;
+        else if (p.getterMethodBind != 0) withGetter++;
+        else metadataOnly++;
+    }
+    Solitaer::Debug("WALK", "  Property breakdown: %d with offset, %d with getter, %d metadata-only",
+        withOffset, withGetter, metadataOnly);
 
     // Step 3: Build FieldEntry for each property, reading values where offsets are known
     int valuesRead = 0;
@@ -1256,6 +1279,10 @@ void WalkInstance(uint64_t objAddr,
         entries.push_back(std::move(entry));
     }
 
+    Solitaer::Debug("WALK", "WalkInstance: for-loop done. %d direct, %d ptrcall queued, %d metadata",
+        directReads, static_cast<int>(ptrcallJobs.size()),
+        static_cast<int>(entries.size()) - directReads - static_cast<int>(ptrcallJobs.size()));
+
     // Execute batched ptrcall on game thread (single QueueWorkSync for all)
     // Skip entirely if ptrcall is auto-disabled (all timeouts → direct reads only)
     if (!ptrcallJobs.empty() && !Heiter::IsPtrcallDisabled()) {
@@ -1287,9 +1314,13 @@ void WalkInstance(uint64_t objAddr,
                 auto fnPtr = reinterpret_cast<PtrcallFn>(ptrcallFn);
 
                 alignas(16) uint8_t retBuf[128] = {};
-                fnPtr(reinterpret_cast<void*>(job.methodBind),
-                      reinterpret_cast<void*>(objAddr),
-                      nullptr, retBuf);
+                bool callOk = SafePtrcallInvoke(fnPtr, job.methodBind, objAddr, retBuf);
+                if (!callOk) {
+                    Solitaer::Warn("WALK", "  SEH in ptrcall for prop[%zu] MB=%p fn=%p type=%d",
+                        job.propIndex, reinterpret_cast<void*>(job.methodBind),
+                        reinterpret_cast<void*>(ptrcallFn), job.variantType);
+                    continue;
+                }
 
                 ptrcallResults[j].value = DecodeReturnBuffer(retBuf, job.variantType, type4x);
                 ptrcallResults[j].ok = true;
@@ -1308,6 +1339,9 @@ void WalkInstance(uint64_t objAddr,
             }
         }
     }
+
+    Solitaer::Debug("WALK", "WalkInstance: ptrcall phase done. Emitting %d entries...",
+        static_cast<int>(entries.size()));
 
     // Emit all entries
     for (auto& entry : entries) {
