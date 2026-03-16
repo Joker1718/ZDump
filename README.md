@@ -4,6 +4,13 @@ Real-time Godot Engine memory dumper and analyzer with Cheat Engine integration.
 
 Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack magic that deconstructs its target.
 
+---
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)](https://dotnet.microsoft.com/)
+[![Avalonia](https://img.shields.io/badge/Avalonia-UI-8B5CF6)](https://avaloniaui.net/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
+
 ## Features
 
 - **Real-time object inspection** — Browse Godot's ObjectDB, ClassDB, and SceneTree
@@ -83,6 +90,10 @@ All modules use names from the anime *Frieren: Beyond Journey's End*. See [docs/
 | [docs/godot-internals.md](docs/godot-internals.md) | Godot memory layout: ObjectDB, ClassDB, Variant, Node |
 | [docs/naming-convention.md](docs/naming-convention.md) | Frieren naming guide with examples |
 
-## License
+## Built with Claude Code
 
-TBD
+This project is developed with the assistance of [Claude Code](https://claude.ai/code) by Anthropic.
+
+---
+
+**License**: [MIT](LICENSE) © 2026 bbfox0703
