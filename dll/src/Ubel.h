@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Zolt::Ubel {
@@ -45,5 +46,26 @@ void WalkInstance(uint64_t objAddr,
 
 // Get a single field value by property name
 VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName);
+
+// Proactively scan ObjectDB for scripted nodes and probe ScriptInstance offset.
+// Called during init to discover the offset early, before any walk_instance call.
+// Ubel — 優貝爾 (Assassin Specialist) — Early script probe for GDScript member access
+void ProbeScriptInstanceEarly();
+
+// Result for ScriptInstance member address lookup
+struct ScriptMemberMatch {
+    uint64_t objectAddr   = 0;    // Owning Object address
+    int      memberIndex  = -1;   // Index within members Vector
+    int      variantOffset = 0;   // Byte offset within the Variant (addr - variantStart)
+};
+
+// Search ObjectDB for an Object whose ScriptInstance members Vector contains 'addr'.
+// Used when a user has a GDScript variable address (e.g. Money from CE) and wants
+// to find the owning Object. Returns empty match if not found.
+ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr);
+
+// Get GDScript member names from a GDScript object (index → name mapping).
+// Public wrapper around internal ReadGDScriptMemberNames for mailbox use.
+std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr);
 
 } // namespace Zolt::Ubel

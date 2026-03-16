@@ -107,7 +107,12 @@ public partial class InstanceFinderViewModel : ViewModelBase
                     SlotIndex = result.SlotIndex
                 });
                 InstanceCount = 1;
-                StatusText = $"Found: {result.Name} ({result.ClassName})";
+                StatusText = result.MatchType switch
+                {
+                    "script_member" => $"Found: {result.Name} ({result.ClassName}) [GDScript member]",
+                    "range" => $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}",
+                    _ => $"Found: {result.Name} ({result.ClassName})"
+                };
             }
             else
             {

@@ -12,6 +12,10 @@ public sealed class LiveFieldValue
     public string Hex { get; init; } = "";
     public string Address { get; init; } = "";
     public int Offset { get; init; }
+
+    /// <summary>Formatted offset for display: "0xNN" for native, "(script)" for GDScript members.</summary>
+    public string OffsetDisplay => Offset < 0 ? "(script)" : $"0x{Offset:X}";
+
     public int Size { get; init; }
     public int BitShift { get; init; }
     public int BitMask { get; init; }

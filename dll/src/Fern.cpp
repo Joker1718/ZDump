@@ -438,29 +438,62 @@ static json HandleFindObject(int id, const json& req) {
 }
 
 // cmd: find_by_address
+// Three-phase lookup:
+//   1. Exact Object address match in ObjectDB
+//   2. Range search: find Object whose body contains the address
+//   3. ScriptInstance search: find Object whose GDScript members Vector contains the address
+// When a match is found inside an Object/member, returns the Object's address
+// plus member_offset displacement and match_type indicator.
 static json HandleFindByAddress(int id, const json& req) {
     std::string addrStr = GetAddrField(req);
     if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
 
     uint64_t addr = HexToAddr(addrStr);
-    int slotIndex = Ausetiese::FindByAddress(addr);
 
-    if (slotIndex < 0) {
+    // Phase 1+2: Range-based lookup (includes exact match as fast path)
+    auto match = Ausetiese::FindByAddressRange(addr);
+
+    if (match.slotIndex >= 0) {
+        std::string name      = ReadObjectName(match.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(match.objectAddr);
+
         json resp = OkResponse(id);
-        resp["found"]   = false;
-        resp["address"] = addrStr;
+        resp["found"]         = true;
+        resp["match_type"]    = (match.memberOffset == 0) ? "exact" : "range";
+        resp["address"]       = AddrToHex(match.objectAddr);
+        resp["name"]          = SafeStr(name);
+        resp["class_name"]    = SafeStr(className);
+        resp["slot_index"]    = match.slotIndex;
+        resp["member_offset"] = match.memberOffset;
         return resp;
     }
 
-    std::string name      = ReadObjectName(addr);
-    std::string className = Diagoldze::GetObjectClass(addr);
+    // Phase 3: ScriptInstance members search (GDScript variables are heap-allocated
+    // in a separate Vector<Variant>, not within the Object body)
+    auto scriptMatch = Ubel::FindScriptMemberByAddress(addr);
 
+    if (scriptMatch.objectAddr) {
+        std::string name      = ReadObjectName(scriptMatch.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(scriptMatch.objectAddr);
+        int slotIndex = Ausetiese::FindByAddress(scriptMatch.objectAddr);
+
+        json resp = OkResponse(id);
+        resp["found"]          = true;
+        resp["match_type"]     = "script_member";
+        resp["address"]        = AddrToHex(scriptMatch.objectAddr);
+        resp["name"]           = SafeStr(name);
+        resp["class_name"]     = SafeStr(className);
+        resp["slot_index"]     = slotIndex;
+        resp["member_offset"]  = 0;
+        resp["script_member"]  = scriptMatch.memberIndex;
+        resp["variant_offset"] = scriptMatch.variantOffset;
+        return resp;
+    }
+
+    // Not found in any phase
     json resp = OkResponse(id);
-    resp["found"]      = true;
-    resp["address"]    = AddrToHex(addr);
-    resp["name"]       = SafeStr(name);
-    resp["class_name"] = SafeStr(className);
-    resp["slot_index"] = slotIndex;
+    resp["found"]   = false;
+    resp["address"] = addrStr;
     return resp;
 }
 
@@ -918,8 +951,17 @@ static json HandleGetScanStatus(int id, const json& /*req*/) {
 static json HandleTriggerScan(int id, const json& /*req*/) {
     bool sceneTreeResolved = (Serie::GetRoot() != 0);
 
-    // If SceneTree still not resolved, try a full scan
+    // If SceneTree still not resolved, try a full scan.
+    // Re-init ObjectDB first: the game may have loaded more objects since the
+    // initial DLL scan (especially with proxy DLL injection at process start).
+    // For 3.x games, the ObjectDB HashMap may have been resized as well.
     if (!sceneTreeResolved) {
+        // Refresh ObjectDB so ProbeRootNode sees newly-created objects
+        const auto& ptrs = Frieren::GetPointers();
+        if (ptrs.ObjectDB) {
+            Ausetiese::Init(ptrs.ObjectDB);
+        }
+
         uintptr_t addr = Frieren::FindSceneTree();
         if (addr) {
             Serie::Init(addr);

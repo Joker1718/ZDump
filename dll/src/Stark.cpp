@@ -7,8 +7,10 @@
 #include "Ausetiese.h"
 #include "Diagoldze.h"
 #include "Serie.h"
+#include "Ubel.h"
 #include "Flamme.h"
 #include "Fern.h"
+#include "Qual.h"
 #include "Heiter.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
@@ -134,6 +136,13 @@ int Zolt_AutoStart() {
         Zolt::Diagoldze::ScanObjectVtables(sampleAddrs);
     }
 
+    // Probe ScriptInstance offset early by scanning ObjectDB for scripted nodes
+    // Ubel — 優貝爾 — Early script probe for GDScript member access
+    if (s_objectDBAddr && s_classDBAddr) {
+        LOG_TIMED("INIT", "Ubel::ProbeScriptInstanceEarly");
+        Zolt::Ubel::ProbeScriptInstanceEarly();
+    }
+
     // Start Fern pipe server for UI communication
     Zolt::Fern::Start();
 
@@ -177,6 +186,10 @@ int Zolt_AutoStart() {
     Zolt::Solitaer::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
     Zolt::Solitaer::Summary("==========================================================");
 
+    // Notify mailbox that DLL is ready for CE Lua commands
+    // Qual — 全 — Transitions from STATUS_INIT to STATUS_IDLE
+    Zolt::Qual::NotifyReady();
+
     return success ? 0 : 1;
 }
 
@@ -184,6 +197,7 @@ void Zolt_Shutdown() {
     Zolt::Solitaer::LogInit("Zolt_Shutdown called");
     Zolt::Heiter::Shutdown();   // Before Fern — unblock any sync waiters first
     Zolt::Fern::Stop();
+    Zolt::Qual::StopPolling();  // Qual — 全 — Stop mailbox polling
     Zolt::Solitaer::Shutdown();
     s_initialized = false;
 }

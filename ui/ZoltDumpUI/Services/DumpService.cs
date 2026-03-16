@@ -98,7 +98,7 @@ public sealed class DumpService : IDumpService
             Name = resp["name"]?.GetValue<string>() ?? "",
             ClassName = resp["class_name"]?.GetValue<string>() ?? "",
             ParentAddr = resp["parent_addr"]?.GetValue<string>() ?? "",
-            OffsetFromBase = resp["offset_from_base"]?.GetValue<int>() ?? 0,
+            OffsetFromBase = resp["member_offset"]?.GetValue<int>() ?? resp["offset_from_base"]?.GetValue<int>() ?? 0,
             QueryAddress = address
         };
     }
