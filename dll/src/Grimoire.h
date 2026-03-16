@@ -68,7 +68,8 @@ namespace DynOff {
     inline int GDSCRIPT_OWNER_OFF    = 0x10;  // Object* owner within GDScriptInstance
     inline int GDSCRIPT_SCRIPT_OFF   = 0x18;  // Ref<GDScript> script
     inline int GDSCRIPT_MEMBERS_OFF  = 0x20;  // Vector<Variant> members (CowData pointer)
-    inline int VARIANT_STRIDE        = 0x20;  // sizeof(Variant) = 32 bytes for 4.x
+    inline int VARIANT_STRIDE        = 0x18;  // sizeof(Variant) = 24 bytes for 4.x float precision
+                                              // (40 bytes / 0x28 if REAL_T_IS_DOUBLE — extremely rare)
     inline std::atomic<bool> bScriptInstanceProbed{false};
 
     // ----- ObjectSlot layout (fixed) -----

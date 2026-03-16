@@ -1049,29 +1049,47 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
             }
         }
     } else {
-        // 4.x: robin-hood HashMap (40B inline)
-        for (int off = 0x40; off <= 0x600; off += 8) {
-            uint64_t head = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off + 0x10, 0);
-            uint32_t num  = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x24, 0);
-            if (!head || num < 1 || num > 200) continue;
+        // 4.x: robin-hood HashMap with DefaultTypedAllocator (48B inline)
+        // HashMap layout (MSVC x64, DefaultTypedAllocator = empty class, 1B + 7B pad):
+        //   +0x00: element_alloc  (8B with padding)
+        //   +0x08: elements**     (8B)
+        //   +0x10: hashes*        (8B)
+        //   +0x18: head_element*  (8B)  — linked list head
+        //   +0x20: tail_element*  (8B)
+        //   +0x28: capacity_index (4B)
+        //   +0x2C: num_elements   (4B)
+        // Total: 0x30 = 48 bytes
+        //
+        // Element layout:
+        //   +0x00: next*          (8B)
+        //   +0x08: prev*          (8B)
+        //   +0x10: KeyValue { key: StringName(8B), value: MemberInfo { int index(4B), ... } }
+        constexpr int HEAD_OFF = 0x18;  // head_element offset within HashMap
+        constexpr int NUM_OFF  = 0x2C;  // num_elements offset within HashMap
+        constexpr int ELEM_KEY_OFF   = 0x10;  // StringName key in Element
+        constexpr int ELEM_VALUE_OFF = 0x18;  // MemberInfo.index in Element
+
+        for (int off = 0x40; off <= 0x800; off += 8) {
+            uint64_t head = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off + HEAD_OFF, 0);
+            uint32_t num  = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + NUM_OFF, 0);
+            if (!head || num < 1 || num > 500) continue;
             if (!Zoltraak::IsReadable(head)) continue;
 
-            // Validate: key is StringName, value.index is small int
-            // Element: next(8B), prev(8B), KeyValue { StringName(8B), MemberInfo { int index, ... } }
-            std::string firstName = Flamme::Resolve(head + 0x10);
+            // Validate: key resolves to a StringName, value.index is valid
+            std::string firstName = Flamme::Resolve(head + ELEM_KEY_OFF);
             if (firstName.empty() || firstName.size() > 64) continue;
 
-            int32_t firstIdx = Zoltraak::ReadSafe<int32_t>(head + 0x18, -1);
+            int32_t firstIdx = Zoltraak::ReadSafe<int32_t>(head + ELEM_VALUE_OFF, -1);
             if (firstIdx < 0 || firstIdx >= static_cast<int>(num)) continue;
 
-            // Read all entries
+            // Read all entries by walking the linked list
             uint64_t cur = head;
             int walked = 0;
             while (cur && walked < static_cast<int>(num) + 5) {
                 if (!Zoltraak::IsReadable(cur)) break;
-                std::string name = Flamme::Resolve(cur + 0x10);
-                int32_t idx = Zoltraak::ReadSafe<int32_t>(cur + 0x18, -1);
-                if (!name.empty() && idx >= 0 && idx < 200) {
+                std::string name = Flamme::Resolve(cur + ELEM_KEY_OFF);
+                int32_t idx = Zoltraak::ReadSafe<int32_t>(cur + ELEM_VALUE_OFF, -1);
+                if (!name.empty() && idx >= 0 && idx < 500) {
                     indexToName[idx] = name;
                 }
                 uint64_t next = Zoltraak::ReadSafe<uint64_t>(cur, 0);
@@ -1080,14 +1098,53 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
                 walked++;
             }
             if (!indexToName.empty()) {
-                Solitaer::Info("WALK", "  GDScript member_indices: %d names at +0x%X",
-                    static_cast<int>(indexToName.size()), off);
+                Solitaer::Info("WALK", "  GDScript member_indices: %d names at GDScript+0x%X (head=%p)",
+                    static_cast<int>(indexToName.size()), off,
+                    reinterpret_cast<void*>(head));
                 break;
             }
         }
     }
 
     return indexToName;
+}
+
+// Auto-detect Variant stride by probing the first few members of a Vector<Variant>.
+// Checks candidate strides (0x18 for float, 0x28 for double) and picks the one
+// where the most type fields read as valid Godot Variant types.
+static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
+    static bool sProbed = false;
+    if (sProbed) return;
+    sProbed = true;
+
+    const int candidates[] = { 0x18, 0x28 };  // float=24, double=40
+    int maxType = GodotVer::VariantTypeMax();
+    int probeCount = static_cast<int>((count < 20) ? count : 20);
+    int bestStride = DynOff::VARIANT_STRIDE;
+    int bestValid  = -1;
+
+    for (int stride : candidates) {
+        int validCount = 0;
+        for (int i = 0; i < probeCount; i++) {
+            int32_t t = Zoltraak::ReadSafe<int32_t>(membersPtr + i * stride, -1);
+            if (t >= 0 && t < maxType) validCount++;
+        }
+        Solitaer::Debug("WALK", "ProbeVariantStride: stride=0x%X → %d/%d valid types",
+            stride, validCount, probeCount);
+        if (validCount > bestValid) {
+            bestValid  = validCount;
+            bestStride = stride;
+        }
+    }
+
+    if (bestStride != DynOff::VARIANT_STRIDE) {
+        Solitaer::Info("WALK", "ProbeVariantStride: adjusting VARIANT_STRIDE from 0x%X to 0x%X (%d/%d valid)",
+            DynOff::VARIANT_STRIDE, bestStride, bestValid, probeCount);
+        DynOff::VARIANT_STRIDE = bestStride;
+    } else {
+        Solitaer::Info("WALK", "ProbeVariantStride: confirmed stride 0x%X (%d/%d valid)",
+            bestStride, bestValid, probeCount);
+    }
 }
 
 // Read GDScript members from an Object's ScriptInstance
@@ -1153,12 +1210,15 @@ static void ReadGDScriptMembers(uint64_t objAddr,
         return;
     }
 
+    // Auto-detect Variant stride on first encounter
+    ProbeVariantStride(membersPtr, count);
+
     // Try to get member names from GDScript object
     auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
 
-    Solitaer::Info("WALK", "GDScript members: %u variables, %d names resolved (membersPtr=%p)",
+    Solitaer::Info("WALK", "GDScript members: %u variables, %d names resolved (membersPtr=%p, stride=0x%X)",
         count, static_cast<int>(nameMap.size()),
-        reinterpret_cast<void*>(membersPtr));
+        reinterpret_cast<void*>(membersPtr), DynOff::VARIANT_STRIDE);
     for (auto& kv : nameMap) {
         Solitaer::Debug("WALK", "  member[%d] = '%s'", kv.first, kv.second.c_str());
     }
@@ -1166,21 +1226,28 @@ static void ReadGDScriptMembers(uint64_t objAddr,
     int variantStride = DynOff::VARIANT_STRIDE;
     for (uint32_t i = 0; i < count; i++) {
         uint64_t varAddr = membersPtr + i * variantStride;
+
+        // Read raw type BEFORE ReadVariant for diagnostics
+        int32_t rawType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+
         VariantValue val = ReadVariant(varAddr);
 
-        // Always emit — never skip. Even NIL entries matter for address mapping,
-        // and some apparently-NIL entries may contain valid data that ReadVariant
-        // doesn't fully decode (e.g. complex containers).
-
-        // Diagnostic: hexdump Variants that read as NIL but have non-zero data
-        if (val.type == 0) {
+        // Diagnostic: log entries ReadVariant rejected (rawType out of range)
+        if (val.value.empty() && val.typeName.empty()) {
+            uint64_t w0 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x00, 0);
+            uint64_t w1 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x08, 0);
+            uint64_t w2 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x10, 0);
+            Solitaer::Info("WALK", "  member[%u] rawType=%d (rejected): "
+                "+0x00=%016llX +0x08=%016llX +0x10=%016llX (at %p, stride=0x%X)",
+                i, rawType, w0, w1, w2, reinterpret_cast<void*>(varAddr), variantStride);
+        } else if (val.type == 0 && val.value == "(null)") {
+            // NIL type — check if data area has non-zero residual
             uint64_t d0 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x08, 0);
             uint64_t d1 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x10, 0);
-            uint64_t d2 = Zoltraak::ReadSafe<uint64_t>(varAddr + 0x18, 0);
-            if (d0 || d1 || d2) {
+            if (d0 || d1) {
                 Solitaer::Info("WALK", "  member[%u] type=NIL but data non-zero: "
-                    "+0x08=%016llX +0x10=%016llX +0x18=%016llX (at %p)",
-                    i, d0, d1, d2, reinterpret_cast<void*>(varAddr));
+                    "+0x08=%016llX +0x10=%016llX (at %p)",
+                    i, d0, d1, reinterpret_cast<void*>(varAddr));
             }
         }
 
@@ -1190,6 +1257,8 @@ static void ReadGDScriptMembers(uint64_t objAddr,
                                                 : "script_var_" + std::to_string(i);
         entry.className = "(GDScript)";
         entry.value     = val;
+        // Show data address (Variant + VARIANT_DATA) — this matches what CE finds
+        entry.value.rawAddr = varAddr + DynOff::VARIANT_DATA;
         entry.offset    = -1;  // Not a fixed offset from Object base (heap allocated)
 
         callback(entry);
@@ -1227,7 +1296,11 @@ void WalkInstance(uint64_t objAddr,
     // Step 2: Get property list from ClassDB (includes inherited properties)
     auto properties = Diagoldze::GetPropertyList(className.c_str());
     if (properties.empty()) {
-        Solitaer::Debug("WALK", "WalkInstance: no properties for class '%s'", className.c_str());
+        Solitaer::Debug("WALK", "WalkInstance: no ClassDB properties for class '%s', trying GDScript members",
+            className.c_str());
+        // Don't return — still try GDScript members below
+        ProbeScriptInstanceOffset(objAddr);
+        ReadGDScriptMembers(objAddr, callback);
         return;
     }
 
