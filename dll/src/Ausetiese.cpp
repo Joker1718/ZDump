@@ -200,6 +200,12 @@ static bool ReadHashMapFields3x(uint64_t objectDBAddr) {
 
 // Iterate all objects in the 3.x bucket-chain HashMap
 static bool ForEachEx3x(const std::function<bool(int index, uint64_t objectAddr)>& callback) {
+    if (!s_objectDBAddr) return false;
+
+    // Re-read HashMap fields from live memory before each iteration.
+    // Godot may resize the HashMap at any time (new hashTable pointer, new power).
+    // Using stale pointers after a resize reads freed memory → missing objects.
+    ReadHashMapFields3x(s_objectDBAddr);
     if (!s_hashTable3x) return false;
 
     int bucketCount = 1 << s_power3x;
@@ -332,10 +338,9 @@ int GetObjectCount() {
 
 int GetSlotMax() {
     if (s_is3x) {
-        // For 3.x, re-read the elements count from the HashMap
+        // For 3.x, re-read all HashMap fields (hashTable/power/elements may change on resize)
         if (s_objectDBAddr) {
-            s_elements3x = Zoltraak::ReadSafe<uint32_t>(
-                s_objectDBAddr + DynOff::HASHMAP_3X_ELEMENTS_OFF, s_elements3x);
+            ReadHashMapFields3x(s_objectDBAddr);
         }
         return static_cast<int>(s_elements3x);
     }

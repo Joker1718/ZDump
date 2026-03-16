@@ -35,9 +35,25 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [ObservableProperty] private bool _isAutoRefresh;
     [ObservableProperty] private int _autoRefreshInterval = 1000;
     [ObservableProperty] private bool _isLoading;
+    [ObservableProperty] private string _statusMessage = "";
 
     /// <summary>Module name (process name) for CE XML export address formatting.</summary>
     public string ModuleName { get; set; } = "";
+
+    /// <summary>Set a transient status message (auto-clears after 3 seconds).</summary>
+    private void SetStatus(string message)
+    {
+        StatusMessage = message;
+        _log.Info("view", message);
+        // Auto-clear after 3 seconds
+        _ = ClearStatusAfterDelayAsync();
+    }
+
+    private async Task ClearStatusAfterDelayAsync()
+    {
+        await Task.Delay(3000);
+        StatusMessage = "";
+    }
 
     private CancellationTokenSource? _refreshCts;
 
@@ -178,15 +194,17 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private async Task CopyFieldAddressAsync(LiveFieldValue field)
+    internal async Task CopyFieldAddressAsync(LiveFieldValue field)
     {
         await _platform.CopyToClipboardAsync(field.Address);
+        SetStatus($"Address copied: {field.Address}");
     }
 
     [RelayCommand]
-    private async Task CopyFieldNameAsync(LiveFieldValue field)
+    internal async Task CopyFieldNameAsync(LiveFieldValue field)
     {
         await _platform.CopyToClipboardAsync(field.Name);
+        SetStatus($"Name copied: {field.Name}");
     }
 
     [RelayCommand]
@@ -216,36 +234,49 @@ public partial class LiveWalkerViewModel : ViewModelBase
     // ============================================================
 
     [RelayCommand]
-    private async Task GenerateCeScriptAsync(LiveFieldValue? field)
+    internal async Task GenerateCeScriptAsync(LiveFieldValue? field)
     {
-        if (field is null || string.IsNullOrEmpty(CurrentClassName)) return;
+        if (field is null || string.IsNullOrEmpty(CurrentName)) return;
         try
         {
-            // Use resolved member name (prefer non-script_var_ names)
+            ClearError();
             string memberName = field.Name;
-            string className = CurrentName;  // Node name (e.g. "Main"), not class name
+            string nodeName = CurrentName;  // Node name (e.g. "Main", "Player") — unique in scene tree
+            string symbolName = CeLuaScriptService.MakeSymbolName(nodeName, memberName);
 
-            var script = _ceLua.GenerateMemberScript(className, memberName);
+            // Two-step script: FIND_NODE by node name → GET_MEMBER_ADDR
+            // This handles duplicate class names (Player HP vs Enemy HP)
+            var script = _ceLua.GenerateMemberScript(nodeName, memberName, symbolName);
 
-            // Try AOBMaker first, fallback to clipboard
-            bool sent = false;
-            try
+            // Always copy to clipboard so user has the script
+            await _platform.CopyToClipboardAsync(script);
+
+            // Also try AOBMaker: send AA script + create memory record using the symbol
+            bool sent = await TrySendToAobMakerAsync(
+                $"ZoltDump: {nodeName}.{memberName}", script);
+
+            if (sent)
             {
-                if (await _aobMaker.CheckAvailabilityAsync())
+                // Create a memory record that references the registered symbol as address.
+                // The AA script registers symbolName → CE resolves it to the runtime address.
+                var ceType = MapGodotTypeToCeValueType(field.Type);
+                try
                 {
-                    await _aobMaker.CreateAAScriptAsync(
-                        $"ZoltDump: {className}.{memberName}", script);
-                    sent = true;
-                    _log.Info("view", $"CE script for '{memberName}' sent to AOBMaker");
+                    await _aobMaker.CreateMemoryRecordAsync(
+                        $"{nodeName}.{memberName}",
+                        symbolName,
+                        ceType,
+                        isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
+                }
+                catch (Exception ex)
+                {
+                    _log.Debug("view", $"CreateMemoryRecord failed: {ex.Message}");
                 }
             }
-            catch { /* AOBMaker unavailable */ }
 
-            if (!sent)
-            {
-                await _platform.CopyToClipboardAsync(script);
-                _log.Info("view", $"CE script for '{memberName}' copied to clipboard");
-            }
+            SetStatus(sent
+                ? $"CE script + memory record for '{nodeName}.{memberName}' sent to AOBMaker"
+                : $"CE script for '{nodeName}.{memberName}' copied to clipboard");
         }
         catch (Exception ex)
         {
@@ -254,25 +285,28 @@ public partial class LiveWalkerViewModel : ViewModelBase
         }
     }
 
+    /// <summary>Map Godot Variant type string to CE TVariableType.</summary>
+    private static CeValueType MapGodotTypeToCeValueType(string godotType) => godotType.ToUpperInvariant() switch
+    {
+        "BOOL" => CeValueType.Byte,
+        "INT" => CeValueType.Dword,
+        "FLOAT" => CeValueType.Float,
+        "STRING" or "STRING_NAME" or "NODE_PATH" => CeValueType.String,
+        "OBJECT" => CeValueType.Qword,
+        _ => CeValueType.Dword
+    };
+
     [RelayCommand]
     private async Task GenerateInstanceScriptAsync()
     {
-        if (string.IsNullOrEmpty(CurrentName) || string.IsNullOrEmpty(CurrentClassName)) return;
+        if (string.IsNullOrEmpty(CurrentName)) return;
         try
         {
-            var script = _ceLua.GenerateFindInstanceScript(CurrentName);
+            // Use FIND_NODE (by node name) — more reliable than FIND_INSTANCE (by class name)
+            var script = _ceLua.GenerateFindNodeScript(CurrentName);
 
-            bool sent = false;
-            try
-            {
-                if (await _aobMaker.CheckAvailabilityAsync())
-                {
-                    await _aobMaker.CreateAAScriptAsync(
-                        $"ZoltDump: Find {CurrentName}", script);
-                    sent = true;
-                }
-            }
-            catch { /* AOBMaker unavailable */ }
+            bool sent = await TrySendToAobMakerAsync(
+                $"ZoltDump: Find {CurrentName}", script);
 
             if (!sent)
                 await _platform.CopyToClipboardAsync(script);
@@ -282,6 +316,25 @@ public partial class LiveWalkerViewModel : ViewModelBase
             SetError($"Instance script generation failed: {ex.Message}");
             _log.Error("view", "Instance script generation failed", ex);
         }
+    }
+
+    /// <summary>Try sending an AA script to AOBMaker CE plugin. Returns true if sent.</summary>
+    private async Task<bool> TrySendToAobMakerAsync(string label, string script)
+    {
+        try
+        {
+            if (await _aobMaker.CheckAvailabilityAsync())
+            {
+                await _aobMaker.CreateAAScriptAsync(label, script);
+                _log.Info("view", $"CE script '{label}' sent to AOBMaker");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Debug("view", $"AOBMaker unavailable: {ex.Message}");
+        }
+        return false;
     }
 
     // ============================================================
@@ -309,7 +362,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (!string.IsNullOrEmpty(xml))
             {
                 await _platform.CopyToClipboardAsync(xml);
-                _log.Info("view", "Copied CE XML to clipboard");
+                SetStatus($"CE XML copied ({fields.Count} fields)");
             }
         }
         catch (Exception ex)
@@ -320,16 +373,21 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private async Task CopyCeFieldAsync(LiveFieldValue? field)
+    internal async Task CopyCeFieldAsync(LiveFieldValue? field)
     {
         if (field is null) return;
         try
         {
+            ClearError();
             var xml = _ceXml.GenerateFieldXml(field);
             if (!string.IsNullOrEmpty(xml))
             {
                 await _platform.CopyToClipboardAsync(xml);
-                _log.Info("view", $"Copied CE field '{field.Name}' to clipboard");
+                SetStatus($"CE field '{field.Name}' XML copied to clipboard");
+            }
+            else
+            {
+                SetError($"CE field '{field.Name}': no exportable data (type={field.Type}, offset={field.Offset})");
             }
         }
         catch (Exception ex)
@@ -350,7 +408,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (!string.IsNullOrEmpty(csx))
             {
                 await _platform.CopyToClipboardAsync(csx);
-                _log.Info("view", $"Copied CSX for '{CurrentClassName}' to clipboard");
+                SetStatus($"CSX for '{CurrentClassName}' copied to clipboard");
             }
         }
         catch (Exception ex)
@@ -371,7 +429,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (!string.IsNullOrEmpty(header))
             {
                 await _platform.CopyToClipboardAsync(header);
-                _log.Info("view", $"Copied SDK header for '{CurrentClassName}' to clipboard");
+                SetStatus($"SDK header for '{CurrentClassName}' copied to clipboard");
             }
         }
         catch (Exception ex)

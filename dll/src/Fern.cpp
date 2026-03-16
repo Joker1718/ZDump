@@ -951,8 +951,17 @@ static json HandleGetScanStatus(int id, const json& /*req*/) {
 static json HandleTriggerScan(int id, const json& /*req*/) {
     bool sceneTreeResolved = (Serie::GetRoot() != 0);
 
-    // If SceneTree still not resolved, try a full scan
+    // If SceneTree still not resolved, try a full scan.
+    // Re-init ObjectDB first: the game may have loaded more objects since the
+    // initial DLL scan (especially with proxy DLL injection at process start).
+    // For 3.x games, the ObjectDB HashMap may have been resized as well.
     if (!sceneTreeResolved) {
+        // Refresh ObjectDB so ProbeRootNode sees newly-created objects
+        const auto& ptrs = Frieren::GetPointers();
+        if (ptrs.ObjectDB) {
+            Ausetiese::Init(ptrs.ObjectDB);
+        }
+
         uintptr_t addr = Frieren::FindSceneTree();
         if (addr) {
             Serie::Init(addr);

@@ -116,14 +116,27 @@ public sealed class CeXmlExportService
     /// <summary>Emit a single leaf/scalar field.</summary>
     private static void EmitLeafField(StringBuilder sb, int depth, LiveFieldValue field)
     {
-        if (field.Offset < 0) return;
-
         var ind = Indent(depth);
         var ceType = MapVariantToCeType(field.Type, field.Size);
 
         sb.AppendLine($"{ind}<CheatEntry>");
         sb.AppendLine($"{ind}  <Description>\"{EscapeXml(field.Name)} ({field.Type})\"</Description>");
-        sb.AppendLine($"{ind}  <Address>+{field.Offset:X}</Address>");
+
+        if (field.Offset >= 0)
+        {
+            // Native field: relative offset from parent
+            sb.AppendLine($"{ind}  <Address>+{field.Offset:X}</Address>");
+        }
+        else if (!string.IsNullOrEmpty(field.Address))
+        {
+            // GDScript member: absolute address (no static offset available)
+            sb.AppendLine($"{ind}  <Address>{field.Address}</Address>");
+        }
+        else
+        {
+            return; // No usable address
+        }
+
         sb.AppendLine($"{ind}  <VariableType>{ceType}</VariableType>");
         if (ceType is "8 Bytes" or "Pointer")
             sb.AppendLine($"{ind}  <ShowAsHex>1</ShowAsHex>");
@@ -133,7 +146,7 @@ public sealed class CeXmlExportService
     /// <summary>Emit a composite type (Vector3, Color, etc.) as a Group with float children.</summary>
     private static void EmitCompositeField(StringBuilder sb, int depth, LiveFieldValue field)
     {
-        if (field.Offset < 0) return;
+        if (field.Offset < 0 && string.IsNullOrEmpty(field.Address)) return;
 
         var upperType = field.Type.ToUpperInvariant();
         if (!CompositeChildren.TryGetValue(upperType, out var children))
@@ -151,7 +164,7 @@ public sealed class CeXmlExportService
         var ind = Indent(depth);
         sb.AppendLine($"{ind}<CheatEntry>");
         sb.AppendLine($"{ind}  <Description>\"{EscapeXml(field.Name)} ({field.Type})\"</Description>");
-        sb.AppendLine($"{ind}  <Address>+{field.Offset:X}</Address>");
+        sb.AppendLine($"{ind}  <Address>{(field.Offset >= 0 ? $"+{field.Offset:X}" : field.Address)}</Address>");
         sb.AppendLine($"{ind}  <GroupHeader>1</GroupHeader>");
         sb.AppendLine($"{ind}  <CheatEntries>");
 
@@ -174,7 +187,7 @@ public sealed class CeXmlExportService
     /// <summary>Emit an OBJECT pointer field with Offsets=[0] dereference.</summary>
     private static void EmitPointerField(StringBuilder sb, int depth, LiveFieldValue field)
     {
-        if (field.Offset < 0) return;
+        if (field.Offset < 0 && string.IsNullOrEmpty(field.Address)) return;
 
         var ind = Indent(depth);
         var className = !string.IsNullOrEmpty(field.PtrClass)
@@ -182,7 +195,7 @@ public sealed class CeXmlExportService
 
         sb.AppendLine($"{ind}<CheatEntry>");
         sb.AppendLine($"{ind}  <Description>\"{EscapeXml(field.Name)}{EscapeXml(className)} *\"</Description>");
-        sb.AppendLine($"{ind}  <Address>+{field.Offset:X}</Address>");
+        sb.AppendLine($"{ind}  <Address>{(field.Offset >= 0 ? $"+{field.Offset:X}" : field.Address)}</Address>");
         sb.AppendLine($"{ind}  <Offsets>");
         sb.AppendLine($"{ind}    <Offset>0</Offset>");
         sb.AppendLine($"{ind}  </Offsets>");
@@ -195,14 +208,14 @@ public sealed class CeXmlExportService
     /// <summary>Emit a container (Array/Dictionary) as a Group with Offsets=[0] data pointer deref.</summary>
     private static void EmitContainerField(StringBuilder sb, int depth, LiveFieldValue field)
     {
-        if (field.Offset < 0) return;
+        if (field.Offset < 0 && string.IsNullOrEmpty(field.Address)) return;
 
         var countStr = field.ElementCount > 0 ? $"[{field.ElementCount}]" : "";
         var ind = Indent(depth);
 
         sb.AppendLine($"{ind}<CheatEntry>");
         sb.AppendLine($"{ind}  <Description>\"{EscapeXml(field.Name)} ({field.Type}{countStr})\"</Description>");
-        sb.AppendLine($"{ind}  <Address>+{field.Offset:X}</Address>");
+        sb.AppendLine($"{ind}  <Address>{(field.Offset >= 0 ? $"+{field.Offset:X}" : field.Address)}</Address>");
         sb.AppendLine($"{ind}  <Offsets>");
         sb.AppendLine($"{ind}    <Offset>0</Offset>");
         sb.AppendLine($"{ind}  </Offsets>");
@@ -226,7 +239,7 @@ public sealed class CeXmlExportService
     {
         foreach (var field in fields)
         {
-            if (field.Offset < 0) continue; // Unknown offset, skip
+            if (field.Offset < 0 && string.IsNullOrEmpty(field.Address)) continue; // No usable address
 
             var upperType = field.Type.ToUpperInvariant();
 

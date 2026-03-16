@@ -85,8 +85,19 @@
                      FontSize="12" />
         </Border>
 
+        <!-- Status bar (docked bottom — must come before fill element) -->
+        <Border DockPanel.Dock="Bottom" Padding="6,2" Background="#007ACC"
+                IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="White" FontSize="11" />
+        </Border>
+        <Border DockPanel.Dock="Bottom" Padding="6,2" Background="#D32F2F"
+                IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="White" FontSize="11" />
+        </Border>
+
         <!-- Fields DataGrid -->
-        <DataGrid x:CompileBindings="False"
+        <DataGrid x:Name="FieldsGrid"
+                  x:CompileBindings="False"
                   ItemsSource="{Binding Fields}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
@@ -99,24 +110,7 @@
                   Foreground="#D4D4D4"
                   FontFamily="Consolas"
                   FontSize="12">
-            <DataGrid.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Generate CE Lua Script" Command="{Binding GenerateCeScriptCommand}"
-                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
-                    <Separator />
-                    <MenuItem Header="Copy CE XML" Command="{Binding CopyCeXmlCommand}" />
-                    <MenuItem Header="Copy CE Field" Command="{Binding CopyCeFieldCommand}"
-                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
-                    <Separator />
-                    <MenuItem Header="Export CSX" Command="{Binding ExportCsxCommand}" />
-                    <MenuItem Header="Export SDK" Command="{Binding ExportSdkCommand}" />
-                    <Separator />
-                    <MenuItem Header="Copy Address" Command="{Binding CopyFieldAddressCommand}"
-                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
-                    <MenuItem Header="Copy Name" Command="{Binding CopyFieldNameCommand}"
-                              CommandParameter="{Binding $parent[DataGrid].SelectedItem}" />
-                </ContextMenu>
-            </DataGrid.ContextMenu>
+            <!-- ContextMenu wired in code-behind for AOT compatibility -->
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Offs" Binding="{Binding OffsetDisplay}" Width="70" />
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
