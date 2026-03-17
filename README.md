@@ -117,20 +117,20 @@ All modules use names from the anime *Frieren: Beyond Journey's End*:
 
 | Module | Character | Role |
 |--------|-----------|------|
-| **Zoltraak** | 栔爾朵列 (Attack Magic) | Memory scanning, AOB, SEH reads |
+| **Zoltraak** | 殺人魔法 (Attack Magic) | Memory scanning, AOB, SEH reads |
 | **Frieren** | 芙莉蓮 (Protagonist) | Offset finder, AOB signatures |
 | **Ausetiese** | 服從之秤 (Aura's Scales) | ObjectDB enumeration |
 | **Diagoldze** | 黃金化 (Golden Transmutation) | ClassDB registry |
 | **Serie** | 賽莉耶 (Living History) | SceneTree walker |
-| **Ubel** | 優貝爾 (Assassin Specialist) | Property/variant reader |
-| **Flamme** | 芙拉梅 (Great Mage) | StringName resolver |
+| **Ubel** | 尤蓓爾 (Assassin Specialist) | Property/variant reader |
+| **Flamme** | 弗蘭梅 (Great Mage) | StringName resolver |
 | **Fern** | 費倫 (Apprentice) | Named pipe server |
 | **Stark** | 修塔爾克 (Brave Warrior) | C ABI export layer |
 | **Heiter** | 海塔 (Priest) | Game thread dispatch |
-| **Qual** | 魁 (Elder Demon) | Mailbox IPC for CE scripts |
-| **Eisen** | 艾乍 (Iron Warrior) | Proxy DLL forwarding |
+| **Qual** | 庫瓦爾 (Elder Demon) | Mailbox IPC for CE scripts |
+| **Eisen** | 艾冉 (Iron Warrior) | Proxy DLL forwarding |
 | **Himmel** | 欣梅爾 (Hero) | Hint cache persistence |
-| **Solitaer** | 索莉緹爾 (Concealment) | Logging system |
+| **Solitaer** | 索莉塔 (Concealment) | Logging system |
 
 See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
 
