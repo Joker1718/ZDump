@@ -36,6 +36,9 @@ struct FieldEntry {
     uint32_t     usage = 0;      // PROPERTY_USAGE_* flags
 };
 
+// Version-aware Variant::Type → display name (3.x returns "real", 4.x returns "float", etc.)
+const char* VariantTypeName(int type);
+
 // Read and decode a Variant at the given address
 VariantValue ReadVariant(uint64_t addr);
 
@@ -67,5 +70,36 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr);
 // Get GDScript member names from a GDScript object (index → name mapping).
 // Public wrapper around internal ReadGDScriptMemberNames for mailbox use.
 std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr);
+
+// ============================================================
+// Container reading (Array / Dictionary / PackedArray)
+// ============================================================
+
+// Element within a container
+struct ContainerElement {
+    int          index = 0;   // Element index (0-based for Array, sequential for Dictionary)
+    std::string  key;         // For Dictionary: key display string (empty for Array)
+    VariantValue value;       // Decoded element value
+};
+
+// Information about a container field
+struct ContainerInfo {
+    std::string containerType;    // "Array", "Dictionary", "PackedByteArray", etc.
+    int         elementCount = 0; // Total number of elements
+    std::string elementType;      // Typed array element type name (empty if untyped)
+    std::string keyType;          // Dictionary key type name (empty for Array)
+};
+
+// Read container metadata (count, types) without reading elements.
+// dataAddr = address of the Variant data (the pointer to the container internals).
+// variantType = raw Variant::Type value (version-specific).
+ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType);
+
+// Read container elements with pagination.
+// dataAddr = address of the Variant data (the pointer to the container internals).
+// variantType = raw Variant::Type value (version-specific).
+// offset/limit = pagination (0-based).
+std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int variantType,
+                                                     int offset = 0, int limit = 100);
 
 } // namespace Zolt::Ubel

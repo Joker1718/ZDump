@@ -61,6 +61,7 @@ public sealed class SdkExportService
         "INT" or "int" when size == 2 => "int16_t",
         "INT" or "int" when size == 4 => "int32_t",
         "INT" or "int" => "int64_t",
+        "real" => "double",                               // Godot 3.x real_t = always double
         "FLOAT" or "float" when size == 4 => "float",
         "FLOAT" or "float" => "double",
         "STRING" => "godot::String",
@@ -78,8 +79,17 @@ public sealed class SdkExportService
         "RECT2" => "godot::Rect2",
         "PLANE" => "godot::Plane",
         "OBJECT" => "godot::Object*",
-        "ARRAY" => "godot::Array",
-        "DICTIONARY" => "godot::Dictionary",
+        "Quat" => "godot::Quat",                         // Godot 3.x
+        "Transform" => "godot::Transform",               // Godot 3.x
+        "ARRAY" or "Array" => "godot::Array",
+        "DICTIONARY" or "Dictionary" => "godot::Dictionary",
+        "PoolByteArray" => "godot::PoolByteArray",        // Godot 3.x Pool* types
+        "PoolIntArray" => "godot::PoolIntArray",
+        "PoolRealArray" => "godot::PoolRealArray",
+        "PoolStringArray" => "godot::PoolStringArray",
+        "PoolVector2Array" => "godot::PoolVector2Array",
+        "PoolVector3Array" => "godot::PoolVector3Array",
+        "PoolColorArray" => "godot::PoolColorArray",
         "PACKED_BYTE_ARRAY" => "godot::PackedByteArray",
         "PACKED_INT32_ARRAY" => "godot::PackedInt32Array",
         "PACKED_INT64_ARRAY" => "godot::PackedInt64Array",

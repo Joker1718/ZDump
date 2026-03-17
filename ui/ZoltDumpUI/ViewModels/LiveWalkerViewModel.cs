@@ -187,6 +187,44 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    internal async Task NavigateContainerAsync(LiveFieldValue field)
+    {
+        if (!field.IsContainer || string.IsNullOrEmpty(field.Address)) return;
+        try
+        {
+            ClearError();
+            IsLoading = true;
+
+            var result = await _dump.WalkContainerAsync(field.Address, field.VariantType);
+
+            // Update header to show container context
+            string containerLabel = $"{field.Name} ({result.ContainerType}[{result.ElementCount}])";
+            CurrentName = containerLabel;
+            // Keep CurrentAddress/CurrentClassName from parent — we're drilling into a field
+            IsNode = false;
+
+            Fields.Clear();
+            foreach (var f in result.Fields)
+                Fields.Add(f);
+
+            // Add breadcrumb for container navigation
+            Breadcrumbs.Add(new BreadcrumbItem(
+                field.Address, containerLabel, result.ContainerType));
+
+            _log.Debug("view", $"Container drilldown: {containerLabel} ({result.Fields.Count} elements)");
+        }
+        catch (Exception ex)
+        {
+            SetError($"Container walk failed: {ex.Message}");
+            _log.Error("view", "Container walk failed", ex);
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    [RelayCommand]
     private async Task CopyAddressAsync()
     {
         await _platform.CopyToClipboardAsync(CurrentAddress);
@@ -251,11 +289,21 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
             if (IsNode)
             {
-                // Node-derived: use FIND_NODE by node name → GET_MEMBER_ADDR
-                // This handles duplicate class names (Player HP vs Enemy HP)
+                // Node-derived: use FIND_NODE by node name
                 string nodeName = CurrentName;
                 string symbolName = CeLuaScriptService.MakeSymbolName(nodeName, memberName);
-                script = _ceLua.GenerateMemberScript(nodeName, memberName, symbolName);
+
+                if (field.Offset >= 0)
+                {
+                    // Native property with known offset: FIND_NODE + direct offset
+                    // (e.g. Timer.time_left at +0x1E0 — not a GDScript member)
+                    script = _ceLua.GenerateNativeOffsetScript(nodeName, memberName, field.Offset, symbolName);
+                }
+                else
+                {
+                    // GDScript member (offset < 0): FIND_NODE → GET_MEMBER_ADDR
+                    script = _ceLua.GenerateMemberScript(nodeName, memberName, symbolName);
+                }
                 label = $"{nodeName}.{memberName}";
             }
             else
@@ -358,10 +406,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     /// <summary>Map Godot Variant type string to CE TVariableType.</summary>
+    /// <remarks>Handles both Godot 4.x and 3.x type names.</remarks>
     private static CeValueType MapGodotTypeToCeValueType(string godotType) => godotType.ToUpperInvariant() switch
     {
         "BOOL" => CeValueType.Byte,
         "INT" => CeValueType.Dword,
+        "REAL" => CeValueType.Double,                     // Godot 3.x real_t = always double
         "FLOAT" => CeValueType.Float,
         "STRING" or "STRING_NAME" or "NODE_PATH" => CeValueType.String,
         "OBJECT" => CeValueType.Qword,

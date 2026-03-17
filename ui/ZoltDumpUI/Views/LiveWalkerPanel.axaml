@@ -115,7 +115,31 @@
                 <DataGridTextColumn Header="Offs" Binding="{Binding OffsetDisplay}" Width="70" />
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="200" />
                 <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="120" />
-                <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="200" />
+                <DataGridTemplateColumn Header="Value" Width="200">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Panel>
+                                <!-- Container fields: clickable to drill down -->
+                                <Button Content="{Binding Value}"
+                                        Command="{Binding $parent[UserControl].DataContext.NavigateContainerCommand}"
+                                        CommandParameter="{Binding}"
+                                        IsVisible="{Binding IsContainer}"
+                                        Padding="2,0"
+                                        Margin="0"
+                                        Background="Transparent"
+                                        Foreground="#DCDCAA"
+                                        Cursor="Hand"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Center" />
+                                <!-- Non-container fields: plain text -->
+                                <TextBlock Text="{Binding Value}"
+                                           IsVisible="{Binding !IsContainer}"
+                                           VerticalAlignment="Center"
+                                           Padding="2,0" />
+                            </Panel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Hex" Binding="{Binding Hex}" Width="120" />
                 <DataGridTextColumn Header="Address" Binding="{Binding Address}" Width="140" />
                 <DataGridTemplateColumn Header="Ptr" Width="160">
@@ -129,8 +153,6 @@
                                     Margin="0"
                                     Background="Transparent"
                                     Foreground="#4EC9B0"
-                                    FontFamily="Consolas"
-                                    FontSize="12"
                                     Cursor="Hand"
                                     HorizontalAlignment="Left"
                                     VerticalAlignment="Center" />

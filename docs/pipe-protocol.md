@@ -198,6 +198,56 @@ Direction: bidirectional — Request/Response + async push Events
 }
 ```
 
+### walk_container
+
+Drill into Array/Dictionary/PackedArray elements with pagination.
+
+**Request**:
+```jsonc
+{ "cmd": "walk_container", "id": 12,
+  "address": "1E2D4C23170",  // Variant data address (from walk_instance field)
+  "variant_type": 28,         // Raw Variant::Type (28=Array, 27=Dictionary, 29-38=Packed)
+  "offset": 0,                // Pagination start (0-based)
+  "limit": 100                // Max elements to return (capped at 1000)
+}
+```
+
+**Response**:
+```jsonc
+{
+  "id": 12, "ok": true,
+  "address": "1E2D4C23170",
+  "container_type": "Array",
+  "element_count": 5,
+  "element_type": "",
+  "key_type": "",
+  "fields": [
+    {
+      "name": "[0]",
+      "type": "Object",
+      "variant_type": 24,
+      "value": "Object@1E2D4C50000 (id=42)",
+      "address": "1E2D4C40010",
+      "offset": -1,
+      "is_pointer": true,
+      "is_container": false,
+      "ptr_value": "1E2D4C50000",
+      "ptr_class": "Weapon"
+    },
+    {
+      "name": "[1]",
+      "type": "String",
+      "variant_type": 4,
+      "value": "\"Iron Sword\"",
+      "address": "1E2D4C40028",
+      "offset": -1,
+      "is_pointer": false,
+      "is_container": false
+    }
+  ]
+}
+```
+
 ### walk_tree
 
 ```jsonc

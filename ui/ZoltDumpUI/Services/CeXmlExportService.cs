@@ -32,6 +32,7 @@ public sealed class CeXmlExportService
         ["VECTOR4I"] = ["x", "y", "z", "w"],
         ["COLOR"] = ["r", "g", "b", "a"],
         ["QUATERNION"] = ["x", "y", "z", "w"],
+        ["Quat"] = ["x", "y", "z", "w"],                 // Godot 3.x alias
         ["RECT2"] = ["x", "y", "w", "h"],
         ["RECT2I"] = ["x", "y", "w", "h"],
         ["AABB"] = ["pos.x", "pos.y", "pos.z", "size.x", "size.y", "size.z"],
@@ -42,6 +43,10 @@ public sealed class CeXmlExportService
                            "basis.y.x", "basis.y.y", "basis.y.z",
                            "basis.z.x", "basis.z.y", "basis.z.z",
                            "origin.x", "origin.y", "origin.z"],
+        ["Transform"] = ["basis.x.x", "basis.x.y", "basis.x.z",  // Godot 3.x alias
+                         "basis.y.x", "basis.y.y", "basis.y.z",
+                         "basis.z.x", "basis.z.y", "basis.z.z",
+                         "origin.x", "origin.y", "origin.z"],
     };
 
     // ============================================================
@@ -409,6 +414,7 @@ public sealed class CeXmlExportService
     }
 
     /// <summary>Map Godot Variant type to CE VariableType string.</summary>
+    /// <remarks>Handles both Godot 4.x and 3.x type names (e.g. "real", "Quat", "Transform").</remarks>
     public static string MapVariantToCeType(string godotType, int size) => godotType switch
     {
         "BOOL" or "bool" => "Byte",
@@ -416,13 +422,15 @@ public sealed class CeXmlExportService
         "INT" or "int" when size <= 2 => "2 Bytes",
         "INT" or "int" when size <= 4 => "4 Bytes",
         "INT" or "int" => "8 Bytes",
+        "real" => "Double",                              // Godot 3.x real_t = always double
         "FLOAT" or "float" when size <= 4 => "Float",
         "FLOAT" or "float" => "Double",
         "STRING" or "STRING_NAME" or "NODE_PATH" => "String",
         "OBJECT" => "Pointer",
         "VECTOR2" or "VECTOR3" or "VECTOR4" or "COLOR"
             or "TRANSFORM2D" or "TRANSFORM3D" or "BASIS"
-            or "QUATERNION" or "AABB" or "PLANE" or "RECT2" => "Group",
+            or "QUATERNION" or "AABB" or "PLANE" or "RECT2"
+            or "Quat" or "Transform" => "Group",         // Godot 3.x names
         _ => "4 Bytes"
     };
 }

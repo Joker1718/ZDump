@@ -29,24 +29,67 @@
             </StackPanel>
         </Border>
 
-        <!-- Class List -->
-        <DataGrid x:CompileBindings="False"
-                  ItemsSource="{Binding DisplayedClasses}"
-                  AutoGenerateColumns="False"
-                  IsReadOnly="True"
-                  CanUserResizeColumns="True"
-                  HorizontalScrollBarVisibility="Auto"
-                  Background="#1E1E1E"
-                  Foreground="#D4D4D4"
-                  FontFamily="Consolas"
-                  FontSize="12">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Score" Binding="{Binding Score}" Width="50" />
-                <DataGridTextColumn Header="Class" Binding="{Binding ClassName}" Width="250" />
-                <DataGridTextColumn Header="Super" Binding="{Binding SuperName}" Width="200" />
-                <DataGridTextColumn Header="Props" Binding="{Binding PropertyCount}" Width="60" />
-                <DataGridTextColumn Header="Methods" Binding="{Binding MethodCount}" Width="60" />
-            </DataGrid.Columns>
-        </DataGrid>
+        <!-- Split: Class List (top) + Property Detail (bottom) -->
+        <Grid RowDefinitions="3*,Auto,2*">
+            <!-- Class List -->
+            <DataGrid x:Name="ClassGrid"
+                      x:CompileBindings="False"
+                      Grid.Row="0"
+                      ItemsSource="{Binding DisplayedClasses}"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      CanUserResizeColumns="True"
+                      HorizontalScrollBarVisibility="Auto"
+                      Background="#1E1E1E"
+                      Foreground="#D4D4D4"
+                      FontFamily="Consolas"
+                      FontSize="12">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Score" Binding="{Binding Score}" Width="50" />
+                    <DataGridTextColumn Header="Class" Binding="{Binding ClassName}" Width="250" />
+                    <DataGridTextColumn Header="Super" Binding="{Binding SuperName}" Width="200" />
+                    <DataGridTextColumn Header="Props" Binding="{Binding PropertyCount}" Width="60" />
+                    <DataGridTextColumn Header="Methods" Binding="{Binding MethodCount}" Width="60" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Row="1" Height="4" Background="#3F3F46"
+                          HorizontalAlignment="Stretch" />
+
+            <!-- Property Detail Panel -->
+            <DockPanel Grid.Row="2" Background="#1E1E1E">
+                <!-- Detail Header -->
+                <Border DockPanel.Dock="Top" Padding="4,2" Background="#2D2D30">
+                    <TextBlock Foreground="#569CD6" FontSize="12">
+                        <Run Text="{Binding SelectedClassName}" />
+                        <Run Text=" : " Foreground="#808080" />
+                        <Run Text="{Binding SelectedSuperName}" />
+                        <Run Text="  (" Foreground="#808080" />
+                        <Run Text="{Binding SelectedPropertyCount}" />
+                        <Run Text=" props)" Foreground="#808080" />
+                    </TextBlock>
+                </Border>
+
+                <!-- Properties Grid -->
+                <DataGrid x:CompileBindings="False"
+                          ItemsSource="{Binding SelectedProperties}"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          CanUserResizeColumns="True"
+                          Background="#1E1E1E"
+                          Foreground="#D4D4D4"
+                          FontFamily="Consolas"
+                          FontSize="12">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Property" Binding="{Binding Name}" Width="200" />
+                        <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="120" />
+                        <DataGridTextColumn Header="Offset" Binding="{Binding Offset, StringFormat='0x{0:X}'}" Width="80" />
+                        <DataGridTextColumn Header="Size" Binding="{Binding Size}" Width="60" />
+                        <DataGridTextColumn Header="Hint" Binding="{Binding HintString}" Width="200" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Grid>
     </DockPanel>
 </UserControl>

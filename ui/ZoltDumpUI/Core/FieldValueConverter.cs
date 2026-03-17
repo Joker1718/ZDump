@@ -13,6 +13,7 @@ public static class FieldValueConverter
 
         return typeName switch
         {
+            "real" => TryWriteDouble(v),                  // Godot 3.x real_t = always double
             "FLOAT" or "float" => TryWriteFloat(v),
             "DOUBLE" or "double" => TryWriteDouble(v),
             "INT" or "int" when v.StartsWith("0x", StringComparison.OrdinalIgnoreCase) => TryWriteHexInt64(v),

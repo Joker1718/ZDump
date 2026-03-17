@@ -154,52 +154,9 @@ static std::string ReadObjectName(uint64_t objAddr) {
     return Serie::GetNodeName(objAddr);
 }
 
-// Godot Variant::Type enum to string name mapping
+// Version-aware Variant::Type → display name (delegates to Ubel)
 static const char* VariantTypeName(int type) {
-    static const char* names[] = {
-        "Nil",            // 0
-        "bool",           // 1
-        "int",            // 2
-        "float",          // 3
-        "String",         // 4
-        "Vector2",        // 5
-        "Vector2i",       // 6
-        "Rect2",          // 7
-        "Rect2i",         // 8
-        "Vector3",        // 9
-        "Vector3i",       // 10
-        "Transform2D",    // 11
-        "Vector4",        // 12
-        "Vector4i",       // 13
-        "Plane",          // 14
-        "Quaternion",     // 15
-        "AABB",           // 16
-        "Basis",          // 17
-        "Transform3D",    // 18
-        "Projection",     // 19
-        "Color",          // 20
-        "StringName",     // 21
-        "NodePath",       // 22
-        "RID",            // 23
-        "Object",         // 24
-        "Callable",       // 25
-        "Signal",         // 26
-        "Dictionary",     // 27
-        "Array",          // 28
-        "PackedByteArray",    // 29
-        "PackedInt32Array",   // 30
-        "PackedInt64Array",   // 31
-        "PackedFloat32Array", // 32
-        "PackedFloat64Array", // 33
-        "PackedStringArray",  // 34
-        "PackedVector2Array", // 35
-        "PackedVector3Array", // 36
-        "PackedColorArray",   // 37
-        "PackedVector4Array", // 38
-    };
-    if (type >= 0 && type < static_cast<int>(std::size(names)))
-        return names[type];
-    return "Unknown";
+    return Ubel::VariantTypeName(type);
 }
 
 // ============================================================
@@ -682,6 +639,13 @@ static json HandleWalkInstance(int id, const json& req) {
         f["is_pointer"]   = IsPointerType(entry.value.type);
         f["is_struct"]    = IsStructType(entry.value.type);
         f["is_container"] = IsContainerType(entry.value.type);
+        // For container types, read element count for display
+        if (IsContainerType(entry.value.type) && entry.value.rawAddr) {
+            auto cInfo = Ubel::ReadContainerInfo(entry.value.rawAddr, entry.value.type);
+            f["element_count"] = cInfo.elementCount;
+            if (!cInfo.elementType.empty())
+                f["element_type"] = SafeStr(cInfo.elementType);
+        }
         f["from_ptrcall"] = entry.fromPtrcall;
         if (!entry.className.empty()) {
             f["class_name"] = SafeStr(entry.className);
@@ -716,6 +680,76 @@ static json HandleWalkInstance(int id, const json& req) {
     resp["parent_addr"] = parentAddr;
     resp["is_node"]    = Diagoldze::IsNodeDerived(className);
     resp["fields"]     = std::move(fields);
+    return resp;
+}
+
+// cmd: walk_container — drill into Array/Dictionary/PackedArray elements
+static json HandleWalkContainer(int id, const json& req) {
+    std::string addrStr = GetAddrField(req);
+    if (addrStr.empty()) return ErrorResponse(id, "Missing 'address' field");
+
+    uint64_t dataAddr = HexToAddr(addrStr);
+    if (!dataAddr || !Zoltraak::IsReadable(dataAddr))
+        return ErrorResponse(id, "Address unreadable: " + addrStr);
+
+    // variant_type is required to know how to interpret the container
+    int variantType = req.value("variant_type", -1);
+    if (variantType < 0) return ErrorResponse(id, "Missing 'variant_type' field");
+
+    int offset = req.value("offset", 0);
+    int limit  = req.value("limit", 100);
+    if (limit > 1000) limit = 1000; // cap to prevent huge responses
+
+    Solitaer::Debug("PIPE:cmd", "walk_container: addr=%s type=%d offset=%d limit=%d",
+        addrStr.c_str(), variantType, offset, limit);
+
+    // Read container info
+    auto info = Ubel::ReadContainerInfo(dataAddr, variantType);
+
+    // Read elements
+    auto elements = Ubel::ReadContainerElements(dataAddr, variantType, offset, limit);
+
+    // Build response fields (same format as walk_instance for UI reuse)
+    json fields = json::array();
+    for (auto& elem : elements) {
+        json f;
+        f["name"]         = "[" + std::to_string(elem.index) + "]";
+        if (!elem.key.empty())
+            f["name"]     = elem.key + " → [" + std::to_string(elem.index) + "]";
+        f["type"]         = SafeStr(elem.value.typeName);
+        f["variant_type"] = elem.value.type;
+        f["value"]        = SafeStr(elem.value.value);
+        f["address"]      = elem.value.rawAddr ? AddrToHex(elem.value.rawAddr) : "";
+        f["offset"]       = -1; // Container elements don't have fixed offsets
+        f["size"]         = VariantTypeSize(elem.value.type);
+        f["is_pointer"]   = IsPointerType(elem.value.type);
+        f["is_struct"]    = IsStructType(elem.value.type);
+        f["is_container"] = IsContainerType(elem.value.type);
+        f["from_ptrcall"] = false;
+        // For Object-type elements, provide ptr_value and ptr_class for drilldown
+        if (IsPointerType(elem.value.type) && elem.value.ptrTarget) {
+            f["ptr_value"] = AddrToHex(elem.value.ptrTarget);
+            std::string ptrCls = Diagoldze::GetObjectClass(elem.value.ptrTarget);
+            if (!ptrCls.empty()) f["ptr_class"] = SafeStr(ptrCls);
+        }
+        // For nested containers, include element_count
+        if (IsContainerType(elem.value.type) && elem.value.rawAddr) {
+            auto nested = Ubel::ReadContainerInfo(elem.value.rawAddr, elem.value.type);
+            f["element_count"] = nested.elementCount;
+        }
+        fields.push_back(std::move(f));
+    }
+
+    Solitaer::Info("PIPE:cmd", "walk_container: %d elements returned (total=%d, type=%s)",
+        static_cast<int>(elements.size()), info.elementCount, info.containerType.c_str());
+
+    json resp = OkResponse(id);
+    resp["address"]        = AddrToHex(dataAddr);
+    resp["container_type"] = SafeStr(info.containerType);
+    resp["element_count"]  = info.elementCount;
+    resp["element_type"]   = SafeStr(info.elementType);
+    resp["key_type"]       = SafeStr(info.keyType);
+    resp["fields"]         = std::move(fields);
     return resp;
 }
 
@@ -1015,6 +1049,7 @@ static const std::unordered_map<std::string, HandlerFn> s_handlers = {
     {"find_by_address",    HandleFindByAddress},
     {"walk_class",         HandleWalkClass},
     {"walk_instance",      HandleWalkInstance},
+    {"walk_container",     HandleWalkContainer},
     {"walk_tree",          HandleWalkTree},
     {"find_instances",     HandleFindInstances},
     {"read_mem",           HandleReadMem},

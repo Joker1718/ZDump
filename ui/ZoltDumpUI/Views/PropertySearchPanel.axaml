@@ -22,7 +22,8 @@
         </Border>
 
         <!-- Results -->
-        <DataGrid x:CompileBindings="False"
+        <DataGrid x:Name="ResultsGrid"
+                  x:CompileBindings="False"
                   ItemsSource="{Binding Results}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
