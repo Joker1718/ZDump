@@ -33,6 +33,10 @@ public class CeXmlExportServiceTests
     [InlineData("VECTOR3", 12, "Group")]
     [InlineData("COLOR", 16, "Group")]
     [InlineData("UNKNOWN", 4, "4 Bytes")]
+    // Godot 3.x type names
+    [InlineData("real", 8, "Double")]
+    [InlineData("Quat", 16, "Group")]
+    [InlineData("Transform", 48, "Group")]
     public void MapVariantToCeType_CorrectMappings(string type, int size, string expected)
     {
         Assert.Equal(expected, CeXmlExportService.MapVariantToCeType(type, size));

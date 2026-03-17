@@ -35,14 +35,16 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 
 ---
 
-## Error Handling
+## Error Handling (Reserved — Not Yet Implemented)
 
-| Term | Character | Usage |
-|---|---|---|
-| **Mimic** | 寶箱怪 (chest mimic) | Error types, trap results, exception wrappers |
+| Term | Character | Usage | Status |
+|---|---|---|---|
+| **Mimic** | 寶箱怪 (chest mimic) | Error types, trap results, exception wrappers | Reserved for future use |
+
+Currently, error handling is distributed across modules (try-catch, SEH, return `{0,0}`). Mimic namespace will be introduced when centralized error propagation is needed.
 
 ```cpp
-// Mimic — 寶箱怪 — Error handling and trap detection
+// Mimic — 寶箱怪 — Error handling and trap detection (reserved design)
 namespace Mimic {
     enum class TrapType {
         NullSlot,          // Empty object slot (the chest is empty)
@@ -99,7 +101,7 @@ Zolt::                      // Root namespace
   Himmel::                  // Hint cache
   Heiter::                  // Game thread
   Qual::                    // Mailbox
-  Mimic::                   // Error handling
+  Mimic::                   // Error handling (reserved)
   DynOff::                  // Dynamic offsets (in Grimoire.h)
 ```
 
