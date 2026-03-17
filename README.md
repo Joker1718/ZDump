@@ -13,49 +13,84 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 
 ## Features
 
-- **Real-time object inspection** — Browse Godot's ObjectDB, ClassDB, and SceneTree
-- **Live property values** — Read object properties at runtime via direct memory access and ptrcall
-- **Node tree hierarchy** — Navigate the complete scene tree with drilldown
-- **Cheat Engine integration** — Copy CE XML, CE Field, Export CSX
-- **AOBMaker integration** — Generate AA code, goto dump address
-- **Proxy DLL injection** — winmm.dll / version.dll proxy for seamless loading
+- **Real-time object inspection** — Browse Godot's ObjectDB, ClassDB, and SceneTree live in-memory
+- **Live property values** — Read object properties at runtime via direct memory access with auto-refresh
+- **Container drilldown** — Navigate into Array, Dictionary, and PackedArray elements with pagination
+- **GDScript member support** — Enumerate and read GDScript/C# script instance members alongside native properties
+- **Node tree hierarchy** — Navigate the complete scene tree with breadcrumb navigation and parent traversal
+- **Property search** — Cross-class keyword search with live value preview enrichment
+- **Class browser** — Filter and inspect ClassDB entries with inline property detail panel
+- **Instance finder** — Locate all live instances of any class with address lookup
+- **Cheat Engine integration** — CE Lua AA scripts for both native offsets and GDScript members, CE XML export, CSX Structure Dissect
+- **AOBMaker integration** — Generate AA code, create memory records, goto dump address
+- **Proxy DLL injection** — winmm.dll proxy with 180 MASM trampolines for seamless loading
 - **Multi-version support** — Godot 3.x (3.5+) and Godot 4.x (4.0 ~ 4.7+)
 
 ## Compatibility
 
 | Godot Version | ObjectDB | ClassDB | SceneTree | Property Walk |
 |---------------|----------|---------|-----------|---------------|
-| 4.0 (GCC)     | OK       | OK      | OK        | 68/96 values  |
-| 4.1 (GCC)     | OK       | OK      | OK        | 72/101 values |
-| 4.2 (MSVC)    | OK       | OK      | OK        | 86/104 values |
-| 4.3 (MSVC)    | OK       | OK      | OK        | 92/111 values |
-| 4.4.x         | OK       | OK      | OK        | OK            |
-| 4.5.x         | OK       | OK      | OK        | OK            |
-| 4.6.x         | OK       | OK (AHashMap) | OK   | OK            |
-| 3.5+ (GCC)    | OK       | OK      | OK        | 41/52 values  |
+| 4.0 (GCC)     | ✅       | ✅      | ✅        | 68/96 values  |
+| 4.1 (GCC)     | ✅       | ✅      | ✅        | 72/101 values |
+| 4.2 (MSVC)    | ✅       | ✅      | ✅        | 86/104 values |
+| 4.3 (MSVC)    | ✅       | ✅      | ✅        | 92/111 values |
+| 4.4.x         | ✅       | ✅      | ✅        | ✅            |
+| 4.5.x         | ✅       | ✅      | ✅        | ✅            |
+| 4.6.x         | ✅       | ✅ (AHashMap) | ✅   | ✅            |
+| 3.5+ (GCC)    | ✅       | ✅      | ✅        | 41/52 values  |
 
-Tested with official editors (4.0-4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1), Holo X Break (4.2).
+Tested with official editors (4.0–4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1rc2), Holo X Break (4.2), Dome Keeper (4.2.2).
 
 ## Architecture
 
 ```
 Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 +-------------------------------+    +---------------------------+
-| ZoltDumper.dll [injected]     |    | NodeTreePanel             |
-|   Frieren  (OffsetFinder)     |    | LiveWalkerPanel           |
-|   Ausetiese (ObjectDB)        |    | ClassStructPanel          |
-|   Diagoldze (ClassDB)         |pipe| InstanceFinderPanel       |
-|   Serie    (SceneTree)        |<-->| PointerPanel              |
-|   Ubel     (PropertyWalker)   |    | ProxyDeployPanel          |
-|   Flamme   (StringName)       |    | CE XML/CSX Export         |
-|   Heiter   (GameThread)       |    | AOBMaker Bridge           |
-+-------------------------------+    +---------------------------+
+| ZoltDumper.dll [injected]     |    | LiveWalkerPanel           |
+|   Frieren  (OffsetFinder)     |    |   Container drilldown     |
+|   Ausetiese (ObjectDB)        |    |   CE Lua script gen       |
+|   Diagoldze (ClassDB)         |pipe|   Auto-refresh            |
+|   Serie    (SceneTree)        |<-->| InstanceFinderPanel       |
+|   Ubel     (PropertyWalker)   |    | PropertySearchPanel       |
+|   Flamme   (StringName)       |    |   Live value enrichment   |
+|   Heiter   (GameThread)       |    | NodeFilterPanel           |
+|   Qual     (Mailbox IPC)      |    |   Class property detail   |
+|   Eisen    (Proxy DLL)        |    | NodeTreePanel             |
++-------------------------------+    | ClassStructPanel          |
+                                     | PointerPanel              |
+                                     | ProxyDeployPanel          |
+                                     | CE XML/CSX/SDK Export     |
+                                     | AOBMaker Bridge           |
+                                     +---------------------------+
 ```
+
+## UI Panels
+
+| Panel | Description |
+|-------|-------------|
+| **Live Walker** | Real-time property drilldown with breadcrumb navigation, container element browsing, CE Lua script generation (native offsets + GDScript members), auto-refresh |
+| **Instance Finder** | Search for all live instances of a class, address lookup, navigate to Live Walker |
+| **Property Search** | Cross-class keyword search for properties by name, async live value preview, double-click to open in Live Walker |
+| **Node Filter** | ClassDB browser with super-class filtering, inline property detail panel, context menu navigation |
+| **Node Tree** | Full scene tree object listing with filtering and pagination |
+| **Class Struct** | ClassDB property + method definitions for any class |
+| **Pointers** | Global pointer display (Engine, ObjectDB, ClassDB, SceneTree) with AOBMaker integration |
+| **Proxy Deploy** | Proxy DLL deployment manager for game directories |
+
+## CE Integration
+
+Zolt-Dump provides multiple Cheat Engine workflows:
+
+- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC.
+- **CE XML Export** — Pointer chain XML for importing into Cheat Engine tables
+- **CSX Structure Dissect** — Structure definition export for CE's dissect view
+- **AOBMaker Bridge** — Direct integration with AOBMaker for memory record creation
+- **ZoltDump.CT** — Pre-built Cheat Table with Lua-based DLL injection
 
 ## Build
 
 ```powershell
-# Build everything (DLL + UI)
+# Build everything (DLL + UI + Tests)
 .\build.ps1
 
 # Build DLL only
@@ -78,7 +113,26 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 
 ## Naming Convention
 
-All modules use names from the anime *Frieren: Beyond Journey's End*. See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
+All modules use names from the anime *Frieren: Beyond Journey's End*:
+
+| Module | Character | Role |
+|--------|-----------|------|
+| **Zoltraak** | 栔爾朵列 (Attack Magic) | Memory scanning, AOB, SEH reads |
+| **Frieren** | 芙莉蓮 (Protagonist) | Offset finder, AOB signatures |
+| **Ausetiese** | 服從之秤 (Aura's Scales) | ObjectDB enumeration |
+| **Diagoldze** | 黃金化 (Golden Transmutation) | ClassDB registry |
+| **Serie** | 賽莉耶 (Living History) | SceneTree walker |
+| **Ubel** | 優貝爾 (Assassin Specialist) | Property/variant reader |
+| **Flamme** | 芙拉梅 (Great Mage) | StringName resolver |
+| **Fern** | 費倫 (Apprentice) | Named pipe server |
+| **Stark** | 修塔爾克 (Brave Warrior) | C ABI export layer |
+| **Heiter** | 海塔 (Priest) | Game thread dispatch |
+| **Qual** | 魁 (Elder Demon) | Mailbox IPC for CE scripts |
+| **Eisen** | 艾乍 (Iron Warrior) | Proxy DLL forwarding |
+| **Himmel** | 欣梅爾 (Hero) | Hint cache persistence |
+| **Solitaer** | 索莉緹爾 (Concealment) | Logging system |
+
+See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
 
 ## Documentation
 
@@ -86,9 +140,12 @@ All modules use names from the anime *Frieren: Beyond Journey's End*. See [docs/
 |----------|----------|
 | [docs/architecture.md](docs/architecture.md) | Directory structure, vendor deps, build environment |
 | [docs/dll-spec.md](docs/dll-spec.md) | C++ DLL interface, offset tables, CE Lua exports |
-| [docs/pipe-protocol.md](docs/pipe-protocol.md) | Named Pipe JSON IPC protocol |
+| [docs/pipe-protocol.md](docs/pipe-protocol.md) | Named Pipe JSON IPC protocol (20 commands) |
+| [docs/export-formats.md](docs/export-formats.md) | CE XML, CSX, SDK Header export rules |
 | [docs/godot-internals.md](docs/godot-internals.md) | Godot memory layout: ObjectDB, ClassDB, Variant, Node |
 | [docs/naming-convention.md](docs/naming-convention.md) | Frieren naming guide with examples |
+| [docs/technical-notes.md](docs/technical-notes.md) | Godot version differences, offset detection |
+| [docs/dev-log.md](docs/dev-log.md) | Implementation status, challenges, next steps |
 
 ## Built with Claude Code
 
