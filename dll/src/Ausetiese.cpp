@@ -48,9 +48,16 @@ static void EnsureModuleInfo() {
 }
 
 // Try to find slot_count and slot_max near the object_slots pointer.
-// These are static uint32_t variables typically at +8, +12 or +8, +16 from object_slots.
+// These are static uint32_t variables that may be at positive OR negative offsets
+// from object_slots, depending on Godot version and compiler layout.
+//
+// In Godot 4.2 source (core/object/object.cpp), the declaration order is:
+//   static SafeNumeric<uint32_t> slot_count;   // before object_slots
+//   static SafeNumeric<uint32_t> slot_max;     // before object_slots
+//   static ObjectSlot *object_slots = nullptr;  // ← our reference point
+// So counters are typically at NEGATIVE offsets (-8, -4) from object_slots.
 static bool ProbeSlotCounters(uint64_t objectDBAddr) {
-    // Strategy: scan nearby memory (within 64 bytes after object_slots pointer)
+    // Strategy: scan nearby memory (both before and after object_slots pointer)
     // for plausible (slot_count, slot_max) pairs where:
     //   - slot_count > 0 (some objects exist)
     //   - slot_max >= slot_count
@@ -64,8 +71,17 @@ static bool ProbeSlotCounters(uint64_t objectDBAddr) {
         uint32_t max;
     };
 
-    // Common layouts: variables stored as sequential uint32_t fields
+    // Check both negative offsets (Godot 4.2+ where counters are declared
+    // BEFORE object_slots) and positive offsets (other layouts/versions).
     static const int OFFSET_PAIRS[][2] = {
+        // Negative offsets: counters declared before object_slots pointer
+        {-8,  -4},    // slot_count(4B) + slot_max(4B) immediately before pointer
+        {-12, -8},    // With SpinLock(4B) between counters and pointer
+        {-16, -12},   // With padding/alignment
+        {-16, -8},    // slot_count at -16, slot_max at -8 (8B alignment each)
+        {-12, -4},    // slot_count at -12, slot_max at -4
+        {-20, -16},   // Further negative (SpinLock + padding before counters)
+        // Positive offsets: counters declared after object_slots pointer
         {0x08, 0x0C},  // Packed: count(4B) + max(4B) right after pointer
         {0x08, 0x10},  // count at +8, max at +16 (with padding)
         {0x10, 0x14},  // count at +16, max at +20
@@ -76,8 +92,11 @@ static bool ProbeSlotCounters(uint64_t objectDBAddr) {
     Candidate best = {0, 0, 0, 0};
 
     for (auto& pair : OFFSET_PAIRS) {
-        uint32_t count = Zoltraak::ReadSafe<uint32_t>(objectDBAddr + pair[0], 0);
-        uint32_t max   = Zoltraak::ReadSafe<uint32_t>(objectDBAddr + pair[1], 0);
+        // Cast to intptr_t for safe signed arithmetic (negative offsets)
+        uint64_t countAddr = static_cast<uint64_t>(static_cast<intptr_t>(objectDBAddr) + pair[0]);
+        uint64_t maxAddr   = static_cast<uint64_t>(static_cast<intptr_t>(objectDBAddr) + pair[1]);
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(countAddr, 0);
+        uint32_t max   = Zoltraak::ReadSafe<uint32_t>(maxAddr, 0);
 
         if (count == 0 || max == 0) continue;
         if (count > 10000000 || max > 10000000) continue;
@@ -143,9 +162,9 @@ static void RefreshState() {
 
     s_slotsArray = Zoltraak::ReadSafe<uint64_t>(s_objectDBAddr, 0);
 
-    if (s_slotMaxOff > 0) {
-        s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(
-            s_objectDBAddr + s_slotMaxOff, 0));
+    if (s_slotMaxOff != 0) {
+        uint64_t maxAddr = static_cast<uint64_t>(static_cast<intptr_t>(s_objectDBAddr) + s_slotMaxOff);
+        s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(maxAddr, 0));
     } else if (s_slotsArray && Zoltraak::IsReadable(s_slotsArray)) {
         // No counter offsets known — re-scan to find the current extent.
         // New objects may have been added since Init() (e.g. root Window created after startup).
@@ -153,7 +172,7 @@ static void RefreshState() {
         int maxFound = 0;
         int startFrom = s_slotMax > 0 ? s_slotMax - 100 : 0;
         if (startFrom < 0) startFrom = 0;
-        for (int i = startFrom; i < 500000 && emptyRun < 1000; ++i) {
+        for (int i = startFrom; i < 500000 && emptyRun < 5000; ++i) {
             uintptr_t slotAddr = static_cast<uintptr_t>(s_slotsArray) +
                 static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
             uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
@@ -287,11 +306,13 @@ void Init(uint64_t objectDBAddr) {
 
     // Find slot_count and slot_max in nearby memory
     if (!ProbeSlotCounters(objectDBAddr)) {
-        // Fallback: estimate slot_max by scanning slots until we find too many empty ones
+        // Fallback: estimate slot_max by scanning slots until we find too many empty ones.
+        // Use a large gap threshold (5000) — Godot reuses freed slots via a free list,
+        // so gaps of 1000+ empty slots can occur when many objects are destroyed.
         Solitaer::Warn("OBJDB", "Could not find slot counters, estimating slot_max by scanning");
         int emptyRun = 0;
         int maxFound = 0;
-        for (int i = 0; i < 500000 && emptyRun < 1000; ++i) {
+        for (int i = 0; i < 500000 && emptyRun < 5000; ++i) {
             uintptr_t slotAddr = static_cast<uintptr_t>(s_slotsArray) +
                 static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
             uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
@@ -307,8 +328,8 @@ void Init(uint64_t objectDBAddr) {
         Solitaer::Info("OBJDB", "Estimated slot_max: %d (last valid slot around %d)",
             s_slotMax, maxFound);
     } else {
-        s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(
-            objectDBAddr + s_slotMaxOff, 0));
+        uint64_t maxAddr = static_cast<uint64_t>(static_cast<intptr_t>(objectDBAddr) + s_slotMaxOff);
+        s_slotMax = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(maxAddr, 0));
     }
 
     // Count valid objects
@@ -524,6 +545,29 @@ AddressMatch FindByAddressRange(uint64_t addr) {
     return result;
 }
 
+bool ValidateObjectAddress(uint64_t addr) {
+    if (!addr) return false;
+    EnsureModuleInfo();
+    if (!Zoltraak::IsReadable(addr)) return false;
+
+    // Check 1: vtable pointer must be in module range
+    uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+    if (!vtable || vtable < s_moduleBase || vtable >= s_moduleBase + s_moduleSize)
+        return false;
+
+    // Check 2: first vtable entry (destructor) must be a code pointer in module
+    uint64_t vfunc0 = Zoltraak::ReadSafe<uint64_t>(vtable, 0);
+    if (!vfunc0 || vfunc0 < s_moduleBase || vfunc0 >= s_moduleBase + s_moduleSize)
+        return false;
+
+    // Check 3: second vtable entry must also be a code pointer
+    uint64_t vfunc1 = Zoltraak::ReadSafe<uint64_t>(vtable + 8, 0);
+    if (!vfunc1 || vfunc1 < s_moduleBase || vfunc1 >= s_moduleBase + s_moduleSize)
+        return false;
+
+    return true;
+}
+
 void LogDiagnostics() {
     static std::atomic<bool> s_done{false};
     if (s_done.exchange(true)) return; // One-shot
@@ -541,10 +585,12 @@ void LogDiagnostics() {
     }
     Solitaer::Info("OBJDB", "Valid objects:  %d", GetObjectCount());
 
-    if (!s_is3x && s_slotCountOff > 0) {
-        uint32_t count = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotCountOff, 0);
-        uint32_t max   = Zoltraak::ReadSafe<uint32_t>(s_objectDBAddr + s_slotMaxOff, 0);
-        Solitaer::Info("OBJDB", "Raw counters: slot_count=%u (at +0x%X), slot_max=%u (at +0x%X)",
+    if (!s_is3x && s_slotCountOff != 0) {
+        uint64_t countAddr = static_cast<uint64_t>(static_cast<intptr_t>(s_objectDBAddr) + s_slotCountOff);
+        uint64_t maxAddr   = static_cast<uint64_t>(static_cast<intptr_t>(s_objectDBAddr) + s_slotMaxOff);
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(countAddr, 0);
+        uint32_t max   = Zoltraak::ReadSafe<uint32_t>(maxAddr, 0);
+        Solitaer::Info("OBJDB", "Raw counters: slot_count=%u (at %+d), slot_max=%u (at %+d)",
             count, s_slotCountOff, max, s_slotMaxOff);
     }
 

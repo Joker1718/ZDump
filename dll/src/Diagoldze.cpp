@@ -22,8 +22,6 @@
 #include "Flamme.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
-#include "Heiter.h"
-#include "Ausetiese.h"
 
 #include <atomic>
 #include <unordered_map>
@@ -2148,8 +2146,8 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
 // Heiter-based vtable classification (fallback when RTTI is stripped)
 // ============================================================
 // When custom Godot builds strip RTTI, ScanObjectVtables fails to resolve
-// class names. This function uses Heiter game-thread dispatch to call
-// Object::get_class() via its MethodBind::ptrcall, then caches the result.
+// class names. This function uses static code analysis of ClassDB creation
+// functions to extract vtable addresses — no game function calls needed.
 
 // Find a MethodBind* by method name in a class's method_map.
 // Walks the HashMap linked list (4.x) or bucket chain (3.x).
@@ -2216,151 +2214,354 @@ int GetUnresolvedVtableCount() {
     return count;
 }
 
+// ── Static creation_func analysis helpers ──
+
+// Probe the ClassInfo offset for creation_func by checking candidate
+// offsets after 'name' (+0x180) for pointers into the .text section.
+// Returns -1 if probe fails.
+static int s_creationFuncOffset = -1;
+
+static int ProbeCreationFuncOffset() {
+    if (s_creationFuncOffset >= 0) return s_creationFuncOffset;
+    if (s_nameOffset < 0) return -1;
+
+    EnsureModuleInfo();
+    auto textSec = Zoltraak::GetTextSection();
+    if (!textSec.baseAddr || !textSec.size) return -1;
+    uint64_t textEnd = textSec.baseAddr + textSec.size;
+
+    // In Godot 4.x ClassInfo, after 'name' (StringName 8B) there are
+    // several bool flags then creation_func. Typical offsets: +0x188..+0x1A8.
+    // In 3.x, creation_func may be at a different offset relative to name.
+    // We probe concrete classes ("Node2D", "Label", "Sprite2D") and check
+    // which offset consistently holds a pointer into .text.
+    const char* concreteClasses[] = {
+        "Node2D", "Label", "Sprite2D", "Button", "Timer",
+        "Control", "AudioStreamPlayer", "Camera2D", "AnimationPlayer"
+    };
+
+    // Collect valid ClassInfo addresses for concrete classes
+    struct Probe { std::string name; uint64_t infoAddr; };
+    std::vector<Probe> probes;
+    for (auto cn : concreteClasses) {
+        auto it = s_classMap.find(cn);
+        if (it != s_classMap.end() && it->second.infoAddr) {
+            probes.push_back({cn, it->second.infoAddr});
+            if (probes.size() >= 5) break;
+        }
+    }
+    if (probes.size() < 2) {
+        Solitaer::Warn("CLSDB", "  creation_func probe: not enough concrete classes found");
+        return -1;
+    }
+
+    // Check candidate offsets after name
+    // Godot 4.x: name(+0x180) → disabled(bool) exposed(bool) reloadable(bool)
+    //   is_virtual(bool) → padding → creation_func (ptr)
+    // Typically creation_func is at name+0x10 to name+0x28
+    int bestOffset = -1;
+    int bestHits = 0;
+    for (int delta = 0x08; delta <= 0x30; delta += 0x08) {
+        int off = s_nameOffset + delta;
+        int hits = 0;
+        for (auto& p : probes) {
+            uint64_t ptr = Zoltraak::ReadSafe<uint64_t>(p.infoAddr + off, 0);
+            if (ptr >= textSec.baseAddr && ptr < textEnd) {
+                hits++;
+            }
+        }
+        if (hits > bestHits) {
+            bestHits = hits;
+            bestOffset = off;
+        }
+    }
+
+    if (bestHits < 2) {
+        Solitaer::Warn("CLSDB", "  creation_func probe: no consistent .text pointer found (best=%d hits)", bestHits);
+        return -1;
+    }
+
+    s_creationFuncOffset = bestOffset;
+    Solitaer::Info("CLSDB", "  creation_func probed at ClassInfo+0x%X (%d/%d concrete classes hit)",
+        bestOffset, bestHits, static_cast<int>(probes.size()));
+    return bestOffset;
+}
+
+// Scan a code region for LEA REG, [RIP+disp32] instructions targeting .rdata
+// that look like vtable pointers (first entry is a .text function pointer).
+// Returns the LAST valid vtable-like LEA target found, since Godot constructors
+// chain vtable writes (Object→Node→Window→...) and the last write is the actual
+// class vtable. Scans up to `scanLen` bytes starting at `codeAddr`.
+static uint64_t ScanCodeForVtable(uint64_t codeAddr, int scanLen = 512) {
+    auto rdataSec = Zoltraak::GetRdataSection();
+    auto textSec  = Zoltraak::GetTextSection();
+    if (!rdataSec.baseAddr || !textSec.baseAddr) return 0;
+    uint64_t rdataEnd = rdataSec.baseAddr + rdataSec.size;
+    uint64_t textEnd  = textSec.baseAddr + textSec.size;
+
+    // Cap scan length to reasonable bounds
+    if (scanLen > 1024) scanLen = 1024;
+    uint8_t code[1024];
+    if (!Zoltraak::ReadSafe(codeAddr, code, scanLen)) return 0;
+
+    uint64_t lastVtable = 0;
+
+    // Scan for LEA instructions with RIP-relative addressing:
+    //   48 8D 0D/05/15/35 xx xx xx xx → LEA REG, [RIP+disp32] (REX.W)
+    //   4C 8D 05/0D/...              → LEA R8-R15, [RIP+disp32] (REX.WR)
+    for (int i = 0; i + 7 <= scanLen; i++) {
+        uint8_t rex = code[i];
+        if ((rex != 0x48 && rex != 0x4C) || code[i + 1] != 0x8D) continue;
+
+        uint8_t modrm = code[i + 2];
+        // ModRM mod=00 rm=101 (RIP-relative): modrm & 0xC7 == 0x05
+        if ((modrm & 0xC7) != 0x05) continue;
+
+        int32_t disp;
+        memcpy(&disp, &code[i + 3], 4);
+        uint64_t target = codeAddr + i + 7 + disp;
+
+        // Check if target is in .rdata (vtables live there)
+        if (target < rdataSec.baseAddr || target >= rdataEnd) continue;
+
+        // Validate: first entry should be a .text function pointer
+        uint64_t firstEntry = Zoltraak::ReadSafe<uint64_t>(target, 0);
+        if (firstEntry >= textSec.baseAddr && firstEntry < textEnd) {
+            // Extra validation: check second entry too (vtables have multiple entries)
+            uint64_t secondEntry = Zoltraak::ReadSafe<uint64_t>(target + 8, 0);
+            if (secondEntry >= textSec.baseAddr && secondEntry < textEnd) {
+                lastVtable = target;
+            }
+        }
+    }
+    return lastVtable;
+}
+
+// Extract the vtable address from a creation function's machine code.
+// First scans creation_func directly. If no vtable found (non-inlined
+// constructor), follows CALL instructions to scan called functions too.
+// Uses LAST-match strategy since constructor chains write vtable multiple
+// times — the final write is the actual class vtable.
+static uint64_t ExtractVtableFromCode(uint64_t funcAddr) {
+    auto textSec = Zoltraak::GetTextSection();
+    if (!textSec.baseAddr) return 0;
+    uint64_t textEnd = textSec.baseAddr + textSec.size;
+
+    // Phase 1: Scan creation_func itself (handles inlined constructors)
+    uint64_t vtable = ScanCodeForVtable(funcAddr, 512);
+    if (vtable) return vtable;
+
+    // Phase 2: Follow CALL instructions in creation_func to find the
+    // constructor. Typical pattern: alloc + call Constructor(ptr).
+    uint8_t code[256];
+    if (!Zoltraak::ReadSafe(funcAddr, code, sizeof(code))) return 0;
+
+    for (int i = 0; i + 5 <= 256; i++) {
+        // E8 xx xx xx xx → CALL rel32
+        if (code[i] != 0xE8) continue;
+
+        int32_t rel;
+        memcpy(&rel, &code[i + 1], 4);
+        uint64_t callTarget = funcAddr + i + 5 + rel;
+
+        // Must be in .text section
+        if (callTarget < textSec.baseAddr || callTarget >= textEnd) continue;
+
+        // Skip very early calls (likely memalloc/operator new, not constructor)
+        // and very late calls (likely after vtable is set). Focus on middle range.
+        if (i < 5) continue;
+
+        // Scan the called function for vtable writes
+        vtable = ScanCodeForVtable(callTarget, 768);
+        if (vtable) return vtable;
+    }
+
+    return 0;
+}
+
 void ClassifyUnresolvedVtables() {
     int unresolved = GetUnresolvedVtableCount();
     if (unresolved == 0) return;
 
-    Solitaer::Info("CLSDB", "=== Heiter Vtable Classification ===");
-    Solitaer::Info("CLSDB", "  %d unresolved vtables, attempting ptrcall-based classification", unresolved);
+    Solitaer::Info("CLSDB", "=== Static Vtable Classification ===");
+    Solitaer::Info("CLSDB", "  %d unresolved vtables, attempting creation_func code analysis", unresolved);
 
-    // Step 1: Find "get_class" MethodBind from Object class
-    auto objIt = s_classMap.find("Object");
-    if (objIt == s_classMap.end()) {
-        Solitaer::Warn("CLSDB", "  Cannot classify: 'Object' class not found in ClassDB");
+    // Step 1: Probe creation_func offset in ClassInfo
+    int cfOff = ProbeCreationFuncOffset();
+    if (cfOff < 0) {
+        Solitaer::Warn("CLSDB", "  Cannot classify: creation_func offset not found");
         return;
     }
 
-    uint64_t getClassMB = FindMethodBindByName(objIt->second.infoAddr, "get_class");
-    if (!getClassMB || !Zoltraak::IsReadable(getClassMB)) {
-        Solitaer::Warn("CLSDB", "  Cannot classify: 'get_class' MethodBind not found");
-        return;
-    }
+    EnsureModuleInfo();
+    auto textSec = Zoltraak::GetTextSection();
+    uint64_t textEnd = textSec.baseAddr + textSec.size;
 
-    // Step 2: Resolve ptrcall function pointer from MethodBind vtable
-    uint64_t mbVtable = Zoltraak::ReadSafe<uint64_t>(getClassMB, 0);
-    if (!mbVtable || !Zoltraak::IsReadable(mbVtable)) {
-        Solitaer::Warn("CLSDB", "  Cannot classify: MethodBind vtable unreadable");
-        return;
-    }
+    // Step 2: For each ClassDB class, extract vtable from creation_func code
+    // Build a map: vtable_addr → class_name
+    std::unordered_map<uint64_t, std::string> codeVtableMap;
+    int scanned = 0, extracted = 0;
 
-    int ptrcallIdx = DynOff::METHODBIND_PTRCALL_VTIDX;
-    uint64_t ptrcallFn = Zoltraak::ReadSafe<uint64_t>(mbVtable + ptrcallIdx * 8, 0);
-    if (!ptrcallFn || !Zoltraak::IsReadable(ptrcallFn)) {
-        Solitaer::Warn("CLSDB", "  Cannot classify: ptrcall function at vtable[%d] unreadable", ptrcallIdx);
-        return;
-    }
+    for (auto& [className, entry] : s_classMap) {
+        uint64_t cfunc = Zoltraak::ReadSafe<uint64_t>(entry.infoAddr + cfOff, 0);
+        if (!cfunc || cfunc < textSec.baseAddr || cfunc >= textEnd) continue;
 
-    Solitaer::Info("CLSDB", "  get_class MethodBind=%p ptrcall=%p (vtidx=%d)",
-        reinterpret_cast<void*>(getClassMB),
-        reinterpret_cast<void*>(ptrcallFn), ptrcallIdx);
-
-    // Step 3: Collect one sample object per unresolved vtable
-    struct VtableJob {
-        uint64_t vtable;
-        uint64_t sampleObj;
-    };
-    std::vector<VtableJob> jobs;
-    std::unordered_set<uint64_t> seenVt;
-
-    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
-        uint64_t vt = Zoltraak::ReadSafe<uint64_t>(objAddr, 0);
-        if (!vt) return true;
-
-        auto mapIt = s_vtableMap.find(vt);
-        if (mapIt != s_vtableMap.end() && mapIt->second.empty() && !seenVt.count(vt)) {
-            seenVt.insert(vt);
-            jobs.push_back({vt, objAddr});
+        scanned++;
+        uint64_t vtable = ExtractVtableFromCode(cfunc);
+        if (vtable) {
+            codeVtableMap[vtable] = className;
+            extracted++;
         }
-        return true; // continue iterating
-    });
-
-    if (jobs.empty()) {
-        Solitaer::Info("CLSDB", "  No live objects found for unresolved vtables");
-        return;
     }
 
-    Solitaer::Info("CLSDB", "  Collected %d unresolved vtables with sample objects", static_cast<int>(jobs.size()));
+    Solitaer::Info("CLSDB", "  Scanned %d creation functions, extracted %d vtable addresses",
+        scanned, extracted);
 
-    // Step 4: Batch ptrcall on game thread via Heiter
-    // ptrcall signature: void (__fastcall*)(MethodBind* self, Object* obj, const void** args, void* ret)
-    using PtrcallFn = void(__fastcall*)(void*, void*, const void**, void*);
-    auto fnPtr = reinterpret_cast<PtrcallFn>(ptrcallFn);
+    // Step 3: Match extracted vtables against unresolved entries in s_vtableMap
+    int resolved = 0;
+    for (auto& [vt, cls] : s_vtableMap) {
+        if (!cls.empty()) continue; // already resolved
 
-    // SEH-safe ptrcall wrapper: MSVC can't mix __try with C++ destructors,
-    // so the actual call is isolated in a plain-data function.
-    struct PtrcallCtx {
-        PtrcallFn fn;
-        void*     mb;
-        void*     obj;
-        uint8_t   retBuf[128];
-        bool      ok;
-
-        // Must be a separate non-inline function for __try compatibility
-        static void CallSafe(PtrcallCtx* ctx) {
-            __try {
-                ctx->fn(ctx->mb, ctx->obj, nullptr, ctx->retBuf);
-                ctx->ok = true;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                ctx->ok = false;
+        auto codeIt = codeVtableMap.find(vt);
+        if (codeIt != codeVtableMap.end()) {
+            cls = codeIt->second;
+            resolved++;
+            if (resolved <= 20) {
+                Solitaer::Info("CLSDB", "  vtable=%p -> %s",
+                    reinterpret_cast<void*>(vt), cls.c_str());
             }
         }
-    };
+    }
 
-    struct PtrcallResult {
-        bool ok = false;
-        std::string className;
-    };
-    std::vector<PtrcallResult> results(jobs.size());
+    // Step 4: Also register vtables we discovered that weren't in s_vtableMap yet
+    // (objects not sampled during the initial 200-object RTTI scan)
+    int newEntries = 0;
+    for (auto& [vtable, className] : codeVtableMap) {
+        if (!s_vtableMap.count(vtable)) {
+            s_vtableMap[vtable] = className;
+            newEntries++;
+        }
+    }
 
-    auto batchWork = [&]() {
-        for (size_t i = 0; i < jobs.size(); i++) {
-            PtrcallCtx ctx{};
-            ctx.fn  = fnPtr;
-            ctx.mb  = reinterpret_cast<void*>(getClassMB);
-            ctx.obj = reinterpret_cast<void*>(jobs[i].sampleObj);
-            ctx.ok  = false;
+    if (newEntries > 0) {
+        Solitaer::Info("CLSDB", "  Pre-populated %d additional vtable→class entries from ClassDB", newEntries);
+    }
 
-            PtrcallCtx::CallSafe(&ctx);
+    Solitaer::Info("CLSDB", "  Classified %d/%d unresolved vtables via creation_func analysis",
+        resolved, unresolved);
 
-            if (ctx.ok) {
-                // Decode String: first 8 bytes = CowData<char32_t>*
-                uint64_t cowPtr;
-                memcpy(&cowPtr, ctx.retBuf, 8);
-                if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
-                    std::string name = Zoltraak::ReadGodotString(cowPtr);
-                    if (!name.empty() && s_classMap.count(name)) {
-                        results[i].className = std::move(name);
-                        results[i].ok = true;
-                    }
+    // ── Phase 2: Vtable prefix matching ──
+    // For remaining unresolved vtables, match against known vtables by comparing
+    // leading entries. Child class vtables start with parent's entries (single
+    // inheritance), so the longest common prefix identifies the closest known
+    // parent class. This catches engine singletons, specialized constructors,
+    // and any objects not created through ClassDB::creation_func.
+    int stillUnresolved = GetUnresolvedVtableCount();
+    if (stillUnresolved > 0) {
+        Solitaer::Info("CLSDB", "  Phase 2: vtable prefix matching for %d remaining unresolved", stillUnresolved);
+
+        auto rdataSec = Zoltraak::GetRdataSection();
+
+        // Build reference set: known vtable → class name + first N entries
+        constexpr int MAX_PREFIX = 32;  // Compare up to 32 vtable entries (256 bytes)
+        struct VtableRef {
+            std::string className;
+            uint64_t    entries[MAX_PREFIX];
+            int         validCount;
+        };
+        std::vector<VtableRef> refs;
+        refs.reserve(s_vtableMap.size());
+
+        for (auto& [vt, cls] : s_vtableMap) {
+            if (cls.empty()) continue;
+            // Only use vtables in .rdata (valid vtable pointers)
+            if (rdataSec.baseAddr && (vt < rdataSec.baseAddr || vt >= rdataSec.baseAddr + rdataSec.size))
+                continue;
+
+            VtableRef ref;
+            ref.className = cls;
+            ref.validCount = 0;
+            for (int j = 0; j < MAX_PREFIX; j++) {
+                uint64_t entry = Zoltraak::ReadSafe<uint64_t>(vt + j * 8, 0);
+                if (!entry || entry < textSec.baseAddr || entry >= textEnd) break;
+                ref.entries[j] = entry;
+                ref.validCount = j + 1;
+            }
+            if (ref.validCount >= 4) {
+                refs.push_back(std::move(ref));
+            }
+        }
+
+        Solitaer::Info("CLSDB", "  Built %d reference vtables for prefix matching",
+            static_cast<int>(refs.size()));
+
+        // For each unresolved vtable, find the best prefix match
+        int prefixResolved = 0;
+        for (auto& [vt, cls] : s_vtableMap) {
+            if (!cls.empty()) continue;
+            if (rdataSec.baseAddr && (vt < rdataSec.baseAddr || vt >= rdataSec.baseAddr + rdataSec.size))
+                continue;
+
+            // Read this vtable's entries
+            uint64_t entries[MAX_PREFIX];
+            int validCount = 0;
+            for (int j = 0; j < MAX_PREFIX; j++) {
+                uint64_t entry = Zoltraak::ReadSafe<uint64_t>(vt + j * 8, 0);
+                if (!entry || entry < textSec.baseAddr || entry >= textEnd) break;
+                entries[j] = entry;
+                validCount = j + 1;
+            }
+            if (validCount < 4) continue;
+
+            // Find the reference with the most matching entries (not strict prefix,
+            // because Godot classes override early vtable slots like destructor
+            // and _notification, breaking prefix continuity).
+            // Track top 2 matches to detect ambiguous cases.
+            int bestMatch = 0, secondBest = 0;
+            const VtableRef* bestRef = nullptr;
+            for (auto& ref : refs) {
+                int minLen = (validCount < ref.validCount) ? validCount : ref.validCount;
+                int matchCount = 0;
+                for (int j = 0; j < minLen; j++) {
+                    if (entries[j] == ref.entries[j]) matchCount++;
+                }
+                if (matchCount > bestMatch) {
+                    secondBest = bestMatch;
+                    bestMatch = matchCount;
+                    bestRef = &ref;
+                } else if (matchCount > secondBest) {
+                    secondBest = matchCount;
+                }
+            }
+
+            // Require:
+            // 1. High absolute overlap (≥75% of comparable entries)
+            // 2. Minimum 8 matching entries
+            // 3. Best match must be clearly better than 2nd best (≥3 entries margin)
+            //    to avoid ambiguous matches where many classes tie (shared base funcs)
+            int minLen = bestRef ? ((validCount < bestRef->validCount)
+                ? validCount : bestRef->validCount) : 0;
+            int margin = bestMatch - secondBest;
+            bool goodMatch = bestMatch >= 8 &&
+                             minLen > 0 &&
+                             (bestMatch * 100 / minLen) >= 75 &&
+                             margin >= 3;
+            if (goodMatch && bestRef) {
+                cls = bestRef->className;
+                prefixResolved++;
+                if (prefixResolved <= 15) {
+                    Solitaer::Info("CLSDB", "  vtable=%p -> %s (entry match, %d/%d, margin=%d)",
+                        reinterpret_cast<void*>(vt), cls.c_str(), bestMatch, minLen, margin);
                 }
             }
         }
-    };
 
-    // Use longer timeout for batch (5s) — may have many vtables
-    bool dispatched = Heiter::QueueWorkSync(batchWork, 5000);
-    if (!dispatched) {
-        Solitaer::Warn("CLSDB", "  Heiter dispatch failed (hook not active or timeout)");
-        return;
+        Solitaer::Info("CLSDB", "  Prefix matching classified %d additional vtables", prefixResolved);
     }
 
-    // Step 5: Update vtable→class cache with results
-    int resolved = 0;
-    for (size_t i = 0; i < jobs.size(); i++) {
-        if (results[i].ok && !results[i].className.empty()) {
-            s_vtableMap[jobs[i].vtable] = results[i].className;
-            resolved++;
-            if (resolved <= 15) {
-                Solitaer::Info("CLSDB", "  vtable=%p -> %s",
-                    reinterpret_cast<void*>(jobs[i].vtable),
-                    results[i].className.c_str());
-            }
-        }
-    }
-
-    Solitaer::Info("CLSDB", "  Classified %d/%d vtables via Heiter ptrcall",
-        resolved, static_cast<int>(jobs.size()));
-    Solitaer::Info("CLSDB", "=== Heiter Vtable Classification Complete ===");
+    Solitaer::Info("CLSDB", "  Final: %d unresolved vtables remaining",
+        GetUnresolvedVtableCount());
+    Solitaer::Info("CLSDB", "=== Static Vtable Classification Complete ===");
 }
 
 } // namespace Zolt::Diagoldze

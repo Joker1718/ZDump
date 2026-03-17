@@ -395,10 +395,11 @@ static json HandleFindObject(int id, const json& req) {
 }
 
 // cmd: find_by_address
-// Three-phase lookup:
+// Four-phase lookup:
 //   1. Exact Object address match in ObjectDB
 //   2. Range search: find Object whose body contains the address
 //   3. ScriptInstance search: find Object whose GDScript members Vector contains the address
+//   4. Direct probe: validate address as Godot Object via vtable check (bypasses ObjectDB)
 // When a match is found inside an Object/member, returns the Object's address
 // plus member_offset displacement and match_type indicator.
 static json HandleFindByAddress(int id, const json& req) {
@@ -462,6 +463,27 @@ static json HandleFindByAddress(int id, const json& req) {
         resp["class_name"]    = SafeStr(className);
         resp["slot_index"]    = match.slotIndex;
         resp["member_offset"] = match.memberOffset;
+        return resp;
+    }
+
+    // Phase 4: Direct probe — validate the address as a Godot Object even if
+    // it's not in ObjectDB (e.g. slot_max estimation too low, or object added
+    // after last scan). Checks vtable structure without ObjectDB dependency.
+    if (Ausetiese::ValidateObjectAddress(addr)) {
+        std::string name      = ReadObjectName(addr);
+        std::string className = Diagoldze::GetObjectClass(addr);
+
+        Solitaer::Info("PIPE", "find_by_address: Phase 4 direct probe hit for %s (class=%s)",
+            addrStr.c_str(), className.empty() ? "(unknown)" : className.c_str());
+
+        json resp = OkResponse(id);
+        resp["found"]         = true;
+        resp["match_type"]    = "probe";
+        resp["address"]       = AddrToHex(addr);
+        resp["name"]          = SafeStr(name);
+        resp["class_name"]    = SafeStr(className);
+        resp["slot_index"]    = -1;  // Not in ObjectDB
+        resp["member_offset"] = 0;
         return resp;
     }
 

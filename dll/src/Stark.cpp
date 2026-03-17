@@ -54,11 +54,10 @@ static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
             return 0;
         }
 
-        // On first retry where Heiter is ready, classify unresolved vtables
+        // On first retry, classify unresolved vtables via static code analysis
         // (needed for custom builds where RTTI is stripped)
-        if (!vtablesClassified && Zolt::Heiter::IsReady() &&
-            Zolt::Diagoldze::GetUnresolvedVtableCount() > 3) {
-            Zolt::Solitaer::Info("INIT", "SceneTree retry: classifying vtables via Heiter");
+        if (!vtablesClassified && Zolt::Diagoldze::GetUnresolvedVtableCount() > 3) {
+            Zolt::Solitaer::Info("INIT", "SceneTree retry: classifying vtables via creation_func analysis");
             Zolt::Diagoldze::ClassifyUnresolvedVtables();
             vtablesClassified = true;
         }
@@ -165,12 +164,13 @@ int Zolt_AutoStart() {
             hookReady ? "hook installed" : "deferred (no window yet)");
 
         // Fallback vtable classification: if RTTI failed for many vtables
-        // (common in custom Godot builds with stripped RTTI), use Heiter to
-        // call Object::get_class() on the game thread for each unresolved vtable.
-        if (hookReady && s_objectDBAddr && s_classDBAddr) {
+        // (common in custom Godot builds with stripped RTTI), use static code
+        // analysis of ClassDB creation functions to extract vtable addresses.
+        // Safe: no game function calls — pure memory reads + x86 disassembly.
+        if (s_objectDBAddr && s_classDBAddr) {
             int unresolved = Zolt::Diagoldze::GetUnresolvedVtableCount();
             if (unresolved > 3) {
-                LOG_TIMED("INIT", "ClassifyUnresolvedVtables (Heiter)");
+                LOG_TIMED("INIT", "ClassifyUnresolvedVtables (static)");
                 Zolt::Diagoldze::ClassifyUnresolvedVtables();
 
                 // Re-probe SceneTree root now that class names are available

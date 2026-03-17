@@ -111,6 +111,7 @@ public partial class InstanceFinderViewModel : ViewModelBase
                 {
                     "script_member" => $"Found: {result.Name} ({result.ClassName}) [GDScript member]",
                     "range" => $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}",
+                    "probe" => $"Found: {result.Name} ({result.ClassName}) [direct probe, not in ObjectDB]",
                     _ => $"Found: {result.Name} ({result.ClassName})"
                 };
             }
