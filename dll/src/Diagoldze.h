@@ -76,4 +76,12 @@ void LogDiagnostics();
 // Call after ObjectDB init to identify classes before any UI requests.
 void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs);
 
+// Count vtables in the cache that have empty class names (RTTI failed).
+int GetUnresolvedVtableCount();
+
+// Fallback vtable classification via Heiter game-thread dispatch.
+// Calls Object::get_class() ptrcall for each unresolved vtable, then updates
+// the vtable→class cache. Use when RTTI is stripped (custom Godot builds).
+void ClassifyUnresolvedVtables();
+
 } // namespace Zolt::Diagoldze

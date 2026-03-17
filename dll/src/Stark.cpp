@@ -43,6 +43,8 @@ static char s_versionBuf[64] = ZOLT_VERSION_STRING;
 static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
     Zolt::Solitaer::Info("INIT", "SceneTree retry thread started");
 
+    bool vtablesClassified = false;
+
     for (int attempt = 0; attempt < 15; ++attempt) {
         Sleep(2000);
 
@@ -50,6 +52,15 @@ static DWORD WINAPI SceneTreeRetryThread(LPVOID /*param*/) {
         if (Zolt::Serie::GetRoot()) {
             Zolt::Solitaer::Summary("SceneTree resolved (lazy deref, attempt %d)", attempt + 1);
             return 0;
+        }
+
+        // On first retry where Heiter is ready, classify unresolved vtables
+        // (needed for custom builds where RTTI is stripped)
+        if (!vtablesClassified && Zolt::Heiter::IsReady() &&
+            Zolt::Diagoldze::GetUnresolvedVtableCount() > 3) {
+            Zolt::Solitaer::Info("INIT", "SceneTree retry: classifying vtables via Heiter");
+            Zolt::Diagoldze::ClassifyUnresolvedVtables();
+            vtablesClassified = true;
         }
 
         // Try full FindSceneTree with strict validation
@@ -152,6 +163,23 @@ int Zolt_AutoStart() {
         bool hookReady = Zolt::Heiter::Init(Zolt_GetDllModule());
         Zolt::Solitaer::Info("INIT", "Heiter: %s",
             hookReady ? "hook installed" : "deferred (no window yet)");
+
+        // Fallback vtable classification: if RTTI failed for many vtables
+        // (common in custom Godot builds with stripped RTTI), use Heiter to
+        // call Object::get_class() on the game thread for each unresolved vtable.
+        if (hookReady && s_objectDBAddr && s_classDBAddr) {
+            int unresolved = Zolt::Diagoldze::GetUnresolvedVtableCount();
+            if (unresolved > 3) {
+                LOG_TIMED("INIT", "ClassifyUnresolvedVtables (Heiter)");
+                Zolt::Diagoldze::ClassifyUnresolvedVtables();
+
+                // Re-probe SceneTree root now that class names are available
+                if (s_sceneTreeAddr && !Zolt::Serie::GetRoot()) {
+                    Zolt::Solitaer::Info("INIT", "Re-probing SceneTree after vtable classification");
+                    Zolt::Serie::Init(s_sceneTreeAddr);
+                }
+            }
+        }
     }
 
     // If SceneTree BSS address was found but singleton is NULL,

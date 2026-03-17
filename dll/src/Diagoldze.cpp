@@ -22,9 +22,12 @@
 #include "Flamme.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
+#include "Heiter.h"
+#include "Ausetiese.h"
 
 #include <atomic>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Zolt::Diagoldze {
 
@@ -2139,6 +2142,225 @@ void ScanObjectVtables(const std::vector<uint64_t>& objectAddrs) {
             Solitaer::Warn("CLSDB", "  No sample MethodBind found for 3.x ptrcall probe");
         }
     }
+}
+
+// ============================================================
+// Heiter-based vtable classification (fallback when RTTI is stripped)
+// ============================================================
+// When custom Godot builds strip RTTI, ScanObjectVtables fails to resolve
+// class names. This function uses Heiter game-thread dispatch to call
+// Object::get_class() via its MethodBind::ptrcall, then caches the result.
+
+// Find a MethodBind* by method name in a class's method_map.
+// Walks the HashMap linked list (4.x) or bucket chain (3.x).
+static uint64_t FindMethodBindByName(uint64_t infoAddr, const std::string& targetName) {
+    if (s_methodMapOffset < 0 || !infoAddr) return 0;
+
+    if (s_is3x) {
+        // 3.x: bucket-chain HashMap { hash_table*, power, elements }
+        uint64_t ht    = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_methodMapOffset, 0);
+        uint8_t  power = Zoltraak::ReadSafe<uint8_t>(infoAddr + s_methodMapOffset + 8, 0);
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(infoAddr + s_methodMapOffset + 0x0C, 0);
+        if (!ht || !power || count == 0) return 0;
+
+        int buckets = 1 << power;
+        for (int b = 0; b < buckets; b++) {
+            uint64_t elem = Zoltraak::ReadSafe<uint64_t>(ht + b * 8, 0);
+            int chain = 0;
+            while (elem && Zoltraak::IsReadable(elem) && chain < 100) {
+                uint64_t keyAddr = elem + DynOff::ELEM_3X_KEY_OFF;
+                std::string name = Flamme::Resolve(keyAddr);
+                if (name == targetName) {
+                    return Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_VALUE_OFF, 0);
+                }
+                elem = Zoltraak::ReadSafe<uint64_t>(elem + DynOff::ELEM_3X_NEXT_OFF, 0);
+                chain++;
+            }
+        }
+        return 0;
+    } else {
+        // 4.x: robin-hood HashMap linked list
+        // method_map layout: elements*(8B), hashes*(8B), head*(8B), tail*(8B), capIdx(4B), num(4B)
+        uint64_t head = Zoltraak::ReadSafe<uint64_t>(infoAddr + s_methodMapOffset + 0x10, 0);
+        uint32_t num  = Zoltraak::ReadSafe<uint32_t>(infoAddr + s_methodMapOffset + 0x24, 0);
+        if (!head || num == 0) return 0;
+
+        uint64_t current = head;
+        int walked = 0;
+        int maxIter = static_cast<int>(num) + 50;
+
+        while (current && walked < maxIter) {
+            if (!Zoltraak::IsReadable(current)) break;
+
+            // HashMapElement: next(8B), prev(8B), KeyValue{ StringName key(8B), MethodBind* value(8B) }
+            uint64_t keyAddr = current + 0x10;
+            std::string name = Flamme::Resolve(keyAddr);
+            if (name == targetName) {
+                return Zoltraak::ReadSafe<uint64_t>(current + 0x18, 0);
+            }
+
+            uint64_t next = Zoltraak::ReadSafe<uint64_t>(current, 0);
+            if (next == current) break;
+            current = next;
+            walked++;
+        }
+        return 0;
+    }
+}
+
+int GetUnresolvedVtableCount() {
+    int count = 0;
+    for (auto& [vt, cls] : s_vtableMap) {
+        if (cls.empty()) count++;
+    }
+    return count;
+}
+
+void ClassifyUnresolvedVtables() {
+    int unresolved = GetUnresolvedVtableCount();
+    if (unresolved == 0) return;
+
+    Solitaer::Info("CLSDB", "=== Heiter Vtable Classification ===");
+    Solitaer::Info("CLSDB", "  %d unresolved vtables, attempting ptrcall-based classification", unresolved);
+
+    // Step 1: Find "get_class" MethodBind from Object class
+    auto objIt = s_classMap.find("Object");
+    if (objIt == s_classMap.end()) {
+        Solitaer::Warn("CLSDB", "  Cannot classify: 'Object' class not found in ClassDB");
+        return;
+    }
+
+    uint64_t getClassMB = FindMethodBindByName(objIt->second.infoAddr, "get_class");
+    if (!getClassMB || !Zoltraak::IsReadable(getClassMB)) {
+        Solitaer::Warn("CLSDB", "  Cannot classify: 'get_class' MethodBind not found");
+        return;
+    }
+
+    // Step 2: Resolve ptrcall function pointer from MethodBind vtable
+    uint64_t mbVtable = Zoltraak::ReadSafe<uint64_t>(getClassMB, 0);
+    if (!mbVtable || !Zoltraak::IsReadable(mbVtable)) {
+        Solitaer::Warn("CLSDB", "  Cannot classify: MethodBind vtable unreadable");
+        return;
+    }
+
+    int ptrcallIdx = DynOff::METHODBIND_PTRCALL_VTIDX;
+    uint64_t ptrcallFn = Zoltraak::ReadSafe<uint64_t>(mbVtable + ptrcallIdx * 8, 0);
+    if (!ptrcallFn || !Zoltraak::IsReadable(ptrcallFn)) {
+        Solitaer::Warn("CLSDB", "  Cannot classify: ptrcall function at vtable[%d] unreadable", ptrcallIdx);
+        return;
+    }
+
+    Solitaer::Info("CLSDB", "  get_class MethodBind=%p ptrcall=%p (vtidx=%d)",
+        reinterpret_cast<void*>(getClassMB),
+        reinterpret_cast<void*>(ptrcallFn), ptrcallIdx);
+
+    // Step 3: Collect one sample object per unresolved vtable
+    struct VtableJob {
+        uint64_t vtable;
+        uint64_t sampleObj;
+    };
+    std::vector<VtableJob> jobs;
+    std::unordered_set<uint64_t> seenVt;
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        uint64_t vt = Zoltraak::ReadSafe<uint64_t>(objAddr, 0);
+        if (!vt) return true;
+
+        auto mapIt = s_vtableMap.find(vt);
+        if (mapIt != s_vtableMap.end() && mapIt->second.empty() && !seenVt.count(vt)) {
+            seenVt.insert(vt);
+            jobs.push_back({vt, objAddr});
+        }
+        return true; // continue iterating
+    });
+
+    if (jobs.empty()) {
+        Solitaer::Info("CLSDB", "  No live objects found for unresolved vtables");
+        return;
+    }
+
+    Solitaer::Info("CLSDB", "  Collected %d unresolved vtables with sample objects", static_cast<int>(jobs.size()));
+
+    // Step 4: Batch ptrcall on game thread via Heiter
+    // ptrcall signature: void (__fastcall*)(MethodBind* self, Object* obj, const void** args, void* ret)
+    using PtrcallFn = void(__fastcall*)(void*, void*, const void**, void*);
+    auto fnPtr = reinterpret_cast<PtrcallFn>(ptrcallFn);
+
+    // SEH-safe ptrcall wrapper: MSVC can't mix __try with C++ destructors,
+    // so the actual call is isolated in a plain-data function.
+    struct PtrcallCtx {
+        PtrcallFn fn;
+        void*     mb;
+        void*     obj;
+        uint8_t   retBuf[128];
+        bool      ok;
+
+        // Must be a separate non-inline function for __try compatibility
+        static void CallSafe(PtrcallCtx* ctx) {
+            __try {
+                ctx->fn(ctx->mb, ctx->obj, nullptr, ctx->retBuf);
+                ctx->ok = true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                ctx->ok = false;
+            }
+        }
+    };
+
+    struct PtrcallResult {
+        bool ok = false;
+        std::string className;
+    };
+    std::vector<PtrcallResult> results(jobs.size());
+
+    auto batchWork = [&]() {
+        for (size_t i = 0; i < jobs.size(); i++) {
+            PtrcallCtx ctx{};
+            ctx.fn  = fnPtr;
+            ctx.mb  = reinterpret_cast<void*>(getClassMB);
+            ctx.obj = reinterpret_cast<void*>(jobs[i].sampleObj);
+            ctx.ok  = false;
+
+            PtrcallCtx::CallSafe(&ctx);
+
+            if (ctx.ok) {
+                // Decode String: first 8 bytes = CowData<char32_t>*
+                uint64_t cowPtr;
+                memcpy(&cowPtr, ctx.retBuf, 8);
+                if (cowPtr && Zoltraak::IsReadable(cowPtr)) {
+                    std::string name = Zoltraak::ReadGodotString(cowPtr);
+                    if (!name.empty() && s_classMap.count(name)) {
+                        results[i].className = std::move(name);
+                        results[i].ok = true;
+                    }
+                }
+            }
+        }
+    };
+
+    // Use longer timeout for batch (5s) — may have many vtables
+    bool dispatched = Heiter::QueueWorkSync(batchWork, 5000);
+    if (!dispatched) {
+        Solitaer::Warn("CLSDB", "  Heiter dispatch failed (hook not active or timeout)");
+        return;
+    }
+
+    // Step 5: Update vtable→class cache with results
+    int resolved = 0;
+    for (size_t i = 0; i < jobs.size(); i++) {
+        if (results[i].ok && !results[i].className.empty()) {
+            s_vtableMap[jobs[i].vtable] = results[i].className;
+            resolved++;
+            if (resolved <= 15) {
+                Solitaer::Info("CLSDB", "  vtable=%p -> %s",
+                    reinterpret_cast<void*>(jobs[i].vtable),
+                    results[i].className.c_str());
+            }
+        }
+    }
+
+    Solitaer::Info("CLSDB", "  Classified %d/%d vtables via Heiter ptrcall",
+        resolved, static_cast<int>(jobs.size()));
+    Solitaer::Info("CLSDB", "=== Heiter Vtable Classification Complete ===");
 }
 
 } // namespace Zolt::Diagoldze
