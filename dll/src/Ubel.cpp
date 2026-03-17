@@ -116,8 +116,8 @@ static const char* VariantTypeName3x(int type) {
     return "Unknown";
 }
 
-// Version-aware type name lookup
-static const char* VariantTypeName(int type) {
+// Version-aware type name lookup (public — used by Fern.cpp too)
+const char* VariantTypeName(int type) {
     if (GodotVer::IsGodot3())
         return VariantTypeName3x(type);
     return VariantTypeName4x(type);
@@ -213,6 +213,9 @@ static std::string FormatDouble(double v) {
     snprintf(buf, sizeof(buf), "%.6g", v);
     return buf;
 }
+
+// Forward declarations for container reading (used by ReadVariant, defined below)
+static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr);
 
 // ============================================================
 // ReadVariant — Read and decode a Variant at the given address
@@ -400,6 +403,27 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
+        case 27: { // DICTIONARY — show as Dictionary[?] (count not cheaply available)
+            uint64_t dictPtr = Zoltraak::ReadSafe<uint64_t>(data, 0);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Dictionary@%llX",
+                static_cast<unsigned long long>(dictPtr));
+            result.value = buf;
+            break;
+        }
+
+        case 28: { // ARRAY — show element count
+            auto [count, dataPtr] = ReadArrayInternals(data);
+            char buf[64];
+            if (dataPtr) {
+                snprintf(buf, sizeof(buf), "Array[%d]", count);
+            } else {
+                snprintf(buf, sizeof(buf), "Array(empty)");
+            }
+            result.value = buf;
+            break;
+        }
+
         default: {
             // For unhandled types: show type name + raw hex
             int dataSize = VariantDataSize(type4x);
@@ -422,6 +446,304 @@ VariantValue ReadVariant(uint64_t addr) {
     }
 
     return result;
+}
+
+// ============================================================
+// Container reading — Array / Dictionary / PackedArray
+// Ubel — 優貝爾 (Assassin Specialist) — Drills into container internals
+// ============================================================
+
+// Godot Array memory layout:
+//   Variant data = pointer to ArrayPrivate*
+//   ArrayPrivate:
+//     +0x00: SafeRefCount refcount (4 bytes + 4 padding)
+//     +0x08: Vector<Variant> array → CowData<Variant>._ptr (8 bytes)
+//     +0x10: Variant* read_only (4.x only)
+//   CowData<T>._ptr points to element data:
+//     _ptr - 4: uint32_t size (element count)
+//     _ptr + 0: T[0], T[1], ...  (each T is VARIANT_STRIDE bytes for Variant)
+
+// Read Array element count and data pointer from Variant data address.
+// Returns {elementCount, dataPtr} or {0, 0} on failure.
+static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr) {
+    // dataAddr points to the Variant data for an Array-type Variant.
+    // The data is a pointer to ArrayPrivate._p
+    uint64_t arrayPrivate = Zoltraak::ReadSafe<uint64_t>(dataAddr, 0);
+    if (!arrayPrivate || !Zoltraak::IsReadable(arrayPrivate)) {
+        // NULL _p = genuinely empty/uninitialized Array (common in Godot)
+        return {0, 0};
+    }
+
+    // Vector<Variant>.cowdata._ptr at ArrayPrivate + 0x08
+    // Godot 3.x & 4.x: ArrayPrivate { SafeRefCount(4+pad=8), Vector<Variant>(8) }
+    uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(arrayPrivate + 0x08, 0);
+    if (!cowPtr || !Zoltraak::IsReadable(cowPtr)) {
+        // NULL cowdata._ptr = allocated ArrayPrivate but empty Vector (0 elements)
+        Solitaer::Debug("WALK", "ReadArrayInternals: empty Vector in ArrayPrivate %p (cowPtr=%p)",
+            reinterpret_cast<void*>(arrayPrivate), reinterpret_cast<void*>(cowPtr));
+        return {0, 0};
+    }
+
+    // CowData size is at _ptr - 4 (uint32_t)
+    uint32_t count = Zoltraak::ReadSafe<uint32_t>(cowPtr - 4, 0);
+    if (count > 100000) {
+        // Sanity check — try alternative: maybe CowData size is at _ptr - 8 (uint64_t USize)
+        // Some Godot versions use 64-bit USize
+        uint32_t count64 = static_cast<uint32_t>(Zoltraak::ReadSafe<uint64_t>(cowPtr - 8, 0));
+        if (count64 > 0 && count64 <= 100000) {
+            Solitaer::Info("WALK", "ReadArrayInternals: 64-bit USize detected, count=%u at %p",
+                count64, reinterpret_cast<void*>(cowPtr - 8));
+            return {static_cast<int>(count64), cowPtr};
+        }
+        Solitaer::Info("WALK", "ReadArrayInternals: suspicious count %u (and 64-bit %u) at ArrayPrivate %p",
+            count, count64, reinterpret_cast<void*>(arrayPrivate));
+        return {0, 0};
+    }
+
+    Solitaer::Debug("WALK", "ReadArrayInternals: count=%u cowPtr=%p (ArrayPrivate=%p)",
+        count, reinterpret_cast<void*>(cowPtr), reinterpret_cast<void*>(arrayPrivate));
+    return {static_cast<int>(count), cowPtr};
+}
+
+// Read PackedArray element count and data pointer.
+// PackedArray variants store a RefCounted pointer to PackedArrayRef<T>.
+// PackedArrayRef<T> contains Vector<T> → CowData<T>._ptr.
+// Layout:
+//   Variant data = pointer to PackedArrayRef*
+//   PackedArrayRef (extends RefCounted):
+//     +0x00: RefCounted base (varies, typically 16-24 bytes)
+//     After RefCounted: Vector<T>.cowdata._ptr
+//   For simplicity, we probe multiple candidate offsets for the CowData pointer.
+static std::pair<int, uint64_t> ReadPackedArrayInternals(uint64_t dataAddr, int elementSize) {
+    uint64_t refPtr = Zoltraak::ReadSafe<uint64_t>(dataAddr, 0);
+    if (!refPtr || !Zoltraak::IsReadable(refPtr)) return {0, 0};
+
+    // Try common offsets for the CowData pointer within PackedArrayRef
+    // RefCounted base is typically 8-16 bytes (refcount + ptr), then Vector<T>
+    const int candidateOffsets[] = {0x08, 0x10, 0x18, 0x20};
+    for (int off : candidateOffsets) {
+        uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(refPtr + off, 0);
+        if (!cowPtr || !Zoltraak::IsReadable(cowPtr)) continue;
+
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(cowPtr - 4, 0);
+        if (count == 0 || count > 100000) continue;
+
+        // Validate: check that data at cowPtr is readable for at least one element
+        if (elementSize > 0 && Zoltraak::IsReadable(cowPtr)) {
+            Solitaer::Debug("WALK", "ReadPackedArrayInternals: found count=%u at refPtr+0x%X",
+                count, off);
+            return {static_cast<int>(count), cowPtr};
+        }
+    }
+    return {0, 0};
+}
+
+// Map 4.x packed array type to element size in bytes
+static int PackedArrayElementSize(int type4x) {
+    switch (type4x) {
+        case 29: return 1;  // PackedByteArray
+        case 30: return 4;  // PackedInt32Array
+        case 31: return 8;  // PackedInt64Array
+        case 32: return 4;  // PackedFloat32Array
+        case 33: return 8;  // PackedFloat64Array
+        case 34: return 8;  // PackedStringArray (CowData<String> ptr)
+        case 35: return 8;  // PackedVector2Array (2 floats)
+        case 36: return 12; // PackedVector3Array (3 floats)
+        case 37: return 16; // PackedColorArray (4 floats)
+        case 38: return 16; // PackedVector4Array (4 floats, 4.x only)
+        default: return 0;
+    }
+}
+
+// Read a single PackedArray element as a VariantValue
+static VariantValue ReadPackedElement(uint64_t elemAddr, int type4x) {
+    VariantValue result{};
+    result.rawAddr = elemAddr;
+    result.ptrTarget = 0;
+
+    switch (type4x) {
+        case 29: { // PackedByteArray → uint8_t
+            uint8_t v = Zoltraak::ReadSafe<uint8_t>(elemAddr, 0);
+            result.typeName = "Byte";
+            result.type = type4x;
+            result.value = std::to_string(v);
+            break;
+        }
+        case 30: { // PackedInt32Array → int32_t
+            int32_t v = Zoltraak::ReadSafe<int32_t>(elemAddr, 0);
+            result.typeName = "Int32";
+            result.type = type4x;
+            result.value = std::to_string(v);
+            break;
+        }
+        case 31: { // PackedInt64Array → int64_t
+            int64_t v = Zoltraak::ReadSafe<int64_t>(elemAddr, 0);
+            result.typeName = "Int64";
+            result.type = type4x;
+            result.value = std::to_string(v);
+            break;
+        }
+        case 32: { // PackedFloat32Array → float
+            float v = Zoltraak::ReadSafe<float>(elemAddr, 0.0f);
+            result.typeName = "Float32";
+            result.type = type4x;
+            result.value = FormatFloat(v);
+            break;
+        }
+        case 33: { // PackedFloat64Array → double
+            double v = Zoltraak::ReadSafe<double>(elemAddr, 0.0);
+            result.typeName = "Float64";
+            result.type = type4x;
+            result.value = FormatDouble(v);
+            break;
+        }
+        case 34: { // PackedStringArray → String (CowData<char32_t>)
+            uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(elemAddr, 0);
+            result.typeName = "String";
+            result.type = 4; // String variant type
+            result.value = (cowPtr && Zoltraak::IsReadable(cowPtr))
+                           ? Zoltraak::ReadGodotString(cowPtr)
+                           : "\"\"";
+            break;
+        }
+        case 35: { // PackedVector2Array → 2 floats
+            float x = Zoltraak::ReadSafe<float>(elemAddr, 0.0f);
+            float y = Zoltraak::ReadSafe<float>(elemAddr + 4, 0.0f);
+            result.typeName = "Vector2";
+            result.type = 5;
+            result.value = "(" + FormatFloat(x) + ", " + FormatFloat(y) + ")";
+            break;
+        }
+        case 36: { // PackedVector3Array → 3 floats
+            float x = Zoltraak::ReadSafe<float>(elemAddr, 0.0f);
+            float y = Zoltraak::ReadSafe<float>(elemAddr + 4, 0.0f);
+            float z = Zoltraak::ReadSafe<float>(elemAddr + 8, 0.0f);
+            result.typeName = "Vector3";
+            result.type = 9;
+            result.value = "(" + FormatFloat(x) + ", " + FormatFloat(y) + ", " + FormatFloat(z) + ")";
+            break;
+        }
+        case 37: { // PackedColorArray → 4 floats (RGBA)
+            float r = Zoltraak::ReadSafe<float>(elemAddr, 0.0f);
+            float g = Zoltraak::ReadSafe<float>(elemAddr + 4, 0.0f);
+            float b = Zoltraak::ReadSafe<float>(elemAddr + 8, 0.0f);
+            float a = Zoltraak::ReadSafe<float>(elemAddr + 12, 0.0f);
+            result.typeName = "Color";
+            result.type = 20;
+            result.value = "Color(" + FormatFloat(r) + ", " + FormatFloat(g) +
+                          ", " + FormatFloat(b) + ", " + FormatFloat(a) + ")";
+            break;
+        }
+        case 38: { // PackedVector4Array → 4 floats
+            float x = Zoltraak::ReadSafe<float>(elemAddr, 0.0f);
+            float y = Zoltraak::ReadSafe<float>(elemAddr + 4, 0.0f);
+            float z = Zoltraak::ReadSafe<float>(elemAddr + 8, 0.0f);
+            float w = Zoltraak::ReadSafe<float>(elemAddr + 12, 0.0f);
+            result.typeName = "Vector4";
+            result.type = 12;
+            result.value = "(" + FormatFloat(x) + ", " + FormatFloat(y) +
+                          ", " + FormatFloat(z) + ", " + FormatFloat(w) + ")";
+            break;
+        }
+        default:
+            result.typeName = "Unknown";
+            result.value = "?";
+            break;
+    }
+    return result;
+}
+
+ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType) {
+    ContainerInfo info{};
+
+    int type4x = variantType;
+    if (GodotVer::IsGodot3()) {
+        type4x = MapType3xTo4x(variantType);
+        if (type4x < 0) return info;
+    }
+
+    info.containerType = VariantTypeName(variantType);
+
+    if (type4x == 28) { // Array
+        auto [count, dataPtr] = ReadArrayInternals(dataAddr);
+        info.elementCount = count;
+        Solitaer::Debug("WALK", "ReadContainerInfo(Array): count=%d dataPtr=%p",
+            count, reinterpret_cast<void*>(dataPtr));
+    }
+    else if (type4x == 27) { // Dictionary
+        // Dictionary internals are complex (HashMap). For now, report as unsupported.
+        // TODO: Implement Dictionary reading via HashMap traversal
+        info.elementCount = -1; // -1 = unknown
+        Solitaer::Debug("WALK", "ReadContainerInfo(Dictionary): not yet supported");
+    }
+    else if (type4x >= 29 && type4x <= 38) { // Packed arrays
+        int elemSize = PackedArrayElementSize(type4x);
+        auto [count, dataPtr] = ReadPackedArrayInternals(dataAddr, elemSize);
+        info.elementCount = count;
+        Solitaer::Debug("WALK", "ReadContainerInfo(Packed %s): count=%d elemSize=%d",
+            info.containerType.c_str(), count, elemSize);
+    }
+
+    return info;
+}
+
+std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int variantType,
+                                                     int offset, int limit) {
+    std::vector<ContainerElement> elements;
+
+    int type4x = variantType;
+    if (GodotVer::IsGodot3()) {
+        type4x = MapType3xTo4x(variantType);
+        if (type4x < 0) return elements;
+    }
+
+    if (type4x == 28) { // Array — elements are Variant[]
+        auto [count, dataPtr] = ReadArrayInternals(dataAddr);
+        if (count <= 0 || !dataPtr) return elements;
+
+        int variantStride = DynOff::VARIANT_STRIDE;
+        int start = (offset < count) ? offset : count;
+        int end   = ((start + limit) < count) ? (start + limit) : count;
+
+        Solitaer::Info("WALK", "ReadContainerElements(Array): reading [%d..%d) of %d (stride=0x%X)",
+            start, end, count, variantStride);
+
+        for (int i = start; i < end; i++) {
+            uint64_t varAddr = dataPtr + static_cast<uint64_t>(i) * variantStride;
+            VariantValue val = ReadVariant(varAddr);
+
+            ContainerElement elem;
+            elem.index = i;
+            elem.value = val;
+            // Fix address to point to Variant data (consistent with WalkInstance)
+            elem.value.rawAddr = varAddr + DynOff::VARIANT_DATA;
+            elements.push_back(std::move(elem));
+        }
+    }
+    else if (type4x >= 29 && type4x <= 38) { // Packed arrays
+        int elemSize = PackedArrayElementSize(type4x);
+        if (elemSize <= 0) return elements;
+
+        auto [count, dataPtr] = ReadPackedArrayInternals(dataAddr, elemSize);
+        if (count <= 0 || !dataPtr) return elements;
+
+        int start = (offset < count) ? offset : count;
+        int end   = ((start + limit) < count) ? (start + limit) : count;
+
+        Solitaer::Info("WALK", "ReadContainerElements(Packed): reading [%d..%d) of %d (elemSize=%d)",
+            start, end, count, elemSize);
+
+        for (int i = start; i < end; i++) {
+            uint64_t elemAddr = dataPtr + static_cast<uint64_t>(i) * elemSize;
+            ContainerElement elem;
+            elem.index = i;
+            elem.value = ReadPackedElement(elemAddr, type4x);
+            elements.push_back(std::move(elem));
+        }
+    }
+    // Dictionary: TODO
+
+    return elements;
 }
 
 // ============================================================
@@ -554,6 +876,27 @@ static VariantValue ReadNativeValue(uint64_t memberAddr, int variantType, int na
             } else {
                 result.value = "(null)";
             }
+            break;
+        }
+
+        case 27: { // DICTIONARY (native — pointer to internals)
+            uint64_t dictPtr = Zoltraak::ReadSafe<uint64_t>(memberAddr, 0);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Dictionary@%llX",
+                static_cast<unsigned long long>(dictPtr));
+            result.value = buf;
+            break;
+        }
+
+        case 28: { // ARRAY (native — pointer to ArrayPrivate)
+            auto [count, dataPtr] = ReadArrayInternals(memberAddr);
+            char buf[64];
+            if (dataPtr) {
+                snprintf(buf, sizeof(buf), "Array[%d]", count);
+            } else {
+                snprintf(buf, sizeof(buf), "Array(empty)");
+            }
+            result.value = buf;
             break;
         }
 

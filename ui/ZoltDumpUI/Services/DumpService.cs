@@ -117,6 +117,20 @@ public sealed class DumpService : IDumpService
         return ParseInstanceWalk(resp);
     }
 
+    public async Task<ContainerWalkResult> WalkContainerAsync(string address, int variantType,
+        int offset = 0, int limit = 100, CancellationToken ct = default)
+    {
+        var payload = new JsonObject
+        {
+            ["address"] = address,
+            ["variant_type"] = variantType,
+            ["offset"] = offset,
+            ["limit"] = limit
+        };
+        var resp = await _pipe.SendAsync("walk_container", payload, ct);
+        return ParseContainerWalk(resp);
+    }
+
     public async Task<TreeWalkResult> WalkTreeAsync(int depth = -1, CancellationToken ct = default)
     {
         var payload = new JsonObject();
@@ -382,6 +396,28 @@ public sealed class DumpService : IDumpService
             ClassName = resp["class_name"]?.GetValue<string>() ?? "",
             ParentAddr = resp["parent_addr"]?.GetValue<string>() ?? "",
             IsNode = resp["is_node"]?.GetValue<bool>() ?? false,
+            Fields = fields
+        };
+    }
+
+    private static ContainerWalkResult ParseContainerWalk(JsonObject resp)
+    {
+        var fields = new List<LiveFieldValue>();
+        if (resp["fields"] is JsonArray arr)
+        {
+            foreach (var item in arr)
+            {
+                if (item is JsonObject obj)
+                    fields.Add(ParseLiveField(obj));
+            }
+        }
+        return new ContainerWalkResult
+        {
+            Address = resp["address"]?.GetValue<string>() ?? "",
+            ContainerType = resp["container_type"]?.GetValue<string>() ?? "",
+            ElementCount = resp["element_count"]?.GetValue<int>() ?? 0,
+            ElementType = resp["element_type"]?.GetValue<string>() ?? "",
+            KeyType = resp["key_type"]?.GetValue<string>() ?? "",
             Fields = fields
         };
     }

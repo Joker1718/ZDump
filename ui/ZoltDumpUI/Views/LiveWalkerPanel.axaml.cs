@@ -18,6 +18,7 @@ public partial class LiveWalkerPanel : UserControl
     {
         InitializeComponent();
         BuildFieldsContextMenu();
+        WireDoubleClick();
     }
 
     /// <summary>Enter key in address TextBox triggers Go navigation.</summary>
@@ -30,6 +31,34 @@ public partial class LiveWalkerPanel : UserControl
                 vm.GoToAddressCommand.Execute(null);
             e.Handled = true;
         }
+    }
+
+    /// <summary>
+    /// Double-click on a row: drills into pointer or container fields.
+    /// </summary>
+    private void WireDoubleClick()
+    {
+        FieldsGrid.DoubleTapped += async (_, e) =>
+        {
+            if (DataContext is not LiveWalkerViewModel vm) return;
+            if (FieldsGrid.SelectedItem is not LiveFieldValue field) return;
+
+            // Container fields: drill into elements
+            if (field.IsContainer && !string.IsNullOrEmpty(field.Address))
+            {
+                await vm.NavigateContainerAsync(field);
+                e.Handled = true;
+                return;
+            }
+
+            // Pointer fields: navigate to pointed object
+            if (field.IsPointer && !string.IsNullOrEmpty(field.PtrValue))
+            {
+                if (vm.NavigatePointerCommand.CanExecute(field))
+                    await vm.NavigatePointerCommand.ExecuteAsync(field);
+                e.Handled = true;
+            }
+        };
     }
 
     /// <summary>
@@ -66,6 +95,15 @@ public partial class LiveWalkerPanel : UserControl
             // Fallback to current selection
             _contextField = FieldsGrid.SelectedItem as LiveFieldValue;
         }, RoutingStrategies.Tunnel);
+
+        // ── Drill Into Container ──
+        var drillContainer = new MenuItem { Header = "Drill Into Container" };
+        drillContainer.Click += async (_, _) =>
+        {
+            if (GetVm() is { } vm && _contextField is { IsContainer: true } field)
+                await vm.NavigateContainerAsync(field);
+        };
+        menu.Items.Add(drillContainer);
 
         // ── CE Lua Scripts ──
         var generateCeLua = new MenuItem { Header = "Generate CE Lua Script" };
