@@ -68,7 +68,9 @@ public partial class MainWindowViewModel : ViewModelBase
         NodeTree.SelectionChanged += OnNodeTreeSelectionChanged;
         InstanceFinder.NavigateToLiveWalker += OnNavigateToLiveWalker;
         NodeFilter.NavigateToInstanceFinder += OnNavigateToInstanceFinder;
+        NodeFilter.NavigateToLiveWalker += OnNavigateToLiveWalker;
         PropertySearch.NavigateToInstanceFinder += OnNavigateToInstanceFinder;
+        PropertySearch.NavigateToLiveWalker += OnNavigateToLiveWalker;
 
         _pipe.ConnectionStateChanged += connected =>
         {

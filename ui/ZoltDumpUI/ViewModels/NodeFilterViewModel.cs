@@ -6,7 +6,7 @@ using ZoltDumpUI.Models;
 
 namespace ZoltDumpUI.ViewModels;
 
-/// <summary>Node class filter/browser — browse and filter ClassDB entries.</summary>
+/// <summary>Node class filter/browser — browse and filter ClassDB entries with property detail.</summary>
 public partial class NodeFilterViewModel : ViewModelBase
 {
     private readonly IDumpService _dump;
@@ -15,14 +15,21 @@ public partial class NodeFilterViewModel : ViewModelBase
 
     public ObservableCollection<ClassListItem> DisplayedClasses { get; } = [];
     public ObservableCollection<string> SuperSuggestions { get; } = [];
+    public ObservableCollection<FieldInfoModel> SelectedProperties { get; } = [];
+    public ObservableCollection<MethodInfoEntry> SelectedMethods { get; } = [];
 
     [ObservableProperty] private string _filterText = "";
     [ObservableProperty] private string _superFilter = "";
     [ObservableProperty] private bool _gameOnly = true;
     [ObservableProperty] private int _displayCount;
     [ObservableProperty] private bool _isLoading;
+    [ObservableProperty] private string _selectedClassName = "";
+    [ObservableProperty] private string _selectedSuperName = "";
+    [ObservableProperty] private int _selectedPropertyCount;
+    [ObservableProperty] private bool _isLoadingDetail;
 
     public event Action<string>? NavigateToInstanceFinder;
+    public event Action<string>? NavigateToLiveWalker;
 
     public NodeFilterViewModel(IDumpService dump, ILoggingService log)
     {
@@ -67,6 +74,58 @@ public partial class NodeFilterViewModel : ViewModelBase
     private void FindInstances(ClassListItem item)
     {
         NavigateToInstanceFinder?.Invoke(item.ClassName);
+    }
+
+    /// <summary>Find first instance of selected class and open in Live Walker.</summary>
+    [RelayCommand]
+    private async Task OpenInLiveWalkerAsync(ClassListItem item)
+    {
+        try
+        {
+            var result = await _dump.FindInstancesAsync(item.ClassName, exactMatch: true);
+            if (result.Instances.Count > 0)
+            {
+                NavigateToLiveWalker?.Invoke(result.Instances[0].Address);
+            }
+            else
+            {
+                SetError($"No instances found for '{item.ClassName}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("view", $"Open in LiveWalker failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Load class detail (properties + methods) for the selected class row.</summary>
+    public async Task LoadClassDetailAsync(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return;
+        try
+        {
+            IsLoadingDetail = true;
+            var info = await _dump.WalkClassAsync(className);
+            SelectedClassName = info.ClassName;
+            SelectedSuperName = info.SuperName;
+            SelectedPropertyCount = info.PropertiesCount;
+
+            SelectedProperties.Clear();
+            foreach (var p in info.Properties)
+                SelectedProperties.Add(p);
+
+            SelectedMethods.Clear();
+            foreach (var m in info.Methods)
+                SelectedMethods.Add(m);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("view", $"Class detail load failed: {ex.Message}", ex);
+        }
+        finally
+        {
+            IsLoadingDetail = false;
+        }
     }
 
     private void ApplyFilter()
