@@ -39,6 +39,7 @@ static HANDLE s_hThread = nullptr;
 static void HandleFindInstance();
 static void HandleGetMemberAddr();
 static void HandleFindNode();
+static void HandleFindInstanceWithMember();
 static void SetError(int32_t code, const char* msg);
 static void SetDone(int32_t resultCode);
 
@@ -75,6 +76,9 @@ static DWORD WINAPI PollingThreadProc(LPVOID /*param*/) {
                 break;
             case CMD_FIND_NODE:
                 HandleFindNode();
+                break;
+            case CMD_FIND_INSTANCE_WITH_MEMBER:
+                HandleFindInstanceWithMember();
                 break;
             case CMD_PING:
                 SetDone(0);
@@ -398,6 +402,237 @@ static void HandleFindNode() {
         snprintf(msg, sizeof(msg), "Node '%s' not found", nodeName);
         SetError(-2, msg);
     }
+}
+
+// Apply a FilterOp comparison: returns true if (actual op threshold) passes.
+static bool ApplyFilterOp(int32_t op, int64_t actual, int64_t threshold) {
+    switch (op) {
+    case Zolt::Qual::FILTER_GT: return actual > threshold;
+    case Zolt::Qual::FILTER_LT: return actual < threshold;
+    case Zolt::Qual::FILTER_NE: return actual != threshold;
+    case Zolt::Qual::FILTER_EQ: return actual == threshold;
+    case Zolt::Qual::FILTER_GE: return actual >= threshold;
+    case Zolt::Qual::FILTER_LE: return actual <= threshold;
+    default: return true; // FILTER_NONE or unknown → pass
+    }
+}
+
+// Read the int64 value of a Variant at the given member index.
+// For int/bool types reads the data portion; for real reads as double and casts.
+static int64_t ReadMemberValue(uint64_t si, int memberIdx) {
+    uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+        si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+    if (!membersPtr) return 0;
+
+    int stride = DynOff::VARIANT_STRIDE;
+    uint64_t varAddr = membersPtr + memberIdx * stride;
+    int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+
+    uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
+
+    // Godot Variant types: BOOL=1, INT=2, REAL/FLOAT=3
+    switch (varType) {
+    case 1: // BOOL
+        return Zoltraak::ReadSafe<int32_t>(dataAddr, 0) ? 1 : 0;
+    case 2: // INT
+        return Zoltraak::ReadSafe<int64_t>(dataAddr, 0);
+    case 3: { // REAL/FLOAT — Godot 3.x uses double, 4.x uses double
+        double d = Zoltraak::ReadSafe<double>(dataAddr, 0.0);
+        return static_cast<int64_t>(d);
+    }
+    default:
+        return Zoltraak::ReadSafe<int64_t>(dataAddr, 0);
+    }
+}
+
+// CMD_FIND_INSTANCE_WITH_MEMBER — Find an Object by class name that has a specific GDScript member
+// Input: className (e.g. "Reference") + memberName (e.g. "gold")
+//        nodeName (optional): secondary member name filter — object must ALSO have this member
+//        targetOp + targetValue (optional): value criterion for target member (e.g. gold > 30)
+//        filterOp + filterValue (optional): value criterion for filter member (e.g. current_xp != 0)
+// Output: objectAddr + memberAddr + memberIndex + memberType
+//
+// Solves the "509 Reference objects" problem: iterates ObjectDB instances of the
+// given class and for each checks if the GDScript instance has the named member,
+// with optional value-based criteria for disambiguation.
+// Returns the FIRST match with its resolved member address.
+static void HandleFindInstanceWithMember() {
+    char className[256], memberName[256], filterName[256];
+    memcpy(className, g_zoltMailbox.className, sizeof(className));
+    memcpy(memberName, g_zoltMailbox.memberName, sizeof(memberName));
+    memcpy(filterName, g_zoltMailbox.nodeName, sizeof(filterName));
+    className[255] = '\0';
+    memberName[255] = '\0';
+    filterName[255] = '\0';
+
+    // Read value criteria
+    int32_t targetOp    = g_zoltMailbox.targetOp;
+    int64_t targetValue = g_zoltMailbox.targetValue;
+    int32_t filterOp    = g_zoltMailbox.filterOp;
+    int64_t filterValue = g_zoltMailbox.filterValue;
+
+    if (className[0] == '\0') {
+        SetError(-1, "Empty class name");
+        return;
+    }
+    if (memberName[0] == '\0') {
+        SetError(-1, "Empty member name");
+        return;
+    }
+
+    bool hasFilter = (filterName[0] != '\0');
+    bool hasTargetCriteria = (targetOp != Zolt::Qual::FILTER_NONE);
+    bool hasFilterCriteria = (filterOp != Zolt::Qual::FILTER_NONE && hasFilter);
+
+    Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_WITH_MEMBER class='%s' member='%s' filter='%s' "
+                   "targetOp=%d targetVal=%lld filterOp=%d filterVal=%lld",
+                   className, memberName, hasFilter ? filterName : "(none)",
+                   targetOp, static_cast<long long>(targetValue),
+                   filterOp, static_cast<long long>(filterValue));
+
+    std::string targetClass(className);
+    std::string targetClassLower = targetClass;
+    std::transform(targetClassLower.begin(), targetClassLower.end(), targetClassLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    std::string targetMember(memberName);
+    std::string targetMemberLower = targetMember;
+    std::transform(targetMemberLower.begin(), targetMemberLower.end(), targetMemberLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    std::string filterMember, filterMemberLower;
+    if (hasFilter) {
+        filterMember = std::string(filterName);
+        filterMemberLower = filterMember;
+        std::transform(filterMemberLower.begin(), filterMemberLower.end(), filterMemberLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
+    uint64_t foundObj = 0;
+    int foundIndex = -1;
+    uint64_t foundGdScript = 0;
+    int scannedCount = 0;
+    int memberMatchCount = 0;
+    int criteriaFailCount = 0;
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        std::string cls = Diagoldze::GetObjectClass(objAddr);
+        if (cls.empty()) return true;
+
+        // Class name match (case-insensitive)
+        std::string clsLower = cls;
+        std::transform(clsLower.begin(), clsLower.end(), clsLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (cls != targetClass && clsLower != targetClassLower) return true;
+
+        scannedCount++;
+
+        // Check for ScriptInstance
+        if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return true;
+        uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+            objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+        if (!si || !Zoltraak::IsReadable(si)) return true;
+
+        // Verify owner backlink
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(si + DynOff::GDSCRIPT_OWNER_OFF, 0);
+        if (owner != objAddr) return true;
+
+        // Get GDScript pointer for name resolution
+        uint64_t gdscriptPtr = Zoltraak::ReadSafe<uint64_t>(
+            si + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
+
+        // Resolve member names for this instance
+        auto nameMap = Ubel::GetMemberNames(gdscriptPtr);
+
+        // Search for the target member and filter member indices
+        int targetIdx = -1;
+        int filterIdx = -1;
+
+        for (auto& [idx, name] : nameMap) {
+            std::string nameLower = name;
+            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (name == targetMember || nameLower == targetMemberLower) {
+                targetIdx = idx;
+            }
+            if (hasFilter && (name == filterMember || nameLower == filterMemberLower)) {
+                filterIdx = idx;
+            }
+        }
+
+        if (targetIdx < 0) return true; // doesn't have target member
+
+        memberMatchCount++;
+
+        // If filter member name is set, object must also have it
+        if (hasFilter && filterIdx < 0) return true;
+
+        // ── Value criteria checks ──
+        // Check target member value criterion (e.g. gold > 30)
+        if (hasTargetCriteria) {
+            int64_t val = ReadMemberValue(si, targetIdx);
+            if (!ApplyFilterOp(targetOp, val, targetValue)) {
+                criteriaFailCount++;
+                return true; // value criterion failed — skip
+            }
+        }
+
+        // Check filter member value criterion (e.g. current_xp != 0)
+        if (hasFilterCriteria && filterIdx >= 0) {
+            int64_t val = ReadMemberValue(si, filterIdx);
+            if (!ApplyFilterOp(filterOp, val, filterValue)) {
+                criteriaFailCount++;
+                return true; // value criterion failed — skip
+            }
+        }
+
+        foundObj = objAddr;
+        foundIndex = targetIdx;
+        foundGdScript = gdscriptPtr;
+        return false; // stop — found the match
+    });
+
+    if (!foundObj || foundIndex < 0) {
+        char msg[256];
+        if (criteriaFailCount > 0) {
+            snprintf(msg, sizeof(msg),
+                     "Found %d '%s' with '%s' but %d failed value criteria (scanned %d)",
+                     memberMatchCount, className, memberName, criteriaFailCount, scannedCount);
+        } else if (hasFilter && memberMatchCount > 0) {
+            snprintf(msg, sizeof(msg),
+                     "Found %d '%s' with '%s' but none also had '%s' (scanned %d)",
+                     memberMatchCount, className, memberName, filterName, scannedCount);
+        } else {
+            snprintf(msg, sizeof(msg), "No '%s' instance with member '%s' (scanned %d)",
+                     className, memberName, scannedCount);
+        }
+        SetError(-2, msg);
+        return;
+    }
+
+    // Calculate member address (same logic as HandleGetMemberAddr)
+    uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+        foundObj + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+    uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+        si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+
+    int stride = DynOff::VARIANT_STRIDE;
+    uint64_t varAddr = membersPtr + foundIndex * stride;
+    uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
+    int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+
+    g_zoltMailbox.objectAddr  = foundObj;
+    g_zoltMailbox.memberAddr  = dataAddr;
+    g_zoltMailbox.memberIndex = foundIndex;
+    g_zoltMailbox.memberType  = varType;
+
+    Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_WITH_MEMBER '%s.%s' filter='%s' "
+                   "→ obj=%p member[%d] type=%d addr=%p (matched %d, criteria_fail %d, scanned %d)",
+                   className, memberName, hasFilter ? filterName : "(none)",
+                   reinterpret_cast<void*>(foundObj), foundIndex, varType,
+                   reinterpret_cast<void*>(dataAddr), memberMatchCount, criteriaFailCount, scannedCount);
+    SetDone(0);
 }
 
 // ---- Helpers ----

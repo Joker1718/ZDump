@@ -55,4 +55,13 @@
     <sys:String x:Key="MsgScanComplete">Scan complete. Found {0} objects.</sys:String>
     <sys:String x:Key="MsgScanFailed">Scan failed: {0}</sys:String>
 
+    <!-- Member Filter Dialog -->
+    <sys:String x:Key="DlgFilterTitle">CE Script — Value Criteria</sys:String>
+    <sys:String x:Key="DlgFilterTargetLabel">Target member criteria</sys:String>
+    <sys:String x:Key="DlgFilterSecondaryLabel">Secondary filter member</sys:String>
+    <sys:String x:Key="DlgFilterGenerate">Generate Script</sys:String>
+    <sys:String x:Key="DlgFilterCancel">Cancel</sys:String>
+    <sys:String x:Key="DlgFilterNone">(no filter)</sys:String>
+    <sys:String x:Key="DlgFilterOpNone">No check</sys:String>
+
 </ResourceDictionary>

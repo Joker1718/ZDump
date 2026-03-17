@@ -1055,14 +1055,88 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
             { 0x08, 0x20, 0x30, 0x38, "alt-color" },    // color(4+4pad), left, right, parent, next, prev, key, val
         };
 
-        // Hex-dump first 0x200 bytes of GDScript object for diagnostics
-        Solitaer::Debug("WALK", "  GDScript object hexdump (first 0x100 bytes at %p):",
+        // Hex-dump first 0x400 bytes of GDScript object for diagnostics
+        Solitaer::Debug("WALK", "  GDScript object hexdump (first 0x400 bytes at %p):",
             reinterpret_cast<void*>(gdscriptAddr));
-        for (int d = 0; d < 0x100; d += 8) {
+        for (int d = 0; d < 0x400; d += 8) {
             uint64_t val = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + d, 0);
             if (val != 0) {
                 Solitaer::Debug("WALK", "    +0x%03X: %016llX%s",
                     d, val, Zoltraak::IsReadable(val) ? " (ptr)" : "");
+            }
+        }
+
+        // Broad candidate scan: log ALL offsets where (root=ptr, nil=ptr|0, count=1-200)
+        // Focus on count matching our expected member count for deep analysis
+        Solitaer::Debug("WALK", "  Map _Data scan (looking for root+nil+count patterns):");
+        for (int off = 0x40; off <= 0x600; off += 8) {
+            uint64_t root  = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off, 0);
+            uint64_t nil   = Zoltraak::ReadSafe<uint64_t>(gdscriptAddr + off + 0x08, 0);
+            uint32_t count = Zoltraak::ReadSafe<uint32_t>(gdscriptAddr + off + 0x10, 0);
+            if (root && Zoltraak::IsReadable(root) && count >= 1 && count <= 200) {
+                Solitaer::Debug("WALK", "    +0x%03X: root=%p nil=%p count=%u (nil %s)",
+                    off, reinterpret_cast<void*>(root), reinterpret_cast<void*>(nil),
+                    count, (nil && Zoltraak::IsReadable(nil)) ? "readable" :
+                           (nil == 0 ? "NULL" : "unreadable"));
+                // For candidates with count >= 10, do deep element analysis
+                if (root != nil && count >= 10) {
+                    // Dump root element fully (0x80 bytes)
+                    Solitaer::Debug("WALK", "      ROOT elem at %p (0x80 bytes):", reinterpret_cast<void*>(root));
+                    for (int d = 0; d < 0x80; d += 8) {
+                        uint64_t ev = Zoltraak::ReadSafe<uint64_t>(root + d, 0);
+                        Solitaer::Debug("WALK", "        +0x%02X: %016llX%s",
+                            d, ev, Zoltraak::IsReadable(ev) ? " (ptr)" : "");
+                    }
+                    // Try Flamme::Resolve (StringName indirection) at every offset
+                    for (int ko = 0; ko < 0x70; ko += 8) {
+                        std::string name = Flamme::Resolve(root + ko);
+                        if (!name.empty()) {
+                            Solitaer::Debug("WALK", "      Flamme::Resolve(elem+0x%02X) = '%s'", ko, name.c_str());
+                        }
+                    }
+                    // Try Flamme::ResolveAt directly on every pointer value (maybe key is _Data* not StringName)
+                    for (int ko = 0; ko < 0x70; ko += 8) {
+                        uint64_t ev = Zoltraak::ReadSafe<uint64_t>(root + ko, 0);
+                        if (ev && Zoltraak::IsReadable(ev)) {
+                            std::string name = Flamme::ResolveAt(ev);
+                            if (!name.empty()) {
+                                Solitaer::Debug("WALK", "      Flamme::ResolveAt(val@+0x%02X=%p) = '%s'",
+                                    ko, reinterpret_cast<void*>(ev), name.c_str());
+                            }
+                        }
+                    }
+                    // Also dump a CHILD element (follow left/right pointers)
+                    for (int co = 0x08; co <= 0x18; co += 8) {
+                        uint64_t child = Zoltraak::ReadSafe<uint64_t>(root + co, 0);
+                        if (child && child != nil && Zoltraak::IsReadable(child) && child != root) {
+                            Solitaer::Debug("WALK", "      CHILD elem at %p (via +0x%02X, 0x80 bytes):",
+                                reinterpret_cast<void*>(child), co);
+                            for (int d = 0; d < 0x80; d += 8) {
+                                uint64_t ev = Zoltraak::ReadSafe<uint64_t>(child + d, 0);
+                                Solitaer::Debug("WALK", "        +0x%02X: %016llX%s",
+                                    d, ev, Zoltraak::IsReadable(ev) ? " (ptr)" : "");
+                            }
+                            // Try Flamme on child element too
+                            for (int ko = 0; ko < 0x70; ko += 8) {
+                                std::string name = Flamme::Resolve(child + ko);
+                                if (!name.empty()) {
+                                    Solitaer::Debug("WALK", "      child Flamme::Resolve(+0x%02X) = '%s'", ko, name.c_str());
+                                }
+                            }
+                            for (int ko = 0; ko < 0x70; ko += 8) {
+                                uint64_t ev = Zoltraak::ReadSafe<uint64_t>(child + ko, 0);
+                                if (ev && Zoltraak::IsReadable(ev)) {
+                                    std::string name = Flamme::ResolveAt(ev);
+                                    if (!name.empty()) {
+                                        Solitaer::Debug("WALK", "      child Flamme::ResolveAt(val@+0x%02X=%p) = '%s'",
+                                            ko, reinterpret_cast<void*>(ev), name.c_str());
+                                    }
+                                }
+                            }
+                            break; // Only dump first child
+                        }
+                    }
+                }
             }
         }
 
@@ -1078,24 +1152,50 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
 
             // Try each Element layout variant
             for (const auto& lay : mapLayouts) {
-                // Validate: root element key resolves to a StringName with valid index
-                std::string rootName = Flamme::Resolve(root + lay.keyOff);
-                if (rootName.empty() || rootName.size() > 64) continue;
+                // Validate: try root element key first; if empty, try child elements
+                // (Godot 3.x root can have empty key after red-black tree rotations)
+                uint64_t validationElem = root;
+                std::string validName;
+                int32_t validIdx = -1;
 
-                int32_t rootIdx = Zoltraak::ReadSafe<int32_t>(root + lay.valOff, -1);
-                if (rootIdx < 0 || rootIdx >= static_cast<int>(count)) continue;
-
-                Solitaer::Debug("WALK", "  Map candidate at GDScript+0x%X [%s]: root=%p nil=%p count=%u rootKey='%s' rootIdx=%d",
-                    off, lay.tag, reinterpret_cast<void*>(root), reinterpret_cast<void*>(nil), count,
-                    rootName.c_str(), rootIdx);
-
-                // Hex-dump root element for layout verification
-                Solitaer::Debug("WALK", "  Root element hexdump at %p:", reinterpret_cast<void*>(root));
-                for (int d = 0; d < 0x48; d += 8) {
-                    uint64_t val = Zoltraak::ReadSafe<uint64_t>(root + d, 0);
-                    Solitaer::Debug("WALK", "    +0x%02X: %016llX%s", d, val,
-                        Zoltraak::IsReadable(val) ? " (ptr)" : "");
+                // Try root first
+                validName = Flamme::Resolve(root + lay.keyOff);
+                if (!validName.empty() && validName.size() <= 64) {
+                    validIdx = Zoltraak::ReadSafe<int32_t>(root + lay.valOff, -1);
                 }
+
+                // If root key empty, try left child, then right child
+                if (validName.empty() || validIdx < 0 || validIdx >= static_cast<int>(count)) {
+                    // Try left child (at leftOff)
+                    uint64_t leftChild = Zoltraak::ReadSafe<uint64_t>(root + lay.leftOff, 0);
+                    if (leftChild && leftChild != nil && Zoltraak::IsReadable(leftChild)) {
+                        validName = Flamme::Resolve(leftChild + lay.keyOff);
+                        if (!validName.empty() && validName.size() <= 64) {
+                            validIdx = Zoltraak::ReadSafe<int32_t>(leftChild + lay.valOff, -1);
+                            validationElem = leftChild;
+                        }
+                    }
+                }
+                // Also try right child (at offset that could be right: for color-first, right=+0x08)
+                if (validName.empty() || validIdx < 0 || validIdx >= static_cast<int>(count)) {
+                    // For color-first layout, right is at +0x08; for ptrs-first, right is at +0x08
+                    int rightOff = (lay.leftOff == 0x10) ? 0x08 : 0x08;
+                    uint64_t rightChild = Zoltraak::ReadSafe<uint64_t>(root + rightOff, 0);
+                    if (rightChild && rightChild != nil && Zoltraak::IsReadable(rightChild)) {
+                        validName = Flamme::Resolve(rightChild + lay.keyOff);
+                        if (!validName.empty() && validName.size() <= 64) {
+                            validIdx = Zoltraak::ReadSafe<int32_t>(rightChild + lay.valOff, -1);
+                            validationElem = rightChild;
+                        }
+                    }
+                }
+
+                if (validName.empty() || validName.size() > 64) continue;
+                if (validIdx < 0 || validIdx >= static_cast<int>(count)) continue;
+
+                Solitaer::Debug("WALK", "  Map candidate at GDScript+0x%X [%s]: root=%p nil=%p count=%u validKey='%s' validIdx=%d",
+                    off, lay.tag, reinterpret_cast<void*>(root), reinterpret_cast<void*>(nil), count,
+                    validName.c_str(), validIdx);
 
                 // Find leftmost element by following left pointers
                 uint64_t cur = root;

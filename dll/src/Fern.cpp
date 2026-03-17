@@ -453,23 +453,25 @@ static json HandleFindByAddress(int id, const json& req) {
     // Phase 1+2: Range-based lookup (includes exact match as fast path)
     auto match = Ausetiese::FindByAddressRange(addr);
 
-    if (match.slotIndex >= 0) {
+    // Phase 1 exact match: return immediately (address IS an Object)
+    if (match.slotIndex >= 0 && match.memberOffset == 0) {
         std::string name      = ReadObjectName(match.objectAddr);
         std::string className = Diagoldze::GetObjectClass(match.objectAddr);
 
         json resp = OkResponse(id);
         resp["found"]         = true;
-        resp["match_type"]    = (match.memberOffset == 0) ? "exact" : "range";
+        resp["match_type"]    = "exact";
         resp["address"]       = AddrToHex(match.objectAddr);
         resp["name"]          = SafeStr(name);
         resp["class_name"]    = SafeStr(className);
         resp["slot_index"]    = match.slotIndex;
-        resp["member_offset"] = match.memberOffset;
+        resp["member_offset"] = 0;
         return resp;
     }
 
-    // Phase 3: ScriptInstance members search (GDScript variables are heap-allocated
-    // in a separate Vector<Variant>, not within the Object body)
+    // Phase 3 BEFORE range fallback: ScriptInstance members search
+    // GDScript variables are heap-allocated in a separate Vector<Variant>,
+    // not within the Object body — so range match can be wrong.
     auto scriptMatch = Ubel::FindScriptMemberByAddress(addr);
 
     if (scriptMatch.objectAddr) {
@@ -487,6 +489,22 @@ static json HandleFindByAddress(int id, const json& req) {
         resp["member_offset"]  = 0;
         resp["script_member"]  = scriptMatch.memberIndex;
         resp["variant_offset"] = scriptMatch.variantOffset;
+        return resp;
+    }
+
+    // Phase 2 fallback: range match (address is within an Object's body)
+    if (match.slotIndex >= 0 && match.memberOffset > 0) {
+        std::string name      = ReadObjectName(match.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(match.objectAddr);
+
+        json resp = OkResponse(id);
+        resp["found"]         = true;
+        resp["match_type"]    = "range";
+        resp["address"]       = AddrToHex(match.objectAddr);
+        resp["name"]          = SafeStr(name);
+        resp["class_name"]    = SafeStr(className);
+        resp["slot_index"]    = match.slotIndex;
+        resp["member_offset"] = match.memberOffset;
         return resp;
     }
 
@@ -1049,10 +1067,10 @@ static std::string ProcessRequest(const std::string& line) {
 
     try {
         json resp = it->second(id, req);
-        return resp.dump();
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
     } catch (const std::exception& e) {
         LOG_ERROR("Handler exception for '%s': %s", cmd.c_str(), e.what());
-        return ErrorResponse(id, std::string("Internal error: ") + e.what()).dump();
+        return ErrorResponse(id, std::string("Internal error: ") + e.what()).dump(-1, ' ', false, json::error_handler_t::replace);
     } catch (...) {
         // With /EHa, this catches SEH exceptions (access violations, etc.)
         LOG_ERROR("SEH/unknown exception in handler for '%s'", cmd.c_str());

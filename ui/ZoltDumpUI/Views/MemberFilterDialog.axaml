@@ -1,0 +1,65 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZoltDumpUI.Views.MemberFilterDialog"
+        Title="CE Script — Value Criteria"
+        Width="480" Height="340"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E1E">
+
+    <StackPanel Margin="16" Spacing="12">
+
+        <!-- Title -->
+        <TextBlock Text="Set value criteria for instance disambiguation"
+                   Foreground="#CCCCCC" FontSize="13" Margin="0,0,0,4" />
+
+        <!-- ═══ Target member criteria ═══ -->
+        <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
+            <StackPanel Spacing="6">
+                <TextBlock x:Name="TargetLabel" Foreground="#569CD6" FontWeight="SemiBold" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <ComboBox x:Name="TargetOpCombo" Width="120" SelectedIndex="0">
+                        <ComboBoxItem Content="No check" Tag="0" />
+                        <ComboBoxItem Content="&gt; (GT)" Tag="1" />
+                        <ComboBoxItem Content="&lt; (LT)" Tag="2" />
+                        <ComboBoxItem Content="!= (NE)" Tag="3" />
+                        <ComboBoxItem Content="== (EQ)" Tag="4" />
+                        <ComboBoxItem Content="&gt;= (GE)" Tag="5" />
+                        <ComboBoxItem Content="&lt;= (LE)" Tag="6" />
+                    </ComboBox>
+                    <TextBox x:Name="TargetValueBox" Width="140" Watermark="Value..."
+                             Text="0" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ Secondary filter member ═══ -->
+        <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
+            <StackPanel Spacing="6">
+                <TextBlock Text="Secondary filter member" Foreground="#4EC9B0" FontWeight="SemiBold" />
+                <ComboBox x:Name="FilterMemberCombo" MinWidth="200" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <ComboBox x:Name="FilterOpCombo" Width="120" SelectedIndex="0">
+                        <ComboBoxItem Content="No check" Tag="0" />
+                        <ComboBoxItem Content="&gt; (GT)" Tag="1" />
+                        <ComboBoxItem Content="&lt; (LT)" Tag="2" />
+                        <ComboBoxItem Content="!= (NE)" Tag="3" />
+                        <ComboBoxItem Content="== (EQ)" Tag="4" />
+                        <ComboBoxItem Content="&gt;= (GE)" Tag="5" />
+                        <ComboBoxItem Content="&lt;= (LE)" Tag="6" />
+                    </ComboBox>
+                    <TextBox x:Name="FilterValueBox" Width="140" Watermark="Value..."
+                             Text="0" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Buttons -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+            <Button Content="Cancel" x:Name="CancelButton" Width="90" />
+            <Button Content="Generate Script" x:Name="GenerateButton" Width="120"
+                    Classes="accent" />
+        </StackPanel>
+
+    </StackPanel>
+</Window>

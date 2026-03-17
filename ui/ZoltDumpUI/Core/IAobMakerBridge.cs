@@ -10,6 +10,15 @@ public interface IAobMakerBridge
     Task CreateSymbolScriptAsync(string label, string address, CancellationToken ct = default);
     Task CreateMemoryRecordAsync(string description, string address, CeValueType valueType,
         bool isSigned = false, CancellationToken ct = default);
+
+    /// <summary>
+    /// Create an AA script with a child memory record as a grouped CE entry.
+    /// Parent has Options moHideChildren + moDeactivateChildrenAsWell.
+    /// If AOBMaker doesn't support grouping, falls back to flat creation.
+    /// </summary>
+    Task CreateGroupedAAScriptAsync(string label, string script,
+        string childDescription, string childAddress, CeValueType childValueType,
+        bool childIsSigned = false, CancellationToken ct = default);
 }
 
 /// <summary>

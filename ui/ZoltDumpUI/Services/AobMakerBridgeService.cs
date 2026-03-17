@@ -89,6 +89,44 @@ public sealed class AobMakerBridgeService : IAobMakerBridge
         }, ct);
     }
 
+    public async Task CreateGroupedAAScriptAsync(string label, string script,
+        string childDescription, string childAddress, CeValueType childValueType,
+        bool childIsSigned = false, CancellationToken ct = default)
+    {
+        // Try grouped first (parent AA script with child memory record nested inside)
+        try
+        {
+            await SendAndReceiveAsync(new AobMakerMessage
+            {
+                Type = TypeCreateAAScript,
+                Description = label,
+                Script = script,
+                AutoActivate = false,
+                Options = "moHideChildren=\"1\" moDeactivateChildrenAsWell=\"1\"",
+                Children =
+                [
+                    new AobMakerMessage
+                    {
+                        Type = TypeCreateMemoryRecord,
+                        Description = childDescription,
+                        Address = childAddress,
+                        ValueType = (int)childValueType,
+                        IsSigned = childIsSigned
+                    }
+                ]
+            }, ct);
+            return;
+        }
+        catch
+        {
+            // Grouped not supported — fall back to flat creation
+        }
+
+        // Fallback: create AA script and memory record as separate flat entries
+        await CreateAAScriptAsync(label, script, ct);
+        await CreateMemoryRecordAsync(childDescription, childAddress, childValueType, childIsSigned, ct);
+    }
+
     /// <summary>
     /// Send a length-prefixed JSON message and read the response.
     /// Each call creates a fresh pipe connection (per-request, as AOBMaker expects).
