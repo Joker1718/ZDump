@@ -114,6 +114,14 @@ public partial class LiveWalkerPanel : UserControl
         };
         menu.Items.Add(generateCeLua);
 
+        var generatePathMatch = new MenuItem { Header = "Generate CE Script (Path Match)" };
+        generatePathMatch.Click += async (_, _) =>
+        {
+            if (GetVm() is { } vm && _contextField is { } field)
+                await vm.GeneratePathMatchScriptAsync(field);
+        };
+        menu.Items.Add(generatePathMatch);
+
         menu.Items.Add(new Separator());
 
         // ── CE XML / Field ──

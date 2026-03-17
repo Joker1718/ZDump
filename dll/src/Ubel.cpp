@@ -217,6 +217,12 @@ static std::string FormatDouble(double v) {
 // Forward declarations for container reading (used by ReadVariant, defined below)
 static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr);
 
+// Dictionary internals return: {elementCount, headElementPtr}
+// headElementPtr differs by version:
+//   4.x: HashMapElement* (walk via ->next at +0x00)
+//   3.x: List::Element*  (walk via ->next at element+keyPtrSize+VARIANT_STRIDE)
+static std::pair<int, uint64_t> ReadDictionaryInternals(uint64_t dataAddr);
+
 // ============================================================
 // ReadVariant — Read and decode a Variant at the given address
 // Uses 4.x type numbers internally via MapType3xTo4x for 3.x.
@@ -403,11 +409,14 @@ VariantValue ReadVariant(uint64_t addr) {
             break;
         }
 
-        case 27: { // DICTIONARY — show as Dictionary[?] (count not cheaply available)
-            uint64_t dictPtr = Zoltraak::ReadSafe<uint64_t>(data, 0);
+        case 27: { // DICTIONARY — show element count via ReadDictionaryInternals
+            auto [count, headElem] = ReadDictionaryInternals(data);
             char buf[64];
-            snprintf(buf, sizeof(buf), "Dictionary@%llX",
-                static_cast<unsigned long long>(dictPtr));
+            if (headElem) {
+                snprintf(buf, sizeof(buf), "Dictionary[%d]", count);
+            } else {
+                snprintf(buf, sizeof(buf), "Dictionary(empty)");
+            }
             result.value = buf;
             break;
         }
@@ -503,6 +512,87 @@ static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr) {
     Solitaer::Debug("WALK", "ReadArrayInternals: count=%u cowPtr=%p (ArrayPrivate=%p)",
         count, reinterpret_cast<void*>(cowPtr), reinterpret_cast<void*>(arrayPrivate));
     return {static_cast<int>(count), cowPtr};
+}
+
+// ============================================================
+// ReadDictionaryInternals — Read Dictionary element count and head element
+// ============================================================
+// Godot 4.x Dictionary layout:
+//   DictionaryPrivate:
+//     +0x00: SafeRefCount (8 bytes)
+//     +0x08: Variant *read_only (8 bytes)
+//     +0x10: HashMap<Variant,Variant> variant_map
+//       HashMap fields (compiler-dependent offset for empty allocator):
+//         GCC/Clang: elements**(+0), hashes*(+8), head*(+16), tail*(+24), cap(+32), num(+36)
+//         MSVC:      alloc(+0,8pad), elements**(+8), hashes*(+16), head*(+24), tail*(+32), cap(+40), num(+44)
+//       We probe both patterns.
+//
+// Godot 3.x Dictionary layout:
+//   DictionaryPrivate:
+//     +0x00: SafeRefCount (8 bytes)
+//     +0x08: OrderedHashMap<Variant,Variant>
+//       +0x00: List<Pair<K*,V>>  (just _Data* pointer, 8 bytes)
+//       +0x08: HashMap<K, ListElement*>
+//     List._Data: { Element *first, Element *last, int size_cache }
+//
+// Returns {elementCount, headElementPtr} or {0, 0} on failure.
+static std::pair<int, uint64_t> ReadDictionaryInternals(uint64_t dataAddr) {
+    uint64_t dictPrivate = Zoltraak::ReadSafe<uint64_t>(dataAddr, 0);
+    if (!dictPrivate || !Zoltraak::IsReadable(dictPrivate)) {
+        return {0, 0}; // NULL _p = empty/uninitialized Dictionary
+    }
+
+    if (GodotVer::IsGodot3()) {
+        // 3.x: DictionaryPrivate+0x08 = OrderedHashMap.list (_Data* pointer)
+        uint64_t listData = Zoltraak::ReadSafe<uint64_t>(dictPrivate + 0x08, 0);
+        if (!listData || !Zoltraak::IsReadable(listData)) {
+            Solitaer::Debug("WALK", "ReadDictInternals(3.x): NULL list._data at %p",
+                reinterpret_cast<void*>(dictPrivate + 0x08));
+            return {0, 0};
+        }
+        // _Data: first(8B) + last(8B) + size_cache(4B)
+        uint64_t firstElem = Zoltraak::ReadSafe<uint64_t>(listData + 0x00, 0);
+        int count = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(listData + 0x10, 0));
+        if (count < 0 || count > 100000) count = 0;
+        Solitaer::Info("WALK", "ReadDictInternals(3.x): count=%d first=%p (_Data=%p)",
+            count, reinterpret_cast<void*>(firstElem), reinterpret_cast<void*>(listData));
+        return {count, firstElem};
+    }
+
+    // 4.x: HashMap starts at DictionaryPrivate+0x10
+    uint64_t hmBase = dictPrivate + 0x10;
+
+    // Probe two layouts for head_element and num_elements:
+    //   Pattern A (GCC/Clang, empty allocator = 0 bytes): head at +0x10, num at +0x24
+    //   Pattern B (MSVC, 8-byte padded empty allocator):   head at +0x18, num at +0x2C
+    struct ProbePattern {
+        int headOff;
+        int numOff;
+        const char* label;
+    };
+    static const ProbePattern patterns[] = {
+        {0x10, 0x24, "GCC"},
+        {0x18, 0x2C, "MSVC"},
+    };
+
+    for (auto& pat : patterns) {
+        uint64_t head = Zoltraak::ReadSafe<uint64_t>(hmBase + pat.headOff, 0);
+        uint32_t num  = Zoltraak::ReadSafe<uint32_t>(hmBase + pat.numOff, 0);
+        if (num > 0 && num <= 100000 && head != 0 && Zoltraak::IsReadable(head)) {
+            // Validate: head->next or head->prev should be readable pointer or NULL
+            uint64_t headNext = Zoltraak::ReadSafe<uint64_t>(head, 0);
+            if (headNext == 0 || Zoltraak::IsReadable(headNext)) {
+                Solitaer::Info("WALK", "ReadDictInternals(4.x %s): count=%u head=%p (hmBase=%p)",
+                    pat.label, num, reinterpret_cast<void*>(head), reinterpret_cast<void*>(hmBase));
+                return {static_cast<int>(num), head};
+            }
+        }
+    }
+
+    // Both patterns failed — might be empty Dictionary
+    Solitaer::Debug("WALK", "ReadDictInternals(4.x): no valid pattern at hmBase=%p",
+        reinterpret_cast<void*>(hmBase));
+    return {0, 0};
 }
 
 // Read PackedArray element count and data pointer.
@@ -671,10 +761,10 @@ ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType) {
             count, reinterpret_cast<void*>(dataPtr));
     }
     else if (type4x == 27) { // Dictionary
-        // Dictionary internals are complex (HashMap). For now, report as unsupported.
-        // TODO: Implement Dictionary reading via HashMap traversal
-        info.elementCount = -1; // -1 = unknown
-        Solitaer::Debug("WALK", "ReadContainerInfo(Dictionary): not yet supported");
+        auto [count, headElem] = ReadDictionaryInternals(dataAddr);
+        info.elementCount = count;
+        Solitaer::Debug("WALK", "ReadContainerInfo(Dictionary): count=%d head=%p",
+            count, reinterpret_cast<void*>(headElem));
     }
     else if (type4x >= 29 && type4x <= 38) { // Packed arrays
         int elemSize = PackedArrayElementSize(type4x);
@@ -741,7 +831,85 @@ std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int varia
             elements.push_back(std::move(elem));
         }
     }
-    // Dictionary: TODO
+    else if (type4x == 27) { // Dictionary — key-value pairs via linked list
+        auto [count, headElem] = ReadDictionaryInternals(dataAddr);
+        if (count <= 0 || !headElem) return elements;
+
+        int variantStride = DynOff::VARIANT_STRIDE;
+        int variantData   = DynOff::VARIANT_DATA;
+
+        // Clamp offset/limit
+        int start = (offset < count) ? offset : count;
+        int end   = ((start + limit) < count) ? (start + limit) : count;
+
+        Solitaer::Info("WALK", "ReadContainerElements(Dict): reading [%d..%d) of %d (stride=0x%X)",
+            start, end, count, variantStride);
+
+        if (GodotVer::IsGodot3()) {
+            // 3.x: List<Pair<Variant*, Variant>>::Element
+            // Element layout: value.first(Variant* 8B) + value.second(Variant, VARIANT_STRIDE)
+            //                 + next_ptr(8B) + prev_ptr(8B) + data_ptr(8B)
+            // next is at offset: 8 + VARIANT_STRIDE = 0x20 (stride=0x18)
+            int nextOff = 8 + variantStride;
+            uint64_t cur = headElem;
+            for (int i = 0; i < end && cur && Zoltraak::IsReadable(cur); i++) {
+                if (i >= start) {
+                    ContainerElement elem;
+                    elem.index = i;
+                    // Key: dereference the Variant* at +0x00
+                    uint64_t keyPtr = Zoltraak::ReadSafe<uint64_t>(cur + 0x00, 0);
+                    if (keyPtr && Zoltraak::IsReadable(keyPtr)) {
+                        VariantValue kv = ReadVariant(keyPtr);
+                        // Prefix key type for non-string keys to aid debugging
+                        if (kv.typeName == "String" || kv.typeName == "NodePath") {
+                            elem.key = kv.value;
+                        } else {
+                            elem.key = "(" + kv.typeName + ")" + kv.value;
+                        }
+                        Solitaer::Debug("WALK", "Dict[%d] key: type=%s val='%s' keyPtr=%p",
+                            i, kv.typeName.c_str(), kv.value.c_str(),
+                            reinterpret_cast<void*>(keyPtr));
+                    }
+                    // Value: inline Variant at +0x08
+                    elem.value = ReadVariant(cur + 0x08);
+                    elem.value.rawAddr = cur + 0x08 + variantData;
+                    Solitaer::Debug("WALK", "Dict[%d] val: type=%s val='%s' elem=%p next@%p",
+                        i, elem.value.typeName.c_str(), elem.value.value.c_str(),
+                        reinterpret_cast<void*>(cur),
+                        reinterpret_cast<void*>(cur + nextOff));
+                    elements.push_back(std::move(elem));
+                }
+                cur = Zoltraak::ReadSafe<uint64_t>(cur + nextOff, 0);
+            }
+        } else {
+            // 4.x: HashMapElement<Variant, Variant> linked list
+            // Element layout: next(8B) + prev(8B) + KeyValue{key(VARIANT_STRIDE) + value(VARIANT_STRIDE)}
+            // key starts at +0x10, value at +0x10 + VARIANT_STRIDE
+            int keyOff   = 0x10;
+            int valueOff = 0x10 + variantStride;
+            uint64_t cur = headElem;
+            for (int i = 0; i < end && cur && Zoltraak::IsReadable(cur); i++) {
+                if (i >= start) {
+                    ContainerElement elem;
+                    elem.index = i;
+                    // Key: inline Variant at +0x10
+                    VariantValue kv = ReadVariant(cur + keyOff);
+                    // Prefix key type for non-string keys
+                    if (kv.typeName == "String" || kv.typeName == "StringName" || kv.typeName == "NodePath") {
+                        elem.key = kv.value;
+                    } else {
+                        elem.key = "(" + kv.typeName + ")" + kv.value;
+                    }
+                    // Value: inline Variant at +0x10 + stride
+                    elem.value = ReadVariant(cur + valueOff);
+                    elem.value.rawAddr = cur + valueOff + variantData;
+                    elements.push_back(std::move(elem));
+                }
+                // next pointer at +0x00
+                cur = Zoltraak::ReadSafe<uint64_t>(cur + 0x00, 0);
+            }
+        }
+    }
 
     return elements;
 }

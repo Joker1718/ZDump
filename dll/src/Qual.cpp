@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <algorithm>
 #include <cctype>
 
@@ -40,6 +41,7 @@ static void HandleFindInstance();
 static void HandleGetMemberAddr();
 static void HandleFindNode();
 static void HandleFindInstanceWithMember();
+static void HandleFindInstanceByPath();
 static void SetError(int32_t code, const char* msg);
 static void SetDone(int32_t resultCode);
 
@@ -79,6 +81,9 @@ static DWORD WINAPI PollingThreadProc(LPVOID /*param*/) {
                 break;
             case CMD_FIND_INSTANCE_WITH_MEMBER:
                 HandleFindInstanceWithMember();
+                break;
+            case CMD_FIND_INSTANCE_BY_PATH:
+                HandleFindInstanceByPath();
                 break;
             case CMD_PING:
                 SetDone(0);
@@ -632,6 +637,286 @@ static void HandleFindInstanceWithMember() {
                    className, memberName, hasFilter ? filterName : "(none)",
                    reinterpret_cast<void*>(foundObj), foundIndex, varType,
                    reinterpret_cast<void*>(dataAddr), memberMatchCount, criteriaFailCount, scannedCount);
+    SetDone(0);
+}
+
+// ---- Path walker helper ----
+
+// Walk a dot-separated property path on an object, following Object pointers.
+// Returns the string value of the FINAL member in the path, or "" on failure.
+// Example: WalkPropertyPath(objAddr, "item.my_id") →
+//   1. Read "item" on objAddr → Object@xxx
+//   2. Read "my_id" on Object@xxx → "item_tree"
+static std::string WalkPropertyPath(uint64_t objAddr, const std::string& path) {
+    // Split path by '.'
+    std::vector<std::string> segments;
+    {
+        size_t start = 0;
+        while (start < path.size()) {
+            size_t dot = path.find('.', start);
+            if (dot == std::string::npos) {
+                segments.push_back(path.substr(start));
+                break;
+            }
+            segments.push_back(path.substr(start, dot - start));
+            start = dot + 1;
+        }
+    }
+
+    if (segments.empty()) return "";
+
+    uint64_t currentObj = objAddr;
+
+    for (size_t seg = 0; seg < segments.size(); ++seg) {
+        const std::string& memberName = segments[seg];
+        bool isLast = (seg == segments.size() - 1);
+
+        // Get ScriptInstance on current object
+        if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return "";
+        uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+            currentObj + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+        if (!si || !Zoltraak::IsReadable(si)) return "";
+
+        // Verify owner backlink
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(si + DynOff::GDSCRIPT_OWNER_OFF, 0);
+        if (owner != currentObj) return "";
+
+        // Read members Vector
+        uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+            si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+        if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) return "";
+
+        int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+        if (count == 0 || count > 500) return "";
+
+        // Resolve member names
+        uint64_t gdscriptPtr = Zoltraak::ReadSafe<uint64_t>(
+            si + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
+        auto nameMap = Ubel::GetMemberNames(gdscriptPtr);
+
+        // Find member index (case-insensitive)
+        std::string memberLower = memberName;
+        std::transform(memberLower.begin(), memberLower.end(), memberLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        int foundIdx = -1;
+        for (auto& [idx, name] : nameMap) {
+            if (name == memberName) { foundIdx = idx; break; }
+            std::string nameLower = name;
+            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (nameLower == memberLower) { foundIdx = idx; break; }
+        }
+
+        if (foundIdx < 0 || foundIdx >= static_cast<int>(count)) return "";
+
+        // Read the Variant at this member index
+        int stride = DynOff::VARIANT_STRIDE;
+        uint64_t varAddr = membersPtr + foundIdx * stride;
+        int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+        uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
+
+        if (isLast) {
+            // Last segment — read value as string and return
+            Ubel::VariantValue val = Ubel::ReadVariant(varAddr);
+            return val.value;
+        } else {
+            // Intermediate segment — must be Object type, follow pointer
+            // 3.x Object = raw type 17, 4.x Object = raw type 24
+            bool isObject = GodotVer::IsGodot3() ? (varType == 17) : (varType == 24);
+            if (!isObject) return ""; // Not an Object
+
+            // Object Variant data: { ObjectID id(8B); Object* obj(8B) }
+            // The pointer is at offset +8, NOT +0 (which is ObjectID)
+            uint64_t childObj = Zoltraak::ReadSafe<uint64_t>(dataAddr + 8, 0);
+            if (!childObj || !Zoltraak::IsReadable(childObj)) return "";
+
+            currentObj = childObj;
+        }
+    }
+
+    return "";
+}
+
+// CMD_FIND_INSTANCE_BY_PATH — Find an Object by matching a nested property path value
+// Input: className (e.g. "Button") + nodeName (match path, e.g. "item.my_id")
+//        + matchStr (expected value, e.g. "item_tree")
+//        + memberName (member to resolve on found instance, e.g. "current_number")
+// Output: objectAddr + memberAddr + memberIndex + memberType
+//
+// Solves the "@ClassName@NNN" problem: auto-generated node names change on restart,
+// but the nested property (e.g. item.my_id) stays the same. Walk a dot-separated
+// path for each instance, compare the final value, and resolve the target member.
+static void HandleFindInstanceByPath() {
+    char className[256], memberName[256], matchPath[256], matchStr[256];
+    memcpy(className, g_zoltMailbox.className, sizeof(className));
+    memcpy(memberName, g_zoltMailbox.memberName, sizeof(memberName));
+    memcpy(matchPath, g_zoltMailbox.nodeName, sizeof(matchPath));
+    memcpy(matchStr, g_zoltMailbox.matchStr, sizeof(matchStr));
+    className[255] = '\0';
+    memberName[255] = '\0';
+    matchPath[255] = '\0';
+    matchStr[255] = '\0';
+
+    if (matchPath[0] == '\0') {
+        SetError(-1, "Empty match path");
+        return;
+    }
+    if (matchStr[0] == '\0') {
+        SetError(-1, "Empty match value");
+        return;
+    }
+    if (memberName[0] == '\0') {
+        SetError(-1, "Empty member name");
+        return;
+    }
+
+    Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_BY_PATH class='%s' path='%s' match='%s' resolve='%s'",
+                   className, matchPath, matchStr, memberName);
+
+    // Prepare class filter (optional, case-insensitive)
+    bool hasClassFilter = (className[0] != '\0');
+    std::string targetClass(className);
+    std::string targetClassLower = targetClass;
+    if (hasClassFilter) {
+        std::transform(targetClassLower.begin(), targetClassLower.end(), targetClassLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
+    std::string matchPathStr(matchPath);
+    std::string matchStrVal(matchStr);
+    // Case-insensitive match for the target value
+    std::string matchStrLower = matchStrVal;
+    std::transform(matchStrLower.begin(), matchStrLower.end(), matchStrLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    uint64_t foundObj = 0;
+    int scannedCount = 0;
+    int pathWalkCount = 0;
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        // Class filter (if specified)
+        if (hasClassFilter) {
+            std::string cls = Diagoldze::GetObjectClass(objAddr);
+            if (cls.empty()) return true;
+            std::string clsLower = cls;
+            std::transform(clsLower.begin(), clsLower.end(), clsLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (cls != targetClass && clsLower != targetClassLower) return true;
+        }
+
+        scannedCount++;
+
+        // Must have ScriptInstance
+        if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return true;
+        uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+            objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+        if (!si || !Zoltraak::IsReadable(si)) return true;
+
+        // Walk the property path
+        pathWalkCount++;
+        std::string pathValue = WalkPropertyPath(objAddr, matchPathStr);
+        if (pathValue.empty()) return true;
+
+        // Log first few walk results for diagnostics
+        if (pathWalkCount <= 3) {
+            Solitaer::Info("PIPE", "Qual: path walk #%d obj=%p → '%s'",
+                           pathWalkCount, reinterpret_cast<void*>(objAddr), pathValue.c_str());
+        }
+
+        // Compare (case-insensitive, strip surrounding quotes for strings)
+        std::string pathValueClean = pathValue;
+        // ReadVariant wraps strings in quotes — strip them for comparison
+        if (pathValueClean.size() >= 2 && pathValueClean.front() == '"' && pathValueClean.back() == '"') {
+            pathValueClean = pathValueClean.substr(1, pathValueClean.size() - 2);
+        }
+        std::string pathValueLower = pathValueClean;
+        std::transform(pathValueLower.begin(), pathValueLower.end(), pathValueLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (pathValueClean == matchStrVal || pathValueLower == matchStrLower) {
+            foundObj = objAddr;
+            Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_BY_PATH match! obj=%p path='%s' → '%s'",
+                           reinterpret_cast<void*>(objAddr), matchPath, pathValue.c_str());
+            return false; // Found!
+        }
+
+        return true;
+    });
+
+    if (!foundObj) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "No instance where %s == '%s' (scanned %d, walked %d)",
+                 matchPath, matchStr, scannedCount, pathWalkCount);
+        SetError(-2, msg);
+        return;
+    }
+
+    // Resolve the target member on the found object
+    // Reuse HandleGetMemberAddr logic
+    uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+        foundObj + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+    if (!si || !Zoltraak::IsReadable(si)) {
+        SetError(-3, "Found object lost ScriptInstance");
+        return;
+    }
+
+    uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+        si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+    if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) {
+        SetError(-4, "Members Vector not readable on found object");
+        return;
+    }
+
+    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+    if (count == 0 || count > 500) {
+        SetError(-4, "Invalid member count on found object");
+        return;
+    }
+
+    uint64_t gdscriptPtr = Zoltraak::ReadSafe<uint64_t>(
+        si + DynOff::GDSCRIPT_SCRIPT_OFF, 0);
+    auto nameMap = Ubel::GetMemberNames(gdscriptPtr);
+
+    std::string targetMember(memberName);
+    std::string targetMemberLower = targetMember;
+    std::transform(targetMemberLower.begin(), targetMemberLower.end(), targetMemberLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    int foundIndex = -1;
+    for (auto& [idx, name] : nameMap) {
+        if (name == targetMember) { foundIndex = idx; break; }
+        std::string nameLower = name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (nameLower == targetMemberLower) { foundIndex = idx; break; }
+    }
+
+    if (foundIndex < 0 || foundIndex >= static_cast<int>(count)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Found object but member '%s' not found (%d names resolved)",
+                 memberName, static_cast<int>(nameMap.size()));
+        SetError(-5, msg);
+        return;
+    }
+
+    int stride = DynOff::VARIANT_STRIDE;
+    uint64_t varAddr = membersPtr + foundIndex * stride;
+    uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
+    int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+
+    g_zoltMailbox.objectAddr  = foundObj;
+    g_zoltMailbox.memberAddr  = dataAddr;
+    g_zoltMailbox.memberIndex = foundIndex;
+    g_zoltMailbox.memberType  = varType;
+
+    Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_BY_PATH → obj=%p '%s'[%d] type=%d addr=%p "
+                   "(scanned %d, walked %d)",
+                   reinterpret_cast<void*>(foundObj), memberName, foundIndex, varType,
+                   reinterpret_cast<void*>(dataAddr), scannedCount, pathWalkCount);
     SetDone(0);
 }
 
