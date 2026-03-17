@@ -52,18 +52,8 @@ public sealed class AobMakerMessage
 
     [JsonPropertyName("isSigned")]
     public bool? IsSigned { get; init; }
-
-    // Grouped entry support (parent-child nesting)
-    /// <summary>CE CheatEntry Options string, e.g. "moHideChildren=\"1\" moDeactivateChildrenAsWell=\"1\""</summary>
-    [JsonPropertyName("options")]
-    public string? Options { get; init; }
-
-    /// <summary>Child entries nested under this parent (for grouped CE entries).</summary>
-    [JsonPropertyName("children")]
-    public List<AobMakerMessage>? Children { get; init; }
 }
 
 [JsonSerializable(typeof(AobMakerMessage))]
-[JsonSerializable(typeof(List<AobMakerMessage>))]
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 internal partial class AobMakerJsonContext : JsonSerializerContext;

@@ -283,13 +283,27 @@ public partial class LiveWalkerViewModel : ViewModelBase
             // Always copy to clipboard so user has the script
             await _platform.CopyToClipboardAsync(script);
 
-            // Also try AOBMaker: send grouped AA script + child memory record
+            // Also try AOBMaker: send AA script + create memory record as flat entries
             string symbolForRecord = CeLuaScriptService.MakeSymbolName(
                 IsNode ? CurrentName : CurrentClassName, memberName);
-            var ceType = MapGodotTypeToCeValueType(field.Type);
-            bool sent = await TrySendGroupedToAobMakerAsync(
-                $"ZoltDump: {label}", script, label, symbolForRecord, ceType,
-                isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
+            bool sent = await TrySendToAobMakerAsync($"ZoltDump: {label}", script);
+
+            if (sent)
+            {
+                var ceType = MapGodotTypeToCeValueType(field.Type);
+                try
+                {
+                    await _aobMaker.CreateMemoryRecordAsync(
+                        label,
+                        symbolForRecord,
+                        ceType,
+                        isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
+                }
+                catch (Exception ex)
+                {
+                    _log.Debug("view", $"CreateMemoryRecord failed: {ex.Message}");
+                }
+            }
 
             SetStatus(sent
                 ? $"CE script + memory record for '{label}' sent to AOBMaker"
@@ -407,33 +421,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         return false;
     }
 
-    /// <summary>
-    /// Try sending a grouped AA script + child memory record to AOBMaker.
-    /// The parent entry has Options moHideChildren + moDeactivateChildrenAsWell,
-    /// so enabling the parent script automatically shows/activates the child record.
-    /// Falls back to flat creation if grouping isn't supported.
-    /// Returns true if sent to AOBMaker.
-    /// </summary>
-    private async Task<bool> TrySendGroupedToAobMakerAsync(string scriptLabel, string script,
-        string childLabel, string childAddress, CeValueType childType, bool isSigned = false)
-    {
-        try
-        {
-            if (await _aobMaker.CheckAvailabilityAsync())
-            {
-                await _aobMaker.CreateGroupedAAScriptAsync(
-                    scriptLabel, script,
-                    childLabel, childAddress, childType, isSigned);
-                _log.Info("view", $"CE grouped script '{scriptLabel}' sent to AOBMaker");
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Debug("view", $"AOBMaker unavailable: {ex.Message}");
-        }
-        return false;
-    }
+
 
     // ============================================================
     // Export commands
