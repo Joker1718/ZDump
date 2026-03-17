@@ -111,6 +111,25 @@ Zolt-Dump provides multiple Cheat Engine workflows:
 
 **Requirements**: Visual Studio 2022+ (C++ Desktop workload), .NET 10 SDK
 
+## Testing
+
+161 unit tests covering export services, script generation, and value conversion:
+
+| Test Suite | Tests | Coverage |
+|------------|-------|----------|
+| CeXmlExportServiceTests | 19 | CE XML type mapping, composite expansion, hierarchy building |
+| CsxExportServiceTests | 11 | Scalar/composite fields, struct recursion, XML escaping |
+| SdkExportServiceTests | 9 | C++ header generation, type mapping, padding, name sanitization |
+| CeLuaScriptServiceTests | 38 | All 6 script types, mailbox offsets, symbol sanitization, Lua escaping |
+| FieldValueConverterTests | 38 | real→Double, float/int/bool conversion, hex parsing, edge cases |
+| AddressHelperTests | 12 | Address formatting and normalization |
+| KnownStructLayoutTests | 5 | Godot struct layout validation |
+| VdfParserTests | 8 | Steam library path extraction |
+
+```powershell
+.\build.ps1 -Target Test
+```
+
 ## Naming Convention
 
 All modules use names from the anime *Frieren: Beyond Journey's End*:
