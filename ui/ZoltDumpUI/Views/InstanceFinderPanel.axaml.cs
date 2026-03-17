@@ -9,6 +9,15 @@ public partial class InstanceFinderPanel : UserControl
     public InstanceFinderPanel()
     {
         InitializeComponent();
+        InstancesGrid.DoubleTapped += OnInstancesGridDoubleTapped;
+    }
+
+    private void OnInstancesGridDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (DataContext is not InstanceFinderViewModel vm) return;
+        if (vm.SelectedInstance is not { } entry) return;
+        if (vm.OpenInLiveWalkerCommand.CanExecute(entry))
+            vm.OpenInLiveWalkerCommand.Execute(entry);
     }
 
     /// <summary>Enter key triggers search based on focused TextBox.</summary>

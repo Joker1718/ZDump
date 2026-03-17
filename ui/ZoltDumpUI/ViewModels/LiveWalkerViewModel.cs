@@ -1,9 +1,12 @@
 using System.Collections.ObjectModel;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ZoltDumpUI.Core;
 using ZoltDumpUI.Models;
 using ZoltDumpUI.Services;
+using ZoltDumpUI.Views;
 
 namespace ZoltDumpUI.ViewModels;
 
@@ -257,25 +260,36 @@ public partial class LiveWalkerViewModel : ViewModelBase
             }
             else
             {
-                // Non-Node (Reference, Resource, etc.): use direct address + GET_MEMBER_ADDR
-                // Can't use FIND_INSTANCE for common classes like "Reference" — would find wrong instance
+                // Non-Node (Reference, Resource, etc.): show criteria dialog then use
+                // FIND_INSTANCE_WITH_MEMBER with value-based filtering.
                 string className = CurrentClassName;
+
+                // Collect sibling base-type script members for the dialog
+                var siblings = GetBaseTypeSiblingMembers(memberName);
+
+                // Show dialog for criteria selection
+                var criteria = await ShowMemberFilterDialogAsync(memberName, siblings);
+                if (criteria is null)
+                {
+                    SetStatus("CE script generation cancelled");
+                    return; // user cancelled
+                }
+
                 string symbolName = CeLuaScriptService.MakeSymbolName(className, memberName);
-                script = _ceLua.GenerateDirectMemberScript(CurrentAddress, className, memberName, symbolName);
+                script = _ceLua.GenerateFindInstanceMemberScript(className, memberName, criteria, symbolName);
                 label = $"{className}.{memberName}";
             }
 
             // Always copy to clipboard so user has the script
             await _platform.CopyToClipboardAsync(script);
 
-            // Also try AOBMaker: send AA script + create memory record using the symbol
+            // Also try AOBMaker: send AA script + create memory record as flat entries
             string symbolForRecord = CeLuaScriptService.MakeSymbolName(
                 IsNode ? CurrentName : CurrentClassName, memberName);
             bool sent = await TrySendToAobMakerAsync($"ZoltDump: {label}", script);
 
             if (sent)
             {
-                // Create a memory record that references the registered symbol as address.
                 var ceType = MapGodotTypeToCeValueType(field.Type);
                 try
                 {
@@ -300,6 +314,47 @@ public partial class LiveWalkerViewModel : ViewModelBase
             SetError($"CE script generation failed: {ex.Message}");
             _log.Error("view", "CE script generation failed", ex);
         }
+    }
+
+    /// <summary>
+    /// Get sibling GDScript members of base types (int, real, bool) for filter criteria.
+    /// Excludes the target member itself and generic script_var_N names.
+    /// </summary>
+    private List<string> GetBaseTypeSiblingMembers(string excludeMember)
+    {
+        var result = new List<string>();
+        foreach (var f in Fields)
+        {
+            if (f.Name == excludeMember) continue;
+            if (f.Name.StartsWith("script_var_", StringComparison.Ordinal)) continue;
+            // Script members have Offset < 0 (displayed as "(script)")
+            if (f.Offset >= 0) continue;
+            // Only base types that can be compared as integers
+            string t = f.Type.ToUpperInvariant();
+            if (t is "INT" or "FLOAT" or "REAL" or "BOOL")
+            {
+                result.Add(f.Name);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Show the member filter criteria dialog and return the result.
+    /// Returns null if the user cancels.
+    /// </summary>
+    private static async Task<MemberFilterCriteria?> ShowMemberFilterDialogAsync(
+        string targetMember, List<string> siblingMembers)
+    {
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+            return null;
+
+        var window = desktop.MainWindow;
+        if (window is null) return null;
+
+        var dialog = new MemberFilterDialog(targetMember, siblingMembers);
+        await dialog.ShowDialog(window);
+        return dialog.Result;
     }
 
     /// <summary>Map Godot Variant type string to CE TVariableType.</summary>
@@ -365,6 +420,8 @@ public partial class LiveWalkerViewModel : ViewModelBase
         }
         return false;
     }
+
+
 
     // ============================================================
     // Export commands

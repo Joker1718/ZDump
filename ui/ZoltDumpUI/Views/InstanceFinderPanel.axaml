@@ -33,7 +33,8 @@
         <!-- Split: Instances + Fields -->
         <Grid RowDefinitions="*,4,*">
             <!-- Instances -->
-            <DataGrid x:CompileBindings="False"
+            <DataGrid x:Name="InstancesGrid"
+                      x:CompileBindings="False"
                       Grid.Row="0"
                       ItemsSource="{Binding Instances}"
                       SelectedItem="{Binding SelectedInstance}"

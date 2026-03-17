@@ -19,11 +19,12 @@ namespace Zolt::Qual {
 
 // Mailbox commands (CE writes to cmd field)
 enum Cmd : int32_t {
-    CMD_IDLE            = 0,
-    CMD_FIND_INSTANCE   = 1,  // Find Object by class name (returns objectAddr)
-    CMD_GET_MEMBER_ADDR = 2,  // Get GDScript member data address (className + memberName → memberAddr)
-    CMD_FIND_NODE       = 3,  // Find node by name in scene tree (returns objectAddr)
-    CMD_PING            = 99, // Connectivity check (returns STATUS_DONE immediately)
+    CMD_IDLE                     = 0,
+    CMD_FIND_INSTANCE            = 1,  // Find Object by class name (returns objectAddr)
+    CMD_GET_MEMBER_ADDR          = 2,  // Get GDScript member data address (className + memberName → memberAddr)
+    CMD_FIND_NODE                = 3,  // Find node by name in scene tree (returns objectAddr)
+    CMD_FIND_INSTANCE_WITH_MEMBER = 4, // Find Object by class + member name; nodeName = optional 2nd member filter for disambiguation
+    CMD_PING                     = 99, // Connectivity check (returns STATUS_DONE immediately)
 };
 
 // Mailbox status (DLL writes to status field)
@@ -34,10 +35,21 @@ enum Status : int32_t {
     STATUS_INIT         = 0xFF, // DLL still initializing (not ready for commands)
 };
 
+// Value comparison operators for CMD_FIND_INSTANCE_WITH_MEMBER criteria
+enum FilterOp : int32_t {
+    FILTER_NONE = 0,  // No filter (skip this criterion)
+    FILTER_GT   = 1,  // >
+    FILTER_LT   = 2,  // <
+    FILTER_NE   = 3,  // !=
+    FILTER_EQ   = 4,  // ==
+    FILTER_GE   = 5,  // >=
+    FILTER_LE   = 6,  // <=
+};
+
 // Mailbox structure (exported as global variable)
 // CE Lua accesses via getAddress("g_zoltMailbox") + offset reads/writes
 //
-// Total size: ~1312 bytes (fits in single page)
+// Total size: ~1384 bytes (fits in single page)
 #pragma pack(push, 1)
 struct MailboxData {
     volatile int32_t  cmd;              // 0x000: Cmd enum (CE writes LAST as trigger)
@@ -52,8 +64,19 @@ struct MailboxData {
 
     char              className[256];   // 0x028: Input: class name (null-terminated)
     char              memberName[256];  // 0x128: Input: member name (null-terminated)
-    char              nodeName[256];    // 0x228: Input: node name for CMD_FIND_NODE
+    char              nodeName[256];    // 0x228: Input: node name for CMD_FIND_NODE / filter member name
     char              errorMsg[256];    // 0x328: Output: error description
+
+    // ── Value criteria for CMD_FIND_INSTANCE_WITH_MEMBER ──
+    // Target member (memberName) value filter
+    volatile int32_t  targetOp;         // 0x428: FilterOp for target member value
+    int32_t           reserved2;        // 0x42C: Alignment padding
+    volatile int64_t  targetValue;      // 0x430: Comparison value for target member
+
+    // Secondary filter member (nodeName) value filter
+    volatile int32_t  filterOp;         // 0x438: FilterOp for filter member value
+    int32_t           reserved3;        // 0x43C: Alignment padding
+    volatile int64_t  filterValue;      // 0x440: Comparison value for filter member
 };
 #pragma pack(pop)
 
