@@ -1,0 +1,46 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZoltDumpUI.Views.PathMatchDialog"
+        Title="CE Script — Path Match"
+        Width="520" Height="380"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E1E">
+
+    <StackPanel Margin="16" Spacing="12">
+
+        <!-- Title -->
+        <TextBlock x:Name="TitleLabel"
+                   Foreground="#CCCCCC" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,4" />
+
+        <!-- ═══ Class filter ═══ -->
+        <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
+            <StackPanel Spacing="4">
+                <TextBlock Text="Class filter (optional)" Foreground="#4EC9B0" FontWeight="SemiBold" />
+                <TextBox x:Name="ClassNameBox" Watermark="e.g. Button (leave empty for any class)" />
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ Match path + value ═══ -->
+        <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
+            <StackPanel Spacing="6">
+                <TextBlock Text="Match property path" Foreground="#569CD6" FontWeight="SemiBold" />
+                <TextBox x:Name="MatchPathBox" Watermark="e.g. item.my_id (dot-separated)" />
+                <TextBlock Text="Expected value" Foreground="#569CD6" FontWeight="SemiBold" Margin="0,4,0,0" />
+                <TextBox x:Name="MatchValueBox" Watermark="e.g. item_tree" />
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ Info ═══ -->
+        <TextBlock Text="Walks the dot-separated path on each instance, following Object pointers. Matches the final member value as a string. Survives game restarts."
+                   Foreground="#888888" FontSize="11" TextWrapping="Wrap" />
+
+        <!-- Buttons -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+            <Button Content="Cancel" x:Name="CancelButton" Width="90" />
+            <Button Content="Generate Script" x:Name="GenerateButton" Width="130"
+                    Classes="accent" />
+        </StackPanel>
+
+    </StackPanel>
+</Window>

@@ -24,6 +24,7 @@ enum Cmd : int32_t {
     CMD_GET_MEMBER_ADDR          = 2,  // Get GDScript member data address (className + memberName → memberAddr)
     CMD_FIND_NODE                = 3,  // Find node by name in scene tree (returns objectAddr)
     CMD_FIND_INSTANCE_WITH_MEMBER = 4, // Find Object by class + member name; nodeName = optional 2nd member filter for disambiguation
+    CMD_FIND_INSTANCE_BY_PATH    = 5, // Find Object by class + nested property path string match (e.g. item.my_id == "item_tree")
     CMD_PING                     = 99, // Connectivity check (returns STATUS_DONE immediately)
 };
 
@@ -77,6 +78,9 @@ struct MailboxData {
     volatile int32_t  filterOp;         // 0x438: FilterOp for filter member value
     int32_t           reserved3;        // 0x43C: Alignment padding
     volatile int64_t  filterValue;      // 0x440: Comparison value for filter member
+
+    // ── String match for CMD_FIND_INSTANCE_BY_PATH ──
+    char              matchStr[256];    // 0x448: Input: expected string value to match at end of path
 };
 #pragma pack(pop)
 
