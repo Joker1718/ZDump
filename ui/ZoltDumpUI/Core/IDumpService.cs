@@ -18,7 +18,7 @@ public interface IDumpService
     Task<ClassInfoModel> WalkClassAsync(string className, CancellationToken ct = default);
     Task<InstanceWalkResult> WalkInstanceAsync(string address, CancellationToken ct = default);
     Task<ContainerWalkResult> WalkContainerAsync(string address, int variantType,
-        int offset = 0, int limit = 100, CancellationToken ct = default);
+        int offset = 0, int limit = 500, CancellationToken ct = default);
     Task<TreeWalkResult> WalkTreeAsync(int depth = -1, CancellationToken ct = default);
     Task<FindInstancesResult> FindInstancesAsync(string className, bool exactMatch = false, CancellationToken ct = default);
     Task<List<ClassListItem>> ListClassesAsync(bool gameOnly = false, CancellationToken ct = default);

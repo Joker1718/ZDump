@@ -119,4 +119,15 @@ ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType);
 std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int variantType,
                                                      int offset = 0, int limit = 100);
 
+// Find a dictionary element by key string and return its value Variant's data address.
+// Walks the dictionary linked list, decoding each key and comparing to `key`.
+// Returns the value Variant data address (Variant + VARIANT_DATA), or 0 if not found.
+// dataAddr = address of the Variant data field (the pointer to DictPrivate).
+uint64_t FindDictValueByKey(uint64_t dataAddr, const std::string& key);
+
+// Find an array element by index and return its value Variant's data address.
+// Returns the element Variant data address (Variant + VARIANT_DATA), or 0 if not found.
+// dataAddr = address of the Variant data field (the pointer to array internals).
+uint64_t FindArrayValueByIndex(uint64_t dataAddr, int index);
+
 } // namespace Zolt::Ubel

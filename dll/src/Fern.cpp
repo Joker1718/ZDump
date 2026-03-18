@@ -660,7 +660,21 @@ static json HandleFindByAddress(int id, const json& req) {
                     return false;
                 };
 
+                // Helper: check if an object is a script definition (GDScript, etc.)
+                // These contain internal HashMaps (member_indices, member_info) that
+                // produce false positives — they're script definitions, not game instances.
+                auto isScriptDefinition = [](uint64_t objAddr) -> bool {
+                    std::string cls = Diagoldze::GetObjectClass(objAddr);
+                    return cls == "GDScript" || cls == "GDScriptNativeClass" ||
+                           cls == "CSharpScript" || cls == "Script" ||
+                           cls == "VisualScript" || cls == "ScriptExtension";
+                };
+
                 Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    // Skip script definition objects — their internal HashMaps
+                    // (member_indices etc.) cause false positive matches
+                    if (isScriptDefinition(objAddr)) return true;
+
                     // Scan object body for pointer-sized values
                     uint8_t buf[BODY_SCAN];
                     if (!Zoltraak::ReadSafe(objAddr, buf, BODY_SCAN)) return true;
@@ -693,9 +707,13 @@ static json HandleFindByAddress(int id, const json& req) {
                                 uint64_t mp = Zoltraak::ReadSafe<uint64_t>(
                                     si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
                                 if (mp && Zoltraak::IsReadable(mp)) {
-                                    int sOff = GodotVer::IsGodot3() ? 4 : 8;
-                                    uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mp - sOff, 0);
-                                    for (uint32_t m = 0; m < cnt && m < 500; m++) {
+                                    // Scan members until invalid type (don't trust CowData count —
+                                    // custom builds may store refcount instead of size at ptr-8)
+                                    int maxType2 = GodotVer::VariantTypeMax();
+                                    for (uint32_t m = 0; m < 100; m++) {
+                                        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+                                            mp + static_cast<uint64_t>(m) * stride, -1);
+                                        if (mType < 0 || mType >= maxType2) break;
                                         uint64_t d = Zoltraak::ReadSafe<uint64_t>(
                                             mp + static_cast<uint64_t>(m) * stride +
                                             DynOff::VARIANT_DATA, 0);
@@ -765,10 +783,11 @@ static json HandleFindByAddress(int id, const json& req) {
         };
 
         // Find head from the target element (same logic as Phase 7)
+        // Try ALL valid backOff/layout combos and pick the chain with the MOST
+        // prev-walked elements — a longer chain is more likely to be the real dict.
         uint64_t foundHead = 0;
-        int foundWalked = 0;
+        int foundWalked = -1;
         for (auto& lay : layouts) {
-            if (foundHead) break;
             for (int backOff = 0; backOff < lay.elemSize; backOff += 8) {
                 if (addr < static_cast<uint64_t>(backOff)) continue;
                 uint64_t eb = addr - backOff;
@@ -794,7 +813,10 @@ static json HandleFindByAddress(int id, const json& req) {
                     if (!Zoltraak::IsReadable(pp) || pp % 8 != 0) { h = 0; break; }
                     h = pp; w++;
                 }
-                if (h && w < 10000) { foundHead = h; foundWalked = w; break; }
+                if (h && w < 10000 && w > foundWalked) {
+                    foundHead = h;
+                    foundWalked = w;
+                }
             }
         }
 
@@ -830,13 +852,13 @@ static json HandleFindByAddress(int id, const json& req) {
                 if (owner != objAddr) return true;
                 uint64_t mp = Zoltraak::ReadSafe<uint64_t>(si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
                 if (!mp || !Zoltraak::IsReadable(mp)) return true;
-                int sOff = GodotVer::IsGodot3() ? 4 : 8;
-                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mp - sOff, 0);
-                if (cnt == 0 || cnt > 500) return true;
 
-                for (uint32_t m = 0; m < cnt; m++) {
+                // Scan members until invalid type (don't trust CowData count)
+                int maxType2 = GodotVer::VariantTypeMax();
+                for (uint32_t m = 0; m < 100; m++) {
                     uint64_t varAddr = mp + static_cast<uint64_t>(m) * stride;
                     int32_t rawType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+                    if (rawType < 0 || rawType >= maxType2) break;
                     if (rawType != dictType) continue;
 
                     // Read the outer DictionaryPrivate
@@ -982,6 +1004,13 @@ static json HandleFindByAddress(int id, const json& req) {
                 if (foundObj) break;
 
                 Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    // Skip script definitions (GDScript internal HashMaps)
+                    std::string cls = Diagoldze::GetObjectClass(objAddr);
+                    if (cls == "GDScript" || cls == "GDScriptNativeClass" ||
+                        cls == "CSharpScript" || cls == "Script" ||
+                        cls == "VisualScript" || cls == "ScriptExtension")
+                        return true;
+
                     // Scan object body for pointer to this DictPrivate
                     constexpr int BODY_SCAN = 0x400;
                     uint8_t buf[BODY_SCAN];
@@ -1010,9 +1039,13 @@ static json HandleFindByAddress(int id, const json& req) {
                                 uint64_t mp = Zoltraak::ReadSafe<uint64_t>(
                                     si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
                                 if (mp && Zoltraak::IsReadable(mp)) {
-                                    int sOff = GodotVer::IsGodot3() ? 4 : 8;
-                                    uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mp - sOff, 0);
-                                    for (uint32_t m = 0; m < cnt && m < 500; m++) {
+                                    // Scan members until invalid type (don't trust CowData count —
+                                    // custom builds may store refcount instead of size at ptr-8)
+                                    int maxType2 = GodotVer::VariantTypeMax();
+                                    for (uint32_t m = 0; m < 100; m++) {
+                                        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+                                            mp + static_cast<uint64_t>(m) * stride, -1);
+                                        if (mType < 0 || mType >= maxType2) break;
                                         uint64_t d = Zoltraak::ReadSafe<uint64_t>(
                                             mp + static_cast<uint64_t>(m) * stride +
                                             DynOff::VARIANT_DATA, 0);
@@ -1033,8 +1066,11 @@ static json HandleFindByAddress(int id, const json& req) {
             }
 
             // If direct DictPrivate not found in ObjectDB, it might be nested.
-            // Search ObjectDB script members' dict elements for dpCand as a value.
+            // Walk outer dict elements looking for dpCand as a value's data field.
+            // Chain: Object → member(Dict) → DictPrivate_outer → element → value(Dict)
+            //        → DictPrivate_inner(==dpCand) → head
             if (!foundObj && !dictPrivateCandidates.empty()) {
+                int nestedWalked = 0;
                 for (auto dpCand : dictPrivateCandidates) {
                     if (foundObj) break;
 
@@ -1049,39 +1085,77 @@ static json HandleFindByAddress(int id, const json& req) {
                         uint64_t mp = Zoltraak::ReadSafe<uint64_t>(
                             si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
                         if (!mp || !Zoltraak::IsReadable(mp)) return true;
-                        int sOff = GodotVer::IsGodot3() ? 4 : 8;
-                        uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mp - sOff, 0);
-                        if (cnt == 0 || cnt > 500) return true;
 
-                        for (uint32_t m = 0; m < cnt; m++) {
+                        // Scan members until invalid type (don't trust CowData count)
+                        int maxType3 = GodotVer::VariantTypeMax();
+                        for (uint32_t m = 0; m < 100; m++) {
                             uint64_t varAddr = mp + static_cast<uint64_t>(m) * stride;
                             int32_t rawType = Zoltraak::ReadSafe<int32_t>(
                                 varAddr + DynOff::VARIANT_TYPE, -1);
+                            if (rawType < 0 || rawType >= maxType3) break;
                             if (rawType != dictType) continue;
                             uint64_t outerDP = Zoltraak::ReadSafe<uint64_t>(
                                 varAddr + DynOff::VARIANT_DATA, 0);
                             if (!outerDP || !Zoltraak::IsReadable(outerDP)) continue;
 
-                            // Scan outerDP body for dpCand pointer
-                            constexpr int DP_SCAN = 0x200;
-                            uint8_t dpBuf[DP_SCAN];
-                            if (!Zoltraak::ReadSafe(outerDP, dpBuf, DP_SCAN)) continue;
-                            // Check if outer dict's elements array or body contains dpCand
-                            for (int off = 8; off + 8 <= DP_SCAN; off += 8) {
-                                uint64_t val;
-                                memcpy(&val, dpBuf + off, sizeof(val));
-                                if (val == dpCand) {
-                                    foundObj = objAddr;
-                                    foundMember = static_cast<int>(m);
-                                    foundHow = "nested_dict_rev";
-                                    foundDP = dpCand;
-                                    return false;
+                            // Walk outer dict's HashMap elements, looking for a
+                            // value Variant whose data == dpCand (inner DictPrivate).
+                            // Try multiple HashMap head offsets and element prefixes.
+                            uint64_t hmBase = outerDP + 0x10;
+                            struct { int headOff; int numOff; } pats[] = {
+                                {0x18, 0x2C}, {0x10, 0x24}, {0x20, 0x34},
+                                {0x28, 0x3C}, {0x08, 0x1C}, {0x00, 0x14}
+                            };
+                            for (auto& pat : pats) {
+                                if (foundObj) break;
+                                uint64_t oHead = Zoltraak::ReadSafe<uint64_t>(
+                                    hmBase + pat.headOff, 0);
+                                uint32_t oNum = Zoltraak::ReadSafe<uint32_t>(
+                                    hmBase + pat.numOff, 0);
+                                if (oNum == 0 || oNum > 100000 ||
+                                    !oHead || !Zoltraak::IsReadable(oHead))
+                                    continue;
+
+                                for (int p : {0, 0x10}) {
+                                    if (foundObj) break;
+                                    uint64_t oPrev = Zoltraak::ReadSafe<uint64_t>(
+                                        oHead + p + 0x08, 0);
+                                    if (oPrev != 0) continue;
+
+                                    int valOff = p + 0x10 + stride;
+                                    uint64_t cur = oHead;
+                                    int walked = 0;
+                                    int maxWalk = (std::min)(
+                                        static_cast<int>(oNum), 2000);
+                                    while (cur && walked < maxWalk) {
+                                        int32_t vType = Zoltraak::ReadSafe<int32_t>(
+                                            cur + valOff, -1);
+                                        if (vType == dictType) {
+                                            uint64_t innerDP =
+                                                Zoltraak::ReadSafe<uint64_t>(
+                                                    cur + valOff +
+                                                    DynOff::VARIANT_DATA, 0);
+                                            if (innerDP == dpCand) {
+                                                foundObj = objAddr;
+                                                foundMember = static_cast<int>(m);
+                                                foundHow = "nested_elem_rev";
+                                                foundDP = dpCand;
+                                                return false;
+                                            }
+                                        }
+                                        nestedWalked++;
+                                        cur = Zoltraak::ReadSafe<uint64_t>(
+                                            cur + p, 0);
+                                        walked++;
+                                    }
                                 }
                             }
                         }
                         return true;
                     });
                 }
+                Solitaer::Info("PIPE", "  Phase 7c nested walk: %d elements walked",
+                    nestedWalked);
             }
 
             Solitaer::Info("PIPE", "  Phase 7c: found=%s dp=%p how=%s",

@@ -979,6 +979,65 @@ std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int varia
 }
 
 // ============================================================
+// FindDictValueByKey — Look up a dictionary element by key string
+// ============================================================
+// Walks the dictionary linked list, reading and decoding each key.
+// Returns the value Variant's data address if a matching key is found.
+uint64_t FindDictValueByKey(uint64_t dataAddr, const std::string& key) {
+    auto di = ReadDictionaryInternals(dataAddr);
+    if (di.count <= 0 || !di.head) return 0;
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    int variantData   = DynOff::VARIANT_DATA;
+
+    if (GodotVer::IsGodot3()) {
+        // 3.x: key is Variant* at +0x00, value is inline Variant at +0x08
+        int nextOff = 8 + variantStride;
+        uint64_t cur = di.head;
+        for (int i = 0; i < di.count && cur && Zoltraak::IsReadable(cur); i++) {
+            uint64_t keyPtr = Zoltraak::ReadSafe<uint64_t>(cur + 0x00, 0);
+            if (keyPtr && Zoltraak::IsReadable(keyPtr)) {
+                VariantValue kv = ReadVariant(keyPtr);
+                if (kv.value == key) {
+                    return cur + 0x08 + variantData;
+                }
+            }
+            cur = Zoltraak::ReadSafe<uint64_t>(cur + nextOff, 0);
+        }
+    } else {
+        // 4.x: HashMapElement linked list
+        int p = di.elemPrefix;
+        int keyOff   = p + 0x10;
+        int valueOff = p + 0x10 + variantStride;
+        int nextOff  = p + 0x00;
+        uint64_t cur = di.head;
+        for (int i = 0; i < di.count && cur && Zoltraak::IsReadable(cur); i++) {
+            VariantValue kv = ReadVariant(cur + keyOff);
+            if (kv.value == key) {
+                return cur + valueOff + variantData;
+            }
+            cur = Zoltraak::ReadSafe<uint64_t>(cur + nextOff, 0);
+        }
+    }
+
+    Solitaer::Debug("WALK", "FindDictValueByKey: key '%s' not found in dict (count=%d)",
+                    key.c_str(), di.count);
+    return 0;
+}
+
+// ============================================================
+// FindArrayValueByIndex — Look up an array element by index
+// ============================================================
+uint64_t FindArrayValueByIndex(uint64_t dataAddr, int index) {
+    auto [count, dataPtr] = ReadArrayInternals(dataAddr);
+    if (count <= 0 || !dataPtr || index < 0 || index >= count) return 0;
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    uint64_t varAddr = dataPtr + static_cast<uint64_t>(index) * variantStride;
+    return varAddr + DynOff::VARIANT_DATA;
+}
+
+// ============================================================
 // ReadNativeValue — Read a native member value from object memory
 // ============================================================
 // Reads directly from object memory at the given offset, using the
@@ -1892,9 +1951,9 @@ static std::unordered_map<int, std::string> ReadGDScriptMemberNames(uint64_t gds
 // Auto-detect Variant stride by probing the first few members of a Vector<Variant>.
 // Checks candidate strides (0x18 for float, 0x28 for double) and picks the one
 // where the most type fields read as valid Godot Variant types.
-static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
+static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force = false) {
     static bool sProbed = false;
-    if (sProbed) return;
+    if (sProbed && !force) return;
     sProbed = true;
 
     const int candidates[] = { 0x18, 0x20, 0x28 };  // float=24, padded=32, double=40
@@ -1902,6 +1961,7 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
     int probeCount = static_cast<int>((count < 20) ? count : 20);
     int bestStride = DynOff::VARIANT_STRIDE;
     int bestValid  = -1;
+    int defaultValid = -1;  // track how the current default scores
 
     for (int stride : candidates) {
         int validCount = 0;
@@ -1911,16 +1971,36 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
         }
         Solitaer::Info("WALK", "ProbeVariantStride: stride=0x%X → %d/%d valid types",
             stride, validCount, probeCount);
+        if (stride == DynOff::VARIANT_STRIDE) defaultValid = validCount;
         if (validCount > bestValid) {
             bestValid  = validCount;
             bestStride = stride;
         }
     }
 
+    // Only override the default stride if the evidence is STRONG:
+    // 1. probeCount >= 4 for reliability
+    // 2. Default stride must be clearly broken (< 40% valid)
+    //    OR the new stride must win by a significant margin (>= 3 AND > 25% better)
+    // A margin of 1-2 with 20 probes is noise from reading past array bounds.
     if (bestStride != DynOff::VARIANT_STRIDE) {
-        Solitaer::Info("WALK", "ProbeVariantStride: adjusting VARIANT_STRIDE from 0x%X to 0x%X (%d/%d valid)",
-            DynOff::VARIANT_STRIDE, bestStride, bestValid, probeCount);
-        DynOff::VARIANT_STRIDE = bestStride;
+        int margin = bestValid - defaultValid;
+        int minMargin = (std::max)(3, probeCount / 5);  // at least 3 or 20% of probes
+        bool defaultBroken = (defaultValid < probeCount * 2 / 5);  // < 40% valid
+        bool strongWin = (margin >= minMargin);
+
+        if (probeCount >= 4 && (defaultBroken || strongWin)) {
+            Solitaer::Info("WALK", "ProbeVariantStride: adjusting VARIANT_STRIDE from 0x%X to 0x%X "
+                "(%d/%d valid, margin=%d, defaultBroken=%d)",
+                DynOff::VARIANT_STRIDE, bestStride, bestValid, probeCount,
+                margin, defaultBroken ? 1 : 0);
+            DynOff::VARIANT_STRIDE = bestStride;
+        } else {
+            Solitaer::Info("WALK", "ProbeVariantStride: keeping default stride 0x%X (margin=%d < %d, "
+                "default=%d/%d not broken; best=0x%X %d/%d)",
+                DynOff::VARIANT_STRIDE, margin, minMargin,
+                defaultValid, probeCount, bestStride, bestValid, probeCount);
+        }
     } else {
         Solitaer::Info("WALK", "ProbeVariantStride: confirmed stride 0x%X (%d/%d valid)",
             bestStride, bestValid, probeCount);
@@ -1974,14 +2054,72 @@ static void ReadGDScriptMembers(uint64_t objAddr,
         return;
     }
 
+    // Read member names FIRST — used to cross-validate CowData count
+    auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
+
+    // Determine expected member count from member_indices (ground truth)
+    int expectedCount = 0;
+    for (auto& kv : nameMap) {
+        if (kv.first + 1 > expectedCount) expectedCount = kv.first + 1;
+    }
+
     // Read count from CowData header (before data pointer)
-    // Godot 4.x: USize (uint64_t) at ptr-8; Godot 3.x: uint32_t at ptr-4
-    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+    // Standard Godot 4.x: [rc(4) + pad(4)] + [size(8)] + [data...]
+    //   → size at ptr-8 (read as uint32_t = low 32 bits)
+    // Custom builds may reorder: [size(8)] + [rc(4) + pad(4)] + [data...]
+    //   → size at ptr-16, rc at ptr-8
+    // Godot 3.x: uint32_t at ptr-4
+    uint32_t count = 0;
+    int usedSizeOff = 0;
+    if (GodotVer::IsGodot3()) {
+        count = Zoltraak::ReadSafe<uint32_t>(membersPtr - 4, 0);
+        usedSizeOff = 4;
+    } else {
+        // Try multiple CowData header layouts, prefer one matching nameMap count
+        struct { int off; const char* tag; } cowLayouts[] = {
+            {8,  "std"},   // Standard: rc(4)+pad(4)+size(8)+data
+            {16, "alt1"},  // Alt: size(8)+rc(4)+pad(4)+data
+            {4,  "alt2"},  // Alt: size(4)+data (compact header)
+            {12, "alt3"},  // Alt: rc(4)+size(4)+pad(4)+data
+        };
+        for (auto& lay : cowLayouts) {
+            uint32_t c = Zoltraak::ReadSafe<uint32_t>(membersPtr - lay.off, 0);
+            if (c > 0 && c <= 500) {
+                if (count == 0) { count = c; usedSizeOff = lay.off; }
+                // Prefer layout that matches nameMap expected count
+                if (expectedCount > 0 && static_cast<int>(c) == expectedCount) {
+                    count = c;
+                    usedSizeOff = lay.off;
+                    Solitaer::Info("WALK", "ReadGDScriptMembers: CowData count=%u matched nameMap at ptr-%d (%s)",
+                        count, lay.off, lay.tag);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Cross-validate: if CowData count is much less than nameMap expects,
+    // use nameMap count (verified by reading Variant types at those positions)
+    if (expectedCount > 0 && static_cast<int>(count) < expectedCount) {
+        int variantStride = DynOff::VARIANT_STRIDE;
+        int validTypes = 0;
+        int maxType = GodotVer::VariantTypeMax();
+        for (int i = 0; i < expectedCount; i++) {
+            uint64_t varAddr = membersPtr + static_cast<uint64_t>(i) * variantStride;
+            int32_t rawType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+            if (rawType >= 0 && rawType < maxType) validTypes++;
+        }
+        if (validTypes >= expectedCount / 2) {
+            Solitaer::Info("WALK", "ReadGDScriptMembers: CowData count=%u too low, "
+                "nameMap expects %d (verified %d/%d valid types). Overriding.",
+                count, expectedCount, validTypes, expectedCount);
+            count = static_cast<uint32_t>(expectedCount);
+        }
+    }
+
     if (count == 0) {
-        Solitaer::Debug("WALK", "ReadGDScriptMembers: members count=0 for obj %p (CowData at %p, size at %p)",
-            reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(membersPtr),
-            reinterpret_cast<void*>(membersPtr - sizeOff));
+        Solitaer::Debug("WALK", "ReadGDScriptMembers: members count=0 for obj %p (CowData at %p)",
+            reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(membersPtr));
         return;
     }
     if (count > 500) {
@@ -1990,15 +2128,14 @@ static void ReadGDScriptMembers(uint64_t objAddr,
         return;
     }
 
-    // Auto-detect Variant stride on first encounter
-    ProbeVariantStride(membersPtr, count);
+    // Auto-detect Variant stride. Force re-probe if count is validated (>= 4)
+    // since the early probe may have used an unreliable count.
+    bool forceProbe = (count >= 4 && !nameMap.empty());
+    ProbeVariantStride(membersPtr, count, forceProbe);
 
-    // Try to get member names from GDScript object
-    auto nameMap = ReadGDScriptMemberNames(gdscriptPtr);
-
-    Solitaer::Info("WALK", "GDScript members: %u variables, %d names resolved (membersPtr=%p, stride=0x%X)",
+    Solitaer::Info("WALK", "GDScript members: %u variables, %d names resolved (membersPtr=%p, stride=0x%X, sizeOff=%d)",
         count, static_cast<int>(nameMap.size()),
-        reinterpret_cast<void*>(membersPtr), DynOff::VARIANT_STRIDE);
+        reinterpret_cast<void*>(membersPtr), DynOff::VARIANT_STRIDE, usedSizeOff);
     for (auto& kv : nameMap) {
         Solitaer::Debug("WALK", "  member[%d] = '%s'", kv.first, kv.second.c_str());
     }
@@ -2208,6 +2345,11 @@ void WalkInstance(uint64_t objAddr,
                     ptrcallReads++;
                 }
             }
+        } else {
+            Solitaer::Warn("WALK", "WalkInstance: ptrcall dispatch failed (game thread not "
+                "pumping messages). %d native properties will show no values. "
+                "Script members are unaffected.",
+                static_cast<int>(ptrcallJobs.size()));
         }
     }
 
@@ -2361,13 +2503,16 @@ void ProbeScriptInstanceEarly() {
                 uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(
                     scriptInst + offCandidates[i], 0);
                 if (!mptr || !Zoltraak::IsReadable(mptr) || mptr % 8 != 0) continue;
+                // Use STANDARD CowData header offset only.
+                // Multi-offset probing without nameMap validation picks garbage counts,
+                // causing ProbeVariantStride to read past arrays into random data.
                 uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
                 if (cnt == 0 || cnt > 500) continue;
                 int32_t ft = Zoltraak::ReadSafe<int32_t>(mptr, -1);
                 if (ft >= 0 && ft < maxType) {
                     offVotes[i]++;
-                    // Track best candidate for stride probe (need 2+ members)
-                    if (!strideFound && cnt >= 2) {
+                    // Track best candidate for stride probe (need 4+ members)
+                    if (!strideFound && cnt >= 4 && cnt > strideProbeCount) {
                         strideProbePtr = mptr;
                         strideProbeCount = cnt;
                     }
@@ -2390,30 +2535,17 @@ void ProbeScriptInstanceEarly() {
             DynOff::GDSCRIPT_MEMBERS_OFF = votedOff;
         }
 
-        // Probe VARIANT_STRIDE if we found an object with 2+ members at the voted offset
-        if (strideProbePtr && strideProbeCount >= 2) {
+        // Probe VARIANT_STRIDE if we found an object with 4+ members at the voted offset
+        if (strideProbePtr && strideProbeCount >= 4) {
             ProbeVariantStride(strideProbePtr, strideProbeCount);
         } else {
-            // Try again specifically at the voted offset
-            Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
-                if (strideFound) return false;
-                uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
-                    objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
-                if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
-                uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
-                    scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
-                if (owner != objAddr) return true;
-                uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(
-                    scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
-                if (!mptr || !Zoltraak::IsReadable(mptr)) return true;
-                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
-                if (cnt >= 2 && cnt <= 500) {
-                    ProbeVariantStride(mptr, cnt);
-                    strideFound = true;
-                    return false;
-                }
-                return true;
-            });
+            // For custom builds where CowData header at ptr-8 stores refcount (=1)
+            // instead of size, NO object will have count >= 4 from the standard offset.
+            // That's OK — stride stays at default 0x18 (confirmed correct for Godot 4.x).
+            // The stride will be re-probed with a validated count in ReadGDScriptMembers
+            // on the first walk_instance call.
+            Solitaer::Info("WALK", "  No object with count>=4 at standard CowData offset, "
+                "keeping default stride 0x%X", DynOff::VARIANT_STRIDE);
         }
     } else {
         Solitaer::Info("WALK", "  Early probe: no ScriptInstance found (probed %d objects). "

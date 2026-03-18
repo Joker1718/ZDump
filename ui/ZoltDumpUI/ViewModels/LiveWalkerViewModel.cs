@@ -80,7 +80,8 @@ public partial class LiveWalkerViewModel : ViewModelBase
         await FetchAndShowAsync(address);
         // Add breadcrumb only on navigation (not refresh)
         if (!string.IsNullOrEmpty(CurrentAddress))
-            Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName));
+            Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName,
+                isNodeObject: IsNode));
     }
 
     /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
@@ -162,7 +163,10 @@ public partial class LiveWalkerViewModel : ViewModelBase
         if (Breadcrumbs.Count <= 1) return;
         Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
         var prev = Breadcrumbs[^1];
-        await FetchAndShowAsync(prev.Address);
+        if (prev.IsContainer)
+            await FetchAndShowContainerAsync(prev.Address, prev.VariantType, prev.Name);
+        else
+            await FetchAndShowAsync(prev.Address);
     }
 
     [RelayCommand]
@@ -176,7 +180,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task RefreshAsync()
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
-        await FetchAndShowAsync(CurrentAddress);
+        // If current view is a container drill-down, re-fetch container instead of instance
+        var current = Breadcrumbs.Count > 0 ? Breadcrumbs[^1] : null;
+        if (current?.IsContainer == true)
+            await FetchAndShowContainerAsync(current.Address, current.VariantType, current.Name);
+        else
+            await FetchAndShowAsync(CurrentAddress);
     }
 
     [RelayCommand]
@@ -207,9 +216,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
             foreach (var f in result.Fields)
                 Fields.Add(f);
 
-            // Add breadcrumb for container navigation
+            // Add breadcrumb for container navigation (with variant type for re-fetch)
+            // Store the original member name (field.Name before container decoration)
             Breadcrumbs.Add(new BreadcrumbItem(
-                field.Address, containerLabel, result.ContainerType));
+                field.Address, containerLabel, result.ContainerType,
+                isContainer: true, variantType: field.VariantType,
+                memberName: field.Name));
 
             _log.Debug("view", $"Container drilldown: {containerLabel} ({result.Fields.Count} elements)");
         }
@@ -217,6 +229,33 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             SetError($"Container walk failed: {ex.Message}");
             _log.Error("view", "Container walk failed", ex);
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    /// <summary>Re-fetch and display a container without modifying breadcrumbs (for Back/Refresh).</summary>
+    private async Task FetchAndShowContainerAsync(string address, int variantType, string label)
+    {
+        try
+        {
+            ClearError();
+            IsLoading = true;
+
+            var result = await _dump.WalkContainerAsync(address, variantType);
+            CurrentName = label;
+            IsNode = false;
+
+            Fields.Clear();
+            foreach (var f in result.Fields)
+                Fields.Add(f);
+        }
+        catch (Exception ex)
+        {
+            SetError($"Container refresh failed: {ex.Message}");
+            _log.Error("view", "Container refresh failed", ex);
         }
         finally
         {
@@ -288,7 +327,39 @@ public partial class LiveWalkerViewModel : ViewModelBase
             string label;
             string symbolName; // Shared across all branches — used for both Lua registerSymbol AND memory record
 
-            if (IsNode)
+            // ── Container context detection ──
+            // When inside a container drill-down (e.g. Data → values (Dict[477]) → inventory.iron),
+            // walk breadcrumbs back to find the parent object and generate a script that:
+            //   1. Finds the parent object (by node name or class+member)
+            //   2. Resolves the GDScript member (e.g. "values")
+            //   3. Walks the dictionary to find the element by key (e.g. "inventory.iron")
+            var containerContext = FindContainerContext();
+            if (containerContext is not null)
+            {
+                string dictKey = ExtractContainerKey(field.Name);
+                string parentMember = containerContext.Value.memberName;
+
+                if (containerContext.Value.isNode)
+                {
+                    // Node parent: FIND_NODE → GET_MEMBER_ADDR + dict key
+                    string nodeName = containerContext.Value.parentName;
+                    symbolName = CeLuaScriptService.MakeSymbolName(nodeName, dictKey);
+                    script = _ceLua.GenerateMemberScript(nodeName, parentMember, symbolName,
+                        containerKey: dictKey);
+                    label = $"{nodeName}.{parentMember}[{dictKey}]";
+                }
+                else
+                {
+                    // Non-Node parent: FIND_INSTANCE_WITH_MEMBER + dict key
+                    string className = containerContext.Value.parentClassName;
+                    symbolName = CeLuaScriptService.MakeSymbolName(className, dictKey);
+                    script = _ceLua.GenerateFindInstanceMemberScript(
+                        className, parentMember, criteria: null, symbolName,
+                        containerKey: dictKey);
+                    label = $"{className}.{parentMember}[{dictKey}]";
+                }
+            }
+            else if (IsNode)
             {
                 string nodeName = CurrentName;
 
@@ -442,6 +513,64 @@ public partial class LiveWalkerViewModel : ViewModelBase
             SetError($"CE script generation (path match) failed: {ex.Message}");
             _log.Error("view", "CE script generation (path match) failed", ex);
         }
+    }
+
+    // ============================================================
+    // Container context helpers for CE Lua generation
+    // ============================================================
+
+    /// <summary>
+    /// Walk breadcrumbs backwards to find the parent object context when inside a container.
+    /// Returns null if not inside a container drill-down.
+    /// </summary>
+    private (string parentName, string parentClassName, string memberName, bool isNode)?
+        FindContainerContext()
+    {
+        // Need at least 2 breadcrumbs: [parent object] → [container]
+        if (Breadcrumbs.Count < 2) return null;
+
+        // Check if the most recent breadcrumb is a container
+        var containerCrumb = Breadcrumbs[^1];
+        if (!containerCrumb.IsContainer) return null;
+
+        // The member name that leads to this container (stored when navigating into container)
+        string? memberName = containerCrumb.MemberName;
+        if (string.IsNullOrEmpty(memberName)) return null;
+
+        // Walk backwards to find the parent non-container breadcrumb (the actual object)
+        for (int i = Breadcrumbs.Count - 2; i >= 0; i--)
+        {
+            var crumb = Breadcrumbs[i];
+            if (!crumb.IsContainer)
+            {
+                return (crumb.Name, crumb.ClassName, memberName, crumb.IsNodeObject);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Extract the dictionary key or array index from a container element display name.
+    /// Strips the " → [index]" suffix that the DLL adds for display.
+    /// Examples:
+    ///   "inventory.iron → [384]" → "inventory.iron" (dict string key)
+    ///   "(Int)42 → [5]"         → "(Int)42"         (dict non-string key)
+    ///   "[5]"                    → "5"               (array index)
+    /// </summary>
+    private static string ExtractContainerKey(string fieldName)
+    {
+        // Dict elements: "key → [index]" — extract the key part
+        int arrowIdx = fieldName.IndexOf(" \u2192 [", StringComparison.Ordinal);
+        if (arrowIdx >= 0)
+            return fieldName[..arrowIdx];
+
+        // Array elements: "[index]" — extract the numeric index
+        if (fieldName.StartsWith('[') && fieldName.EndsWith(']'))
+            return fieldName[1..^1];
+
+        // Fallback: use as-is
+        return fieldName;
     }
 
     /// <summary>
@@ -767,10 +896,20 @@ public partial class LiveWalkerViewModel : ViewModelBase
 }
 
 /// <summary>Navigation breadcrumb for LiveWalker.</summary>
-public sealed class BreadcrumbItem(string address, string name, string className)
+public sealed class BreadcrumbItem(string address, string name, string className,
+    bool isContainer = false, int variantType = -1, string? memberName = null,
+    bool isNodeObject = false)
 {
     public string Address { get; } = address;
     public string Name { get; } = name;
     public string ClassName { get; } = className;
+    /// <summary>True if this breadcrumb represents a container drill-down (Dict/Array).</summary>
+    public bool IsContainer { get; } = isContainer;
+    /// <summary>Variant type for container re-fetch (Dictionary=27, Array=28, etc.).</summary>
+    public int VariantType { get; } = variantType;
+    /// <summary>Original GDScript member name that leads to this container (e.g. "values").</summary>
+    public string? MemberName { get; } = memberName;
+    /// <summary>True if this breadcrumb's object is a Node (uses FIND_NODE for CE scripts).</summary>
+    public bool IsNodeObject { get; } = isNodeObject;
     public string Display => string.IsNullOrEmpty(Name) ? Address : Name;
 }
