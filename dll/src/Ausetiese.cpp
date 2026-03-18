@@ -109,46 +109,58 @@ static bool ProbeSlotCounters(uint64_t objectDBAddr) {
     }
 
     if (best.count > 0) {
-        // Validate: scan the slot array to check for objects beyond best.max.
-        // If many objects exist past the candidate's max, the counters are wrong/stale.
+        // Validate by cross-checking: count actual valid objects within [0, max)
+        // and compare with the candidate count value. If they roughly match,
+        // the counters are correct.
+        // NOTE: Do NOT scan beyond max — the slot array is allocated for exactly
+        // 'max' entries. Reading past it hits unrelated heap memory where random
+        // pointers can pass vtable checks (false positives that caused incorrect
+        // rejection in previous approaches).
         uint64_t slotsArray = Zoltraak::ReadSafe<uint64_t>(objectDBAddr, 0);
         if (slotsArray && Zoltraak::IsReadable(slotsArray)) {
-            int beyondCount = 0;
-            int emptyRun = 0;
-            // Scan from best.max onward — if there are real objects beyond the reported max,
-            // the counters are incorrect (likely reading wrong offsets).
-            // Use a large emptyRun threshold (5000) to handle sparse allocation patterns.
-            int startIdx = static_cast<int>(best.max);
-            for (int i = startIdx; i < 500000 && emptyRun < 5000; ++i) {
+            int actualCount = 0;
+            // Sample slots within [0, max) to count valid objects.
+            // For large arrays, sample evenly to keep this fast.
+            int maxIdx = static_cast<int>(best.max);
+            int step = (maxIdx > 10000) ? (maxIdx / 5000) : 1;
+            int sampled = 0;
+            for (int i = 0; i < maxIdx && sampled < 10000; i += step) {
                 uintptr_t slotAddr = static_cast<uintptr_t>(slotsArray) +
                     static_cast<uintptr_t>(i) * DynOff::SLOT_STRIDE;
                 uint64_t objPtr = Zoltraak::ReadSafe<uint64_t>(
                     slotAddr + DynOff::SLOT_OBJECT_OFFSET, 0);
+                sampled++;
                 if (objPtr) {
                     uint64_t vtable = Zoltraak::ReadSafe<uint64_t>(objPtr, 0);
                     if (vtable >= s_moduleBase && vtable < s_moduleBase + s_moduleSize) {
-                        beyondCount++;
-                        emptyRun = 0;
-                    } else {
-                        emptyRun++;
+                        actualCount++;
                     }
-                } else {
-                    emptyRun++;
                 }
-                // Early exit: clearly wrong
-                if (beyondCount > 50) break;
             }
 
-            if (beyondCount > 10) {
-                Solitaer::Warn("OBJDB", "Slot counters rejected: candidate max=%u but found %d objects beyond that index (false positive at +0x%X/+0x%X)",
-                    best.max, beyondCount, best.countOff, best.maxOff);
+            // Extrapolate if we sampled with a step > 1
+            if (step > 1) actualCount = actualCount * step;
+
+            // Accept if actual count is within 50% of candidate count
+            // (exact match not expected due to sampling and timing)
+            int diff = (actualCount > static_cast<int>(best.count))
+                ? (actualCount - static_cast<int>(best.count))
+                : (static_cast<int>(best.count) - actualCount);
+            bool valid = (diff < static_cast<int>(best.count / 2 + 100));
+
+            Solitaer::Debug("OBJDB", "Slot counter cross-validation: candidate count=%u, actual≈%d, diff=%d, valid=%d",
+                best.count, actualCount, diff, valid ? 1 : 0);
+
+            if (!valid) {
+                Solitaer::Warn("OBJDB", "Slot counters rejected: count=%u but found ≈%d objects in [0,%u) (offsets %+d/%+d)",
+                    best.count, actualCount, best.max, best.countOff, best.maxOff);
                 return false;
             }
         }
 
         s_slotCountOff = best.countOff;
         s_slotMaxOff   = best.maxOff;
-        Solitaer::Info("OBJDB", "Slot counters found: count=%u (at +0x%X), max=%u (at +0x%X)",
+        Solitaer::Info("OBJDB", "Slot counters found: count=%u (at %+d), max=%u (at %+d)",
             best.count, best.countOff, best.max, best.maxOff);
         return true;
     }

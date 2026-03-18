@@ -22,6 +22,8 @@
 #include "Flamme.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
+#include "Heiter.h"
+#include "Ausetiese.h"
 
 #include <atomic>
 #include <unordered_map>
@@ -2562,6 +2564,179 @@ void ClassifyUnresolvedVtables() {
     Solitaer::Info("CLSDB", "  Final: %d unresolved vtables remaining",
         GetUnresolvedVtableCount());
     Solitaer::Info("CLSDB", "=== Static Vtable Classification Complete ===");
+}
+
+// ── Phase 3: Heiter ptrcall-based vtable classification ──
+// For builds with stripped RTTI where static analysis cannot resolve all vtables,
+// scan the _get_class_namev() virtual function's machine code to extract the class
+// name string literal from .rdata. Pure memory reads — no function calls, no thread
+// affinity, no risk of corrupting game state.
+
+// ── _get_class_namev code scanner ──
+// Godot's GDCLASS macro generates _get_class_namev() that returns a StringName
+// constructed from the class name literal. The function (or a callee) will have
+// a LEA REG, [RIP+disp32] that points to the ASCII class name in .rdata.
+// We scan for these references and match against known ClassDB class names.
+
+// Scan function code for .rdata ASCII string references that match ClassDB names.
+// Follows one level of CALL instructions if the direct function has no match.
+static std::string ExtractClassNameFromCode(uint64_t funcAddr, int scanLen = 256) {
+    auto rdataSec = Zoltraak::GetRdataSection();
+    auto textSec  = Zoltraak::GetTextSection();
+    if (!rdataSec.baseAddr || !textSec.baseAddr) return {};
+    uint64_t rdataEnd = rdataSec.baseAddr + rdataSec.size;
+    uint64_t textEnd  = textSec.baseAddr + textSec.size;
+
+    if (scanLen > 512) scanLen = 512;
+    uint8_t code[512];
+    if (!Zoltraak::ReadSafe(funcAddr, code, scanLen)) return {};
+
+    // Scan for LEA REG, [RIP+disp32] → .rdata ASCII class names
+    auto scanForClassName = [&](const uint8_t* buf, uint64_t baseAddr, int len) -> std::string {
+        for (int i = 0; i + 7 <= len; i++) {
+            uint8_t rex = buf[i];
+            if ((rex != 0x48 && rex != 0x4C) || buf[i + 1] != 0x8D) continue;
+            uint8_t modrm = buf[i + 2];
+            if ((modrm & 0xC7) != 0x05) continue;
+
+            int32_t disp;
+            memcpy(&disp, &buf[i + 3], 4);
+            uint64_t target = baseAddr + i + 7 + disp;
+
+            if (target < rdataSec.baseAddr || target >= rdataEnd) continue;
+
+            // Read candidate string
+            char str[128] = {};
+            if (!Zoltraak::ReadSafe(target, str, sizeof(str) - 1)) continue;
+
+            // Must be CamelCase: starts with A-Z, then alphanumeric/underscore, 2-64 chars
+            if (str[0] < 'A' || str[0] > 'Z') continue;
+            int slen = 0;
+            bool valid = true;
+            for (int j = 0; j < 127 && str[j]; j++) {
+                char c = str[j];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '_')) {
+                    valid = false;
+                    break;
+                }
+                slen = j + 1;
+            }
+            if (!valid || slen < 2 || slen > 64) continue;
+
+            std::string name(str, slen);
+            if (s_classMap.count(name)) return name;
+        }
+        return {};
+    };
+
+    // Phase 1: Scan the function itself
+    std::string result = scanForClassName(code, funcAddr, scanLen);
+    if (!result.empty()) return result;
+
+    // Phase 2: Follow CALL instructions (E8 rel32) to scan callees
+    for (int i = 0; i + 5 <= scanLen; i++) {
+        if (code[i] != 0xE8) continue;
+
+        int32_t rel;
+        memcpy(&rel, &code[i + 1], 4);
+        uint64_t callTarget = funcAddr + i + 5 + rel;
+        if (callTarget < textSec.baseAddr || callTarget >= textEnd) continue;
+
+        uint8_t callee[256];
+        if (!Zoltraak::ReadSafe(callTarget, callee, sizeof(callee))) continue;
+
+        result = scanForClassName(callee, callTarget, 256);
+        if (!result.empty()) return result;
+    }
+
+    return {};
+}
+
+// Probe the vtable index for _get_class_namev() by finding which vtable entry
+// for a known class (e.g. "Node") contains code referencing the "Node" string literal.
+static int ProbeGetClassNameVtableIndex() {
+    // Use several well-known classes as probes
+    static const char* probeClasses[] = {"Node", "Resource", "Control", "Sprite2D", "Camera2D"};
+
+    for (const char* probeName : probeClasses) {
+        auto it = s_classMap.find(probeName);
+        if (it == s_classMap.end()) continue;
+
+        // Find a live object of this class to get its vtable
+        uint64_t probeVtable = 0;
+        for (auto& [vt, cls] : s_vtableMap) {
+            if (cls == probeName) { probeVtable = vt; break; }
+        }
+        if (!probeVtable) continue;
+
+        auto textSec = Zoltraak::GetTextSection();
+        uint64_t textEnd = textSec.baseAddr + textSec.size;
+
+        // Scan vtable entries 0..63 for a function that references the class name
+        for (int idx = 0; idx < 64; idx++) {
+            uint64_t vfuncAddr = Zoltraak::ReadSafe<uint64_t>(probeVtable + idx * 8, 0);
+            if (!vfuncAddr || vfuncAddr < textSec.baseAddr || vfuncAddr >= textEnd) continue;
+
+            std::string found = ExtractClassNameFromCode(vfuncAddr, 128);
+            if (found == probeName) {
+                Solitaer::Info("CLSDB", "  _get_class_namev vtable index = %d (probed via '%s')",
+                    idx, probeName);
+                return idx;
+            }
+        }
+    }
+
+    return -1;
+}
+
+void ClassifyVtablesViaHeiter() {
+    int unresolved = GetUnresolvedVtableCount();
+    if (unresolved == 0) return;
+
+    Solitaer::Info("CLSDB", "=== Vtable Code Analysis Classification ===");
+    Solitaer::Info("CLSDB", "  %d unresolved vtables, scanning _get_class_namev() code", unresolved);
+
+    // Step 1: Probe the vtable index for _get_class_namev()
+    int vtableIdx = ProbeGetClassNameVtableIndex();
+    if (vtableIdx < 0) {
+        Solitaer::Warn("CLSDB", "  Cannot determine _get_class_namev vtable index, aborting");
+        return;
+    }
+
+    EnsureModuleInfo();
+    auto textSec = Zoltraak::GetTextSection();
+    uint64_t textEnd = textSec.baseAddr + textSec.size;
+
+    // Step 2: For each unresolved vtable, extract class name from code
+    int classified = 0;
+    int failed = 0;
+
+    for (auto& [vt, cls] : s_vtableMap) {
+        if (!cls.empty()) continue; // already resolved
+
+        uint64_t vfuncAddr = Zoltraak::ReadSafe<uint64_t>(vt + vtableIdx * 8, 0);
+        if (!vfuncAddr || vfuncAddr < textSec.baseAddr || vfuncAddr >= textEnd) {
+            failed++;
+            continue;
+        }
+
+        std::string name = ExtractClassNameFromCode(vfuncAddr);
+        if (!name.empty()) {
+            cls = name;
+            classified++;
+            if (classified <= 20) {
+                Solitaer::Info("CLSDB", "  vtable=%p -> %s (code analysis)",
+                    reinterpret_cast<void*>(vt), name.c_str());
+            }
+        } else {
+            failed++;
+        }
+    }
+
+    Solitaer::Info("CLSDB", "  Code analysis classified %d/%d vtables (%d still unresolved)",
+        classified, unresolved, GetUnresolvedVtableCount());
+    Solitaer::Info("CLSDB", "=== Vtable Code Analysis Classification Complete ===");
 }
 
 } // namespace Zolt::Diagoldze

@@ -15,6 +15,7 @@
 #include "Serie.h"
 #include "Ubel.h"
 #include "Zoltraak.h"
+#include "Heiter.h"
 #include "BuildInfo.h"
 
 #include <Windows.h>
@@ -408,8 +409,22 @@ static json HandleFindByAddress(int id, const json& req) {
 
     uint64_t addr = HexToAddr(addrStr);
 
+    Solitaer::Info("PIPE", "find_by_address: target=%s readable=%d",
+        addrStr.c_str(), Zoltraak::IsReadable(addr) ? 1 : 0);
+
+    // Log what's at the target address for diagnostics
+    if (Zoltraak::IsReadable(addr)) {
+        uint64_t val0 = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+        uint64_t val8 = Zoltraak::ReadSafe<uint64_t>(addr + 8, 0);
+        Solitaer::Debug("PIPE", "find_by_address: [%s]+0=%p +8=%p",
+            addrStr.c_str(), reinterpret_cast<void*>(val0), reinterpret_cast<void*>(val8));
+    }
+
     // Phase 1+2: Range-based lookup (includes exact match as fast path)
     auto match = Ausetiese::FindByAddressRange(addr);
+
+    Solitaer::Debug("PIPE", "find_by_address: Phase 1+2 result: slot=%d obj=%p offset=+0x%X",
+        match.slotIndex, reinterpret_cast<void*>(match.objectAddr), match.memberOffset);
 
     // Phase 1 exact match: return immediately (address IS an Object)
     if (match.slotIndex >= 0 && match.memberOffset == 0) {
@@ -432,6 +447,9 @@ static json HandleFindByAddress(int id, const json& req) {
     // not within the Object body — so range match can be wrong.
     auto scriptMatch = Ubel::FindScriptMemberByAddress(addr);
 
+    Solitaer::Debug("PIPE", "find_by_address: Phase 3 (script member): obj=%p memberIdx=%d",
+        reinterpret_cast<void*>(scriptMatch.objectAddr), scriptMatch.memberIndex);
+
     if (scriptMatch.objectAddr) {
         std::string name      = ReadObjectName(scriptMatch.objectAddr);
         std::string className = Diagoldze::GetObjectClass(scriptMatch.objectAddr);
@@ -450,8 +468,10 @@ static json HandleFindByAddress(int id, const json& req) {
         return resp;
     }
 
-    // Phase 2 fallback: range match (address is within an Object's body)
-    if (match.slotIndex >= 0 && match.memberOffset > 0) {
+    // Phase 2 fallback: range match (address is within an Object's body).
+    // Limit displacement to 0x1000 (4KB) — beyond that it's likely a coincidental
+    // heap neighbour, not actual Object data.
+    if (match.slotIndex >= 0 && match.memberOffset > 0 && match.memberOffset <= 0x1000) {
         std::string name      = ReadObjectName(match.objectAddr);
         std::string className = Diagoldze::GetObjectClass(match.objectAddr);
 
@@ -469,7 +489,9 @@ static json HandleFindByAddress(int id, const json& req) {
     // Phase 4: Direct probe — validate the address as a Godot Object even if
     // it's not in ObjectDB (e.g. slot_max estimation too low, or object added
     // after last scan). Checks vtable structure without ObjectDB dependency.
-    if (Ausetiese::ValidateObjectAddress(addr)) {
+    bool probeValid = Ausetiese::ValidateObjectAddress(addr);
+    Solitaer::Debug("PIPE", "find_by_address: Phase 4 (vtable probe): valid=%d", probeValid ? 1 : 0);
+    if (probeValid) {
         std::string name      = ReadObjectName(addr);
         std::string className = Diagoldze::GetObjectClass(addr);
 
@@ -487,7 +509,243 @@ static json HandleFindByAddress(int id, const json& req) {
         return resp;
     }
 
+    // Phase 5: Container owner search — target might be inside an Array or Dictionary
+    // that's a value of a GDScript member variable (not the member itself).
+    auto containerMatch = Ubel::FindContainerOwnerByAddress(addr);
+    Solitaer::Debug("PIPE", "find_by_address: Phase 5 (container owner): obj=%p memberIdx=%d type=%s",
+        reinterpret_cast<void*>(containerMatch.objectAddr), containerMatch.memberIndex,
+        containerMatch.containerType.empty() ? "(none)" : containerMatch.containerType.c_str());
+    if (containerMatch.objectAddr) {
+        std::string name      = ReadObjectName(containerMatch.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(containerMatch.objectAddr);
+        int slotIndex = Ausetiese::FindByAddress(containerMatch.objectAddr);
+
+        json resp = OkResponse(id);
+        resp["found"]          = true;
+        resp["match_type"]     = "container_member";
+        resp["address"]        = AddrToHex(containerMatch.objectAddr);
+        resp["name"]           = SafeStr(name);
+        resp["class_name"]     = SafeStr(className);
+        resp["slot_index"]     = slotIndex;
+        resp["member_offset"]  = 0;
+        resp["script_member"]  = containerMatch.memberIndex;
+        resp["container_type"] = containerMatch.containerType;
+        return resp;
+    }
+
+    // Phase 6: Native container body scan — target might be inside a Dictionary/Array
+    // that's a native C++ property on the Object body (not exposed via GDScript).
+    auto nativeMatch = Ubel::FindNativeContainerByAddress(addr);
+    Solitaer::Debug("PIPE", "find_by_address: Phase 6 (native container): obj=%p memberIdx=%d type=%s",
+        reinterpret_cast<void*>(nativeMatch.objectAddr), nativeMatch.memberIndex,
+        nativeMatch.containerType.empty() ? "(none)" : nativeMatch.containerType.c_str());
+    if (nativeMatch.objectAddr) {
+        std::string name      = ReadObjectName(nativeMatch.objectAddr);
+        std::string className = Diagoldze::GetObjectClass(nativeMatch.objectAddr);
+        int slotIndex = Ausetiese::FindByAddress(nativeMatch.objectAddr);
+
+        json resp = OkResponse(id);
+        resp["found"]          = true;
+        resp["match_type"]     = "native_container";
+        resp["address"]        = AddrToHex(nativeMatch.objectAddr);
+        resp["name"]           = SafeStr(name);
+        resp["class_name"]     = SafeStr(className);
+        resp["slot_index"]     = slotIndex;
+        resp["member_offset"]  = 0;
+        resp["script_member"]  = nativeMatch.memberIndex;
+        resp["container_type"] = nativeMatch.containerType;
+        return resp;
+    }
+
+    // Phase 7: Backward Dictionary element chase.
+    // Detects if the target is inside a HashMap element (Dictionary entry),
+    // follows the prev chain to find the head, then scans ObjectDB for an
+    // Object containing a DictionaryPrivate* whose HashMap head matches.
+    //
+    // Supports two element layouts:
+    //   Standard: next(8) + prev(8) + key(stride) + value(stride)     = elemSize 0x40
+    //   Extended: classPtr(8) + hash(8) + next(8) + prev(8) + key + value = elemSize 0x50
+    //     (custom Godot builds with extra metadata per HashMap element)
+    {
+        int stride = DynOff::VARIANT_STRIDE;
+        int maxType = GodotVer::VariantTypeMax();
+
+        struct ElemLayout {
+            int nextOff;    // offset of next pointer within element
+            int prevOff;    // offset of prev pointer within element
+            int keyOff;     // offset of key Variant
+            int valOff;     // offset of value Variant
+            int elemSize;   // total element size
+            const char* label;
+        };
+        ElemLayout layouts[] = {
+            {0x00, 0x08, 0x10, 0x10 + stride, 0x10 + stride * 2, "std"},
+            {0x10, 0x18, 0x20, 0x20 + stride, 0x20 + stride * 2, "ext"},
+        };
+
+        Solitaer::Info("PIPE", "find_by_address: Phase 7 (dict element chase) stride=0x%X", stride);
+
+        for (auto& lay : layouts) {
+            // Try to find an element base such that target is within [base, base+elemSize)
+            // and the key/value types are valid Variant types.
+            for (int backOff = 0; backOff < lay.elemSize; backOff += 8) {
+                if (addr < static_cast<uint64_t>(backOff)) continue;
+                uint64_t elemBase = addr - backOff;
+
+                uint64_t next = Zoltraak::ReadSafe<uint64_t>(elemBase + lay.nextOff, 0);
+                uint64_t prev = Zoltraak::ReadSafe<uint64_t>(elemBase + lay.prevOff, 0);
+
+                bool nextOk = (next == 0) || (Zoltraak::IsReadable(next) && (next % 8 == 0));
+                bool prevOk = (prev == 0) || (Zoltraak::IsReadable(prev) && (prev % 8 == 0));
+                if (!nextOk || !prevOk) continue;
+                if (!next && !prev) continue;
+
+                int32_t kType = Zoltraak::ReadSafe<int32_t>(elemBase + lay.keyOff, -1);
+                int32_t vType = Zoltraak::ReadSafe<int32_t>(elemBase + lay.valOff, -1);
+                if (kType < 0 || kType >= maxType || vType < 0 || vType >= maxType) continue;
+
+                // For extended layout, validate the extra prefix: classPtr should be a
+                // valid pointer and hash should NOT be a valid pointer (high bits set).
+                if (lay.nextOff == 0x10) {
+                    uint64_t classPtr = Zoltraak::ReadSafe<uint64_t>(elemBase, 0);
+                    uint64_t hashVal  = Zoltraak::ReadSafe<uint64_t>(elemBase + 8, 0);
+                    if (!classPtr || !Zoltraak::IsReadable(classPtr)) continue;
+                    if (hashVal != 0 && Zoltraak::IsReadable(hashVal)) continue; // hash shouldn't be a valid ptr
+                }
+
+                Solitaer::Info("PIPE", "  Phase 7 [%s] elem at %p (backOff=0x%X) "
+                    "next=%p prev=%p key=%d val=%d",
+                    lay.label, reinterpret_cast<void*>(elemBase), backOff,
+                    reinterpret_cast<void*>(next), reinterpret_cast<void*>(prev),
+                    kType, vType);
+
+                // Follow prev chain to find head (prev == NULL)
+                uint64_t head = elemBase;
+                int walked = 0;
+                while (walked < 10000) {
+                    uint64_t prevPtr = Zoltraak::ReadSafe<uint64_t>(head + lay.prevOff, 0);
+                    if (!prevPtr) break;
+                    if (!Zoltraak::IsReadable(prevPtr) || prevPtr % 8 != 0) { head = 0; break; }
+                    head = prevPtr;
+                    walked++;
+                }
+                if (!head || walked >= 10000) continue;
+
+                Solitaer::Info("PIPE", "  Phase 7: head at %p (walked %d prevs)",
+                    reinterpret_cast<void*>(head), walked);
+
+                // Search ObjectDB for an Object whose body or script members contain
+                // a DictionaryPrivate* that has our head as its HashMap head_element.
+                // Scan the first DICT_PROBE bytes of each candidate for the head value
+                // to handle any DictionaryPrivate/HashMap layout variation.
+                constexpr int BODY_SCAN = 0x400;
+                constexpr int DICT_PROBE = 0x60; // scan DictPrivate[0..0x60) for head ptr
+                uint64_t foundObj = 0;
+                int foundOff = -1;
+                std::string foundHow;
+                int totalPtrsChecked = 0;
+                int dictProbesTried = 0;
+
+                // Helper: check if candidate pointer is a DictPrivate whose HashMap
+                // stores our head element. Scans first DICT_PROBE bytes for match.
+                auto isDictWithHead = [&](uint64_t dp) -> bool {
+                    dictProbesTried++;
+                    uint8_t dbuf[DICT_PROBE];
+                    if (!Zoltraak::ReadSafe(dp, dbuf, DICT_PROBE)) return false;
+                    for (int i = 8; i + 8 <= DICT_PROBE; i += 8) {
+                        uint64_t v;
+                        memcpy(&v, dbuf + i, sizeof(v));
+                        if (v == head) return true;
+                    }
+                    return false;
+                };
+
+                Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    // Scan object body for pointer-sized values
+                    uint8_t buf[BODY_SCAN];
+                    if (!Zoltraak::ReadSafe(objAddr, buf, BODY_SCAN)) return true;
+
+                    for (int off = 8; off + 8 <= BODY_SCAN; off += 8) {
+                        uint64_t val;
+                        memcpy(&val, buf + off, sizeof(val));
+                        if (!val || (val & 0x7) != 0) continue;
+                        if ((val >> 40) == 0) continue; // too low for heap
+                        if (!Zoltraak::IsReadable(val)) continue;
+                        totalPtrsChecked++;
+
+                        // Try val as DictionaryPrivate*
+                        if (isDictWithHead(val)) {
+                            foundObj = objAddr;
+                            foundOff = off;
+                            foundHow = "native_body";
+                            return false;
+                        }
+                    }
+
+                    // Also check GDScript member Variants for Dictionary data = DictPrivate*
+                    if (DynOff::OBJECT_SCRIPT_INSTANCE >= 0) {
+                        uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+                            objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+                        if (si && Zoltraak::IsReadable(si)) {
+                            uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+                                si + DynOff::GDSCRIPT_OWNER_OFF, 0);
+                            if (owner == objAddr) {
+                                uint64_t mp = Zoltraak::ReadSafe<uint64_t>(
+                                    si + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+                                if (mp && Zoltraak::IsReadable(mp)) {
+                                    int sOff = GodotVer::IsGodot3() ? 4 : 8;
+                                    uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mp - sOff, 0);
+                                    for (uint32_t m = 0; m < cnt && m < 500; m++) {
+                                        uint64_t d = Zoltraak::ReadSafe<uint64_t>(
+                                            mp + static_cast<uint64_t>(m) * stride +
+                                            DynOff::VARIANT_DATA, 0);
+                                        if (!d || !Zoltraak::IsReadable(d)) continue;
+                                        if (isDictWithHead(d)) {
+                                            foundObj = objAddr;
+                                            foundOff = static_cast<int>(m);
+                                            foundHow = "script_member";
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return true;
+                });
+
+                Solitaer::Info("PIPE", "  Phase 7: ObjectDB scan done. ptrs=%d probes=%d found=%s",
+                    totalPtrsChecked, dictProbesTried, foundObj ? "YES" : "NO");
+
+                if (foundObj) {
+                    std::string name      = ReadObjectName(foundObj);
+                    std::string className = Diagoldze::GetObjectClass(foundObj);
+                    int slotIndex = Ausetiese::FindByAddress(foundObj);
+
+                    Solitaer::Info("PIPE", "  Phase 7 HIT! Object=%p (%s/%s) %s off=0x%X",
+                        reinterpret_cast<void*>(foundObj),
+                        name.c_str(), className.c_str(),
+                        foundHow.c_str(), foundOff);
+
+                    json resp = OkResponse(id);
+                    resp["found"]          = true;
+                    resp["match_type"]     = "dict_element_chase";
+                    resp["address"]        = AddrToHex(foundObj);
+                    resp["name"]           = SafeStr(name);
+                    resp["class_name"]     = SafeStr(className);
+                    resp["slot_index"]     = slotIndex;
+                    resp["member_offset"]  = foundOff;
+                    resp["script_member"]  = -1;
+                    resp["container_type"] = "Dictionary";
+                    resp["dict_chain_len"] = walked;
+                    return resp;
+                }
+            } // backOff
+        } // layouts
+    }
+
     // Not found in any phase
+    Solitaer::Warn("PIPE", "find_by_address: %s NOT FOUND in any phase", addrStr.c_str());
     json resp = OkResponse(id);
     resp["found"]   = false;
     resp["address"] = addrStr;
@@ -1041,6 +1299,20 @@ static json HandleTriggerScan(int id, const json& /*req*/) {
         if (addr) {
             Serie::Init(addr);
             sceneTreeResolved = (Serie::GetRoot() != 0);
+        }
+    }
+
+    // Deferred Heiter vtable classification: runs once on first trigger_scan
+    // (game is fully loaded, game thread is pumping messages).
+    // Deferred vtable classification via code analysis (pure memory reads, no ptrcall).
+    // Cannot run during DLL init — ClassDB and ObjectDB must be initialized first.
+    {
+        static std::atomic<bool> s_codeAnalysisRun{false};
+        if (!s_codeAnalysisRun.exchange(true)) {
+            int unresolved = Diagoldze::GetUnresolvedVtableCount();
+            if (unresolved > 0) {
+                Diagoldze::ClassifyVtablesViaHeiter();
+            }
         }
     }
 

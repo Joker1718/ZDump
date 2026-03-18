@@ -28,6 +28,10 @@
 
 namespace Zolt::Ubel {
 
+// Suppress verbose debug logging during bulk scans (Phase 5/6/7).
+// Set to true before bulk ForEachEx loops, false after.
+static thread_local bool s_bulkScanQuiet = false;
+
 // ============================================================
 // Godot 4.x Variant::Type enum to string mapping (39 types max)
 // ============================================================
@@ -221,7 +225,13 @@ static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr);
 // headElementPtr differs by version:
 //   4.x: HashMapElement* (walk via ->next at +0x00)
 //   3.x: List::Element*  (walk via ->next at element+keyPtrSize+VARIANT_STRIDE)
-static std::pair<int, uint64_t> ReadDictionaryInternals(uint64_t dataAddr);
+// Result for ReadDictionaryInternals
+struct DictInternals {
+    int      count = 0;
+    uint64_t head  = 0;
+    int      elemPrefix = 0; // 0 = standard, 0x10 = extended (custom builds with per-element metadata)
+};
+static DictInternals ReadDictionaryInternals(uint64_t dataAddr);
 
 // ============================================================
 // ReadVariant — Read and decode a Variant at the given address
@@ -410,10 +420,10 @@ VariantValue ReadVariant(uint64_t addr) {
         }
 
         case 27: { // DICTIONARY — show element count via ReadDictionaryInternals
-            auto [count, headElem] = ReadDictionaryInternals(data);
+            auto di = ReadDictionaryInternals(data);
             char buf[64];
-            if (headElem) {
-                snprintf(buf, sizeof(buf), "Dictionary[%d]", count);
+            if (di.head) {
+                snprintf(buf, sizeof(buf), "Dictionary[%d]", di.count);
             } else {
                 snprintf(buf, sizeof(buf), "Dictionary(empty)");
             }
@@ -488,8 +498,9 @@ static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr) {
     uint64_t cowPtr = Zoltraak::ReadSafe<uint64_t>(arrayPrivate + 0x08, 0);
     if (!cowPtr || !Zoltraak::IsReadable(cowPtr)) {
         // NULL cowdata._ptr = allocated ArrayPrivate but empty Vector (0 elements)
-        Solitaer::Debug("WALK", "ReadArrayInternals: empty Vector in ArrayPrivate %p (cowPtr=%p)",
-            reinterpret_cast<void*>(arrayPrivate), reinterpret_cast<void*>(cowPtr));
+        if (!s_bulkScanQuiet)
+            Solitaer::Debug("WALK", "ReadArrayInternals: empty Vector in ArrayPrivate %p (cowPtr=%p)",
+                reinterpret_cast<void*>(arrayPrivate), reinterpret_cast<void*>(cowPtr));
         return {0, 0};
     }
 
@@ -500,17 +511,20 @@ static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr) {
         // Some Godot versions use 64-bit USize
         uint32_t count64 = static_cast<uint32_t>(Zoltraak::ReadSafe<uint64_t>(cowPtr - 8, 0));
         if (count64 > 0 && count64 <= 100000) {
-            Solitaer::Info("WALK", "ReadArrayInternals: 64-bit USize detected, count=%u at %p",
-                count64, reinterpret_cast<void*>(cowPtr - 8));
+            if (!s_bulkScanQuiet)
+                Solitaer::Info("WALK", "ReadArrayInternals: 64-bit USize detected, count=%u at %p",
+                    count64, reinterpret_cast<void*>(cowPtr - 8));
             return {static_cast<int>(count64), cowPtr};
         }
-        Solitaer::Info("WALK", "ReadArrayInternals: suspicious count %u (and 64-bit %u) at ArrayPrivate %p",
-            count, count64, reinterpret_cast<void*>(arrayPrivate));
+        if (!s_bulkScanQuiet)
+            Solitaer::Info("WALK", "ReadArrayInternals: suspicious count %u (and 64-bit %u) at ArrayPrivate %p",
+                count, count64, reinterpret_cast<void*>(arrayPrivate));
         return {0, 0};
     }
 
-    Solitaer::Debug("WALK", "ReadArrayInternals: count=%u cowPtr=%p (ArrayPrivate=%p)",
-        count, reinterpret_cast<void*>(cowPtr), reinterpret_cast<void*>(arrayPrivate));
+    if (!s_bulkScanQuiet)
+        Solitaer::Debug("WALK", "ReadArrayInternals: count=%u cowPtr=%p (ArrayPrivate=%p)",
+            count, reinterpret_cast<void*>(cowPtr), reinterpret_cast<void*>(arrayPrivate));
     return {static_cast<int>(count), cowPtr};
 }
 
@@ -535,8 +549,10 @@ static std::pair<int, uint64_t> ReadArrayInternals(uint64_t dataAddr) {
 //       +0x08: HashMap<K, ListElement*>
 //     List._Data: { Element *first, Element *last, int size_cache }
 //
-// Returns {elementCount, headElementPtr} or {0, 0} on failure.
-static std::pair<int, uint64_t> ReadDictionaryInternals(uint64_t dataAddr) {
+// Returns {count, head, elemPrefix} or defaults on failure.
+// elemPrefix: 0 for standard element layout (next@+0x00, prev@+0x08, key@+0x10),
+//             0x10 for extended layout (classPtr@+0x00, hash@+0x08, next@+0x10, prev@+0x18, key@+0x20).
+static DictInternals ReadDictionaryInternals(uint64_t dataAddr) {
     uint64_t dictPrivate = Zoltraak::ReadSafe<uint64_t>(dataAddr, 0);
     if (!dictPrivate || !Zoltraak::IsReadable(dictPrivate)) {
         return {0, 0}; // NULL _p = empty/uninitialized Dictionary
@@ -546,53 +562,95 @@ static std::pair<int, uint64_t> ReadDictionaryInternals(uint64_t dataAddr) {
         // 3.x: DictionaryPrivate+0x08 = OrderedHashMap.list (_Data* pointer)
         uint64_t listData = Zoltraak::ReadSafe<uint64_t>(dictPrivate + 0x08, 0);
         if (!listData || !Zoltraak::IsReadable(listData)) {
-            Solitaer::Debug("WALK", "ReadDictInternals(3.x): NULL list._data at %p",
-                reinterpret_cast<void*>(dictPrivate + 0x08));
+            if (!s_bulkScanQuiet)
+                Solitaer::Debug("WALK", "ReadDictInternals(3.x): NULL list._data at %p",
+                    reinterpret_cast<void*>(dictPrivate + 0x08));
             return {0, 0};
         }
         // _Data: first(8B) + last(8B) + size_cache(4B)
         uint64_t firstElem = Zoltraak::ReadSafe<uint64_t>(listData + 0x00, 0);
         int count = static_cast<int>(Zoltraak::ReadSafe<uint32_t>(listData + 0x10, 0));
         if (count < 0 || count > 100000) count = 0;
-        Solitaer::Info("WALK", "ReadDictInternals(3.x): count=%d first=%p (_Data=%p)",
-            count, reinterpret_cast<void*>(firstElem), reinterpret_cast<void*>(listData));
-        return {count, firstElem};
+        if (!s_bulkScanQuiet)
+            Solitaer::Info("WALK", "ReadDictInternals(3.x): count=%d first=%p (_Data=%p)",
+                count, reinterpret_cast<void*>(firstElem), reinterpret_cast<void*>(listData));
+        return {count, firstElem, 0};
     }
 
     // 4.x: HashMap starts at DictionaryPrivate+0x10
     uint64_t hmBase = dictPrivate + 0x10;
 
-    // Probe two layouts for head_element and num_elements:
-    //   Pattern A (GCC/Clang, empty allocator = 0 bytes): head at +0x10, num at +0x24
-    //   Pattern B (MSVC, 8-byte padded empty allocator):   head at +0x18, num at +0x2C
+    // Probe HashMap layout for head_element and num_elements.
+    // Godot 4.x HashMap has DefaultTypedAllocator (empty class, padded to 8 bytes)
+    // before the element array pointer. Both GCC and MSVC pad to 8 bytes in C++17,
+    // giving the same layout: head at +0x18, num at +0x2C.
+    // We also try the legacy "no padding" pattern as fallback for older/custom builds.
     struct ProbePattern {
         int headOff;
         int numOff;
         const char* label;
     };
     static const ProbePattern patterns[] = {
-        {0x10, 0x24, "GCC"},
-        {0x18, 0x2C, "MSVC"},
+        {0x18, 0x2C, "std"},      // Standard: 8-byte padded empty allocator (GCC+MSVC)
+        {0x10, 0x24, "noPad"},    // Fallback: zero-padded allocator (unlikely)
+        {0x20, 0x34, "ext8"},     // Custom: extra 8B in DictPrivate or HashMap (+8 shift)
+        {0x28, 0x3C, "ext16"},    // Custom: extra 16B in DictPrivate or HashMap (+16 shift)
     };
+
+    // Element layout variants:
+    //   Standard: next(8) + prev(8) + key(stride) + value(stride), prefix=0
+    //   Extended: classPtr(8) + hash(8) + next(8) + prev(8) + key + value, prefix=0x10
+    //     (custom Godot builds with extra metadata per HashMap element)
+    static const int elemPrefixes[] = {0, 0x10};
 
     for (auto& pat : patterns) {
         uint64_t head = Zoltraak::ReadSafe<uint64_t>(hmBase + pat.headOff, 0);
         uint32_t num  = Zoltraak::ReadSafe<uint32_t>(hmBase + pat.numOff, 0);
         if (num > 0 && num <= 100000 && head != 0 && Zoltraak::IsReadable(head)) {
-            // Validate: head->next or head->prev should be readable pointer or NULL
-            uint64_t headNext = Zoltraak::ReadSafe<uint64_t>(head, 0);
-            if (headNext == 0 || Zoltraak::IsReadable(headNext)) {
-                Solitaer::Info("WALK", "ReadDictInternals(4.x %s): count=%u head=%p (hmBase=%p)",
-                    pat.label, num, reinterpret_cast<void*>(head), reinterpret_cast<void*>(hmBase));
-                return {static_cast<int>(num), head};
+            // Try both standard and extended element layouts for head validation
+            for (int prefix : elemPrefixes) {
+                int nextOff = prefix + 0x00;
+                int prevOff = prefix + 0x08;
+
+                // Validate: head->next should be readable pointer or NULL
+                uint64_t headNext = Zoltraak::ReadSafe<uint64_t>(head + nextOff, 0);
+                if (headNext != 0 && !Zoltraak::IsReadable(headNext)) continue;
+                // Validate: head->prev should be NULL (it's the first element)
+                uint64_t headPrev = Zoltraak::ReadSafe<uint64_t>(head + prevOff, 0);
+                if (headPrev != 0) continue;
+
+                // For extended layout, extra validation: classPtr at +0x00 must be
+                // a readable pointer, hash at +0x08 must NOT be a readable pointer
+                if (prefix == 0x10) {
+                    uint64_t classPtr = Zoltraak::ReadSafe<uint64_t>(head, 0);
+                    uint64_t hashVal  = Zoltraak::ReadSafe<uint64_t>(head + 8, 0);
+                    if (!classPtr || !Zoltraak::IsReadable(classPtr)) continue;
+                    if (hashVal != 0 && Zoltraak::IsReadable(hashVal)) continue;
+                }
+
+                // Validate: walk a few elements via next pointer and count matches num
+                int walkCount = 1;
+                uint64_t cur = headNext;
+                while (cur && walkCount < 5 && Zoltraak::IsReadable(cur)) {
+                    walkCount++;
+                    cur = Zoltraak::ReadSafe<uint64_t>(cur + nextOff, 0);
+                }
+                // For small dicts, walkCount should match num
+                if (num <= 5 && walkCount != static_cast<int>(num)) continue;
+
+                if (!s_bulkScanQuiet)
+                    Solitaer::Info("WALK", "ReadDictInternals(4.x %s prefix=%d): count=%u head=%p (hmBase=%p)",
+                        pat.label, prefix, num, reinterpret_cast<void*>(head), reinterpret_cast<void*>(hmBase));
+                return {static_cast<int>(num), head, prefix};
             }
         }
     }
 
-    // Both patterns failed — might be empty Dictionary
-    Solitaer::Debug("WALK", "ReadDictInternals(4.x): no valid pattern at hmBase=%p",
-        reinterpret_cast<void*>(hmBase));
-    return {0, 0};
+    // All patterns failed — might be empty Dictionary
+    if (!s_bulkScanQuiet)
+        Solitaer::Debug("WALK", "ReadDictInternals(4.x): no valid pattern at hmBase=%p",
+            reinterpret_cast<void*>(hmBase));
+    return {};
 }
 
 // Read PackedArray element count and data pointer.
@@ -761,10 +819,10 @@ ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType) {
             count, reinterpret_cast<void*>(dataPtr));
     }
     else if (type4x == 27) { // Dictionary
-        auto [count, headElem] = ReadDictionaryInternals(dataAddr);
-        info.elementCount = count;
-        Solitaer::Debug("WALK", "ReadContainerInfo(Dictionary): count=%d head=%p",
-            count, reinterpret_cast<void*>(headElem));
+        auto di = ReadDictionaryInternals(dataAddr);
+        info.elementCount = di.count;
+        Solitaer::Debug("WALK", "ReadContainerInfo(Dictionary): count=%d head=%p prefix=%d",
+            di.count, reinterpret_cast<void*>(di.head), di.elemPrefix);
     }
     else if (type4x >= 29 && type4x <= 38) { // Packed arrays
         int elemSize = PackedArrayElementSize(type4x);
@@ -832,7 +890,10 @@ std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int varia
         }
     }
     else if (type4x == 27) { // Dictionary — key-value pairs via linked list
-        auto [count, headElem] = ReadDictionaryInternals(dataAddr);
+        auto di = ReadDictionaryInternals(dataAddr);
+        int count = di.count;
+        uint64_t headElem = di.head;
+        int dictElemPrefix = di.elemPrefix;
         if (count <= 0 || !headElem) return elements;
 
         int variantStride = DynOff::VARIANT_STRIDE;
@@ -883,16 +944,19 @@ std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int varia
             }
         } else {
             // 4.x: HashMapElement<Variant, Variant> linked list
-            // Element layout: next(8B) + prev(8B) + KeyValue{key(VARIANT_STRIDE) + value(VARIANT_STRIDE)}
-            // key starts at +0x10, value at +0x10 + VARIANT_STRIDE
-            int keyOff   = 0x10;
-            int valueOff = 0x10 + variantStride;
+            // Standard layout: next(8B) + prev(8B) + KeyValue{key(stride) + value(stride)}
+            // Extended layout: classPtr(8B) + hash(8B) + next(8B) + prev(8B) + key + value
+            //   (custom builds with per-element metadata, prefix=0x10)
+            int p = dictElemPrefix;
+            int keyOff   = p + 0x10;
+            int valueOff = p + 0x10 + variantStride;
+            int nextOff  = p + 0x00;
             uint64_t cur = headElem;
             for (int i = 0; i < end && cur && Zoltraak::IsReadable(cur); i++) {
                 if (i >= start) {
                     ContainerElement elem;
                     elem.index = i;
-                    // Key: inline Variant at +0x10
+                    // Key: inline Variant at prefix+0x10
                     VariantValue kv = ReadVariant(cur + keyOff);
                     // Prefix key type for non-string keys
                     if (kv.typeName == "String" || kv.typeName == "StringName" || kv.typeName == "NodePath") {
@@ -900,13 +964,13 @@ std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int varia
                     } else {
                         elem.key = "(" + kv.typeName + ")" + kv.value;
                     }
-                    // Value: inline Variant at +0x10 + stride
+                    // Value: inline Variant at prefix+0x10+stride
                     elem.value = ReadVariant(cur + valueOff);
                     elem.value.rawAddr = cur + valueOff + variantData;
                     elements.push_back(std::move(elem));
                 }
-                // next pointer at +0x00
-                cur = Zoltraak::ReadSafe<uint64_t>(cur + 0x00, 0);
+                // next pointer at prefix+0x00
+                cur = Zoltraak::ReadSafe<uint64_t>(cur + nextOff, 0);
             }
         }
     }
@@ -1480,47 +1544,26 @@ static void ProbeScriptInstanceOffset(uint64_t objAddr) {
                 Solitaer::Info("WALK", "    +0x%02X: %016llX%s", doff, val, label);
             }
 
-            // Probe members Vector offset dynamically:
-            // Scan from the expected offset (and nearby) for a valid CowData pointer
-            int probedMembersOff = -1;
-            int searchStart = lay.membersOff;
-            int searchEnd   = lay.membersOff + 0x28;
-            for (int moff = searchStart; moff <= searchEnd; moff += 8) {
-                uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(candidate + moff, 0);
-                if (!mptr || !Zoltraak::IsReadable(mptr)) continue;
-                // CowData._ptr must be reasonably aligned (at least 8-byte for Variant data)
-                if (mptr % 8 != 0) {
-                    Solitaer::Debug("WALK", "  +0x%02X: ptr=%p SKIP (not 8-byte aligned)", moff,
-                        reinterpret_cast<void*>(mptr));
-                    continue;
-                }
-                // Read size from CowData header
+            // Probe members Vector offset dynamically.
+            // We DON'T update GDSCRIPT_MEMBERS_OFF here — the offset will be
+            // confirmed by scanning multiple GDScriptInstance objects below
+            // (in ProbeScriptInstanceEarly's multi-object vote after this function returns).
+            // For now, just log what we see on this single object.
+            {
+                int searchStart = lay.membersOff;
+                int searchEnd   = lay.membersOff + 0x28;
                 int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
-                if (cnt == 0 || cnt > 1000) continue;
-                // Validate: first Variant::Type should be in range [0, VariantTypeMax)
-                int32_t firstType = Zoltraak::ReadSafe<int32_t>(mptr, -1);
-                if (firstType < 0 || firstType >= GodotVer::VariantTypeMax()) continue;
-
-                probedMembersOff = moff;
-                Solitaer::Info("WALK", "  Members Vector probed at +0x%02X: ptr=%p count=%u firstType=%d",
-                    moff, reinterpret_cast<void*>(mptr), cnt, firstType);
-                break;
-            }
-
-            if (probedMembersOff >= 0 && probedMembersOff != DynOff::GDSCRIPT_MEMBERS_OFF) {
-                Solitaer::Info("WALK", "  Updating GDSCRIPT_MEMBERS_OFF: 0x%X -> 0x%X",
-                    DynOff::GDSCRIPT_MEMBERS_OFF, probedMembersOff);
-                DynOff::GDSCRIPT_MEMBERS_OFF = probedMembersOff;
-            } else if (probedMembersOff < 0) {
-                // Fallback: log all readable pointers for manual analysis
-                Solitaer::Warn("WALK", "  Could not probe members Vector offset (all candidates failed)");
-                uint64_t defaultPtr = Zoltraak::ReadSafe<uint64_t>(
-                    candidate + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
-                Solitaer::Warn("WALK", "  Default +0x%X value: %p (aligned=%s)",
-                    DynOff::GDSCRIPT_MEMBERS_OFF,
-                    reinterpret_cast<void*>(defaultPtr),
-                    (defaultPtr % 8 == 0) ? "yes" : "NO");
+                for (int moff = searchStart; moff <= searchEnd; moff += 8) {
+                    uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(candidate + moff, 0);
+                    if (!mptr || !Zoltraak::IsReadable(mptr)) continue;
+                    if (mptr % 8 != 0) continue;
+                    uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
+                    if (cnt == 0 || cnt > 1000) continue;
+                    int32_t firstType = Zoltraak::ReadSafe<int32_t>(mptr, -1);
+                    if (firstType < 0 || firstType >= GodotVer::VariantTypeMax()) continue;
+                    Solitaer::Info("WALK", "  Members candidate +0x%02X: ptr=%p count=%u firstType=%d",
+                        moff, reinterpret_cast<void*>(mptr), cnt, firstType);
+                }
             }
 
             Solitaer::Info("WALK", "=== ScriptInstance probe complete ===");
@@ -1854,7 +1897,7 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
     if (sProbed) return;
     sProbed = true;
 
-    const int candidates[] = { 0x18, 0x28 };  // float=24, double=40
+    const int candidates[] = { 0x18, 0x20, 0x28 };  // float=24, padded=32, double=40
     int maxType = GodotVer::VariantTypeMax();
     int probeCount = static_cast<int>((count < 20) ? count : 20);
     int bestStride = DynOff::VARIANT_STRIDE;
@@ -1866,7 +1909,7 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count) {
             int32_t t = Zoltraak::ReadSafe<int32_t>(membersPtr + i * stride, -1);
             if (t >= 0 && t < maxType) validCount++;
         }
-        Solitaer::Debug("WALK", "ProbeVariantStride: stride=0x%X → %d/%d valid types",
+        Solitaer::Info("WALK", "ProbeVariantStride: stride=0x%X → %d/%d valid types",
             stride, validCount, probeCount);
         if (validCount > bestValid) {
             bestValid  = validCount;
@@ -2286,6 +2329,92 @@ void ProbeScriptInstanceEarly() {
     if (DynOff::bScriptInstanceProbed.load()) {
         Solitaer::Info("WALK", "  Early probe SUCCESS: ScriptInstance at Object+0x%X (after %d objects)",
             DynOff::OBJECT_SCRIPT_INSTANCE, probed);
+
+        // Multi-object vote for GDSCRIPT_MEMBERS_OFF + VARIANT_STRIDE.
+        // The single-object probe may pick the wrong offset if the first object
+        // has an empty members Vector (NULL at expected offset).
+        // Scan ObjectDB for objects with valid ScriptInstances and vote on which
+        // offset (+0x20, +0x28, +0x30, +0x38) consistently has valid CowData.
+        int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+        int maxType = GodotVer::VariantTypeMax();
+        int offVotes[4] = {};  // votes for +0x20, +0x28, +0x30, +0x38
+        const int offCandidates[] = {0x20, 0x28, 0x30, 0x38};
+        int totalChecked = 0;
+        bool strideFound = false;
+        uint64_t strideProbePtr = 0;
+        uint32_t strideProbeCount = 0;
+
+        Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+            if (totalChecked >= 200) return false;
+            uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+                objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+            if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+
+            uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+                scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+            if (owner != objAddr) return true;
+
+            totalChecked++;
+
+            // Vote on each candidate offset
+            for (int i = 0; i < 4; i++) {
+                uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(
+                    scriptInst + offCandidates[i], 0);
+                if (!mptr || !Zoltraak::IsReadable(mptr) || mptr % 8 != 0) continue;
+                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
+                if (cnt == 0 || cnt > 500) continue;
+                int32_t ft = Zoltraak::ReadSafe<int32_t>(mptr, -1);
+                if (ft >= 0 && ft < maxType) {
+                    offVotes[i]++;
+                    // Track best candidate for stride probe (need 2+ members)
+                    if (!strideFound && cnt >= 2) {
+                        strideProbePtr = mptr;
+                        strideProbeCount = cnt;
+                    }
+                }
+            }
+            return true;
+        });
+
+        // Pick the offset with most votes
+        int bestIdx = 0;
+        for (int i = 1; i < 4; i++) {
+            if (offVotes[i] > offVotes[bestIdx]) bestIdx = i;
+        }
+        int votedOff = offCandidates[bestIdx];
+        Solitaer::Info("WALK", "  Members offset vote (%d objects): +0x20=%d +0x28=%d +0x30=%d +0x38=%d → +0x%X",
+            totalChecked, offVotes[0], offVotes[1], offVotes[2], offVotes[3], votedOff);
+        if (votedOff != DynOff::GDSCRIPT_MEMBERS_OFF) {
+            Solitaer::Info("WALK", "  Updating GDSCRIPT_MEMBERS_OFF: 0x%X -> 0x%X",
+                DynOff::GDSCRIPT_MEMBERS_OFF, votedOff);
+            DynOff::GDSCRIPT_MEMBERS_OFF = votedOff;
+        }
+
+        // Probe VARIANT_STRIDE if we found an object with 2+ members at the voted offset
+        if (strideProbePtr && strideProbeCount >= 2) {
+            ProbeVariantStride(strideProbePtr, strideProbeCount);
+        } else {
+            // Try again specifically at the voted offset
+            Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                if (strideFound) return false;
+                uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+                    objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+                if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+                uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+                    scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+                if (owner != objAddr) return true;
+                uint64_t mptr = Zoltraak::ReadSafe<uint64_t>(
+                    scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+                if (!mptr || !Zoltraak::IsReadable(mptr)) return true;
+                uint32_t cnt = Zoltraak::ReadSafe<uint32_t>(mptr - sizeOff, 0);
+                if (cnt >= 2 && cnt <= 500) {
+                    ProbeVariantStride(mptr, cnt);
+                    strideFound = true;
+                    return false;
+                }
+                return true;
+            });
+        }
     } else {
         Solitaer::Info("WALK", "  Early probe: no ScriptInstance found (probed %d objects). "
             "Will retry on walk_instance calls.", probed);
@@ -2304,8 +2433,14 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
 
     int variantStride = DynOff::VARIANT_STRIDE;
     int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+    int scannedTotal = 0, scannedWithScript = 0;
+    uint64_t closestDist = UINT64_MAX;
+    uint64_t closestObj = 0;
+    uint64_t closestPtr = 0;
+    uint32_t closestCount = 0;
 
     Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        scannedTotal++;
         // Read ScriptInstance pointer from Object
         uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
             objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
@@ -2325,6 +2460,8 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
         uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
         if (count == 0 || count > 500) return true;
 
+        scannedWithScript++;
+
         // Check if addr falls within [membersPtr, membersPtr + count * variantStride)
         uint64_t rangeStart = membersPtr;
         uint64_t rangeEnd   = membersPtr + static_cast<uint64_t>(count) * variantStride;
@@ -2336,16 +2473,35 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
             result.variantOffset = static_cast<int>(displacement % variantStride);
 
             Solitaer::Debug("WALK", "FindScriptMemberByAddress: %p → Object %p, "
-                "member[%d] + 0x%X (members at %p, count=%u)",
+                "member[%d] + 0x%X (members at %p, count=%u, stride=0x%X)",
                 reinterpret_cast<void*>(addr),
                 reinterpret_cast<void*>(objAddr),
                 result.memberIndex, result.variantOffset,
-                reinterpret_cast<void*>(membersPtr), count);
+                reinterpret_cast<void*>(membersPtr), count, variantStride);
             return false; // found — stop
+        }
+
+        // Track closest range for diagnostic
+        uint64_t dist = (addr >= rangeEnd) ? (addr - rangeEnd) :
+                        (addr < rangeStart) ? (rangeStart - addr) : 0;
+        if (dist < closestDist) {
+            closestDist = dist;
+            closestObj = objAddr;
+            closestPtr = membersPtr;
+            closestCount = count;
         }
 
         return true; // continue
     });
+
+    if (!result.objectAddr) {
+        Solitaer::Info("WALK", "FindScriptMemberByAddress: scanned %d objects, %d with scripts, "
+            "stride=0x%X. Closest: obj=%p members=%p count=%u dist=0x%llX",
+            scannedTotal, scannedWithScript, variantStride,
+            reinterpret_cast<void*>(closestObj),
+            reinterpret_cast<void*>(closestPtr),
+            closestCount, closestDist);
+    }
 
     return result;
 }
@@ -2353,6 +2509,245 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr) {
 // Public wrapper for ReadGDScriptMemberNames (used by Qual mailbox)
 std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr) {
     return ReadGDScriptMemberNames(gdscriptPtr);
+}
+
+// ============================================================
+// FindContainerOwnerByAddress — Reverse-lookup for addresses inside
+// Array/Dictionary containers owned by GDScript members.
+// Ubel — 優貝爾 (Assassin Specialist) — Deep container owner search
+// ============================================================
+ContainerOwnerMatch FindContainerOwnerByAddress(uint64_t addr) {
+    ContainerOwnerMatch result;
+    if (!addr || DynOff::OBJECT_SCRIPT_INSTANCE < 0) return result;
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
+    int arraysScanned = 0, dictsScanned = 0;
+
+    s_bulkScanQuiet = true;
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        // Read ScriptInstance pointer
+        uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+            objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+        if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+
+        // Verify owner backlink
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+        if (owner != objAddr) return true;
+
+        // Read members Vector (CowData pointer)
+        uint64_t membersPtr = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::GDSCRIPT_MEMBERS_OFF, 0);
+        if (!membersPtr || !Zoltraak::IsReadable(membersPtr)) return true;
+
+        uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
+        if (count == 0 || count > 500) return true;
+
+        // Helper: check if addr is within a Dictionary's linked list elements
+        auto checkDict = [&](uint64_t dictDataAddr) -> bool {
+            auto di = ReadDictionaryInternals(dictDataAddr);
+            dictsScanned++;
+            if (di.count <= 0 || !di.head) return false;
+            int p = di.elemPrefix;
+            size_t elemSize = static_cast<size_t>(p) + 16 + static_cast<size_t>(variantStride) * 2;
+            uint64_t cur = di.head;
+            int walked = 0;
+            int maxWalk = (std::min)(di.count, 1000);
+            while (cur && walked < maxWalk) {
+                if (addr >= cur && addr < cur + elemSize) return true;
+                uint64_t next = Zoltraak::ReadSafe<uint64_t>(cur + p, 0);
+                if (next == cur) break;
+                cur = next;
+                walked++;
+            }
+            return false;
+        };
+
+        // Strategy 1: Type-aware member scan (for correctly detected members)
+        for (uint32_t m = 0; m < count; m++) {
+            uint64_t varAddr = membersPtr + static_cast<uint64_t>(m) * variantStride;
+            int32_t rawType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+            int type4x = rawType;
+            if (GodotVer::IsGodot3()) type4x = MapType3xTo4x(rawType);
+            uint64_t data = varAddr + DynOff::VARIANT_DATA;
+
+            if (type4x == 28) {
+                auto [arrCount, cowPtr] = ReadArrayInternals(data);
+                arraysScanned++;
+                if (arrCount > 0 && cowPtr) {
+                    uint64_t rangeEnd = cowPtr + static_cast<uint64_t>(arrCount) * variantStride;
+                    if (addr >= cowPtr && addr < rangeEnd) {
+                        result.objectAddr = objAddr;
+                        result.memberIndex = static_cast<int>(m);
+                        result.containerType = "Array";
+                        return false;
+                    }
+                }
+            } else if (type4x == 27) {
+                if (checkDict(data)) {
+                    result.objectAddr = objAddr;
+                    result.memberIndex = static_cast<int>(m);
+                    result.containerType = "Dictionary";
+                    return false;
+                }
+            }
+        }
+
+        // Strategy 2: Raw GDScriptInstance pointer scan.
+        // Scan all 8-byte aligned values from +0x20 to +0x80 within the
+        // GDScriptInstance for potential Array/Dictionary private pointers.
+        // This catches containers at unexpected offsets (native fields,
+        // different layouts, or members with wrong stride/type detection).
+        for (int off = 0x20; off < 0x80; off += 8) {
+            uint64_t rawVal = Zoltraak::ReadSafe<uint64_t>(scriptInst + off, 0);
+            if (!rawVal || !Zoltraak::IsReadable(rawVal) || rawVal % 8 != 0) continue;
+            // Skip known fields (owner, script)
+            if (off == DynOff::GDSCRIPT_OWNER_OFF || off == DynOff::GDSCRIPT_SCRIPT_OFF)
+                continue;
+
+            // Try as Dictionary (Variant data field: _p pointer)
+            // Variant[DICTIONARY].data = pointer to DictionaryPrivate
+            if (checkDict(scriptInst + off)) {
+                result.objectAddr = objAddr;
+                result.memberIndex = -1;
+                result.containerType = "ScriptDict";
+                Solitaer::Debug("WALK", "FindContainerOwner: %p in ScriptDict at inst+0x%X of Object %p",
+                    reinterpret_cast<void*>(addr), off, reinterpret_cast<void*>(objAddr));
+                return false;
+            }
+
+            // Try as Array (Variant data field: _p pointer to ArrayPrivate)
+            auto [arrCount, cowPtr] = ReadArrayInternals(scriptInst + off);
+            if (arrCount > 0 && cowPtr) {
+                arraysScanned++;
+                uint64_t rangeEnd = cowPtr + static_cast<uint64_t>(arrCount) * variantStride;
+                if (addr >= cowPtr && addr < rangeEnd) {
+                    result.objectAddr = objAddr;
+                    result.memberIndex = -1;
+                    result.containerType = "ScriptArray";
+                    return false;
+                }
+            }
+        }
+        return true; // continue scanning
+    });
+
+    s_bulkScanQuiet = false;
+
+    if (!result.objectAddr) {
+        Solitaer::Info("WALK", "FindContainerOwner: NOT FOUND. Scanned %d arrays, %d dicts (stride=0x%X)",
+            arraysScanned, dictsScanned, variantStride);
+    }
+
+    return result;
+}
+
+// ============================================================
+// FindNativeContainerByAddress — Phase 6: Scan ALL ObjectDB objects' raw
+// memory for native Dictionary/Array properties containing the target address.
+// Unlike FindContainerOwnerByAddress (Phase 5) which only checks GDScript
+// members, this scans the C++ Object body directly for pointer-sized values
+// that could be DictionaryPrivate* or ArrayPrivate* holding the target.
+// Ubel — 優貝爾 (Assassin Specialist) — Native property body scan
+// ============================================================
+ContainerOwnerMatch FindNativeContainerByAddress(uint64_t addr) {
+    ContainerOwnerMatch result;
+    if (!addr) return result;
+
+    int variantStride = DynOff::VARIANT_STRIDE;
+    int objScanned = 0, dictsHit = 0, arraysHit = 0;
+    constexpr int SCAN_SIZE = 0x200; // Scan first 512 bytes of each Object body
+    constexpr int PTR_ALIGN = 8;
+
+    Solitaer::Info("WALK", "FindNativeContainer: scanning ObjectDB bodies for %p (scanSize=0x%X)",
+        reinterpret_cast<void*>(addr), SCAN_SIZE);
+
+    s_bulkScanQuiet = true;
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        objScanned++;
+
+        // Bulk-read the Object body
+        uint8_t buf[SCAN_SIZE];
+        if (!Zoltraak::ReadSafe(objAddr, buf, SCAN_SIZE)) return true;
+
+        // Scan 8-byte aligned offsets, skipping vtable at +0
+        for (int off = PTR_ALIGN; off + PTR_ALIGN <= SCAN_SIZE; off += PTR_ALIGN) {
+            uint64_t val;
+            memcpy(&val, buf + off, sizeof(val));
+
+            // Quick filter: must look like a heap pointer (high bits set, aligned)
+            if (!val || (val & 0x7) != 0) continue;
+            if ((val >> 40) == 0) continue; // Too low to be a user-mode heap address
+
+            // Try as Dictionary: val is a DictionaryPrivate* pointer directly
+            // (native Dictionary storage = just the pointer, no Variant wrapper)
+            // We construct a fake "data address" on the stack: ReadDictionaryInternals
+            // expects the address of a location containing the DictionaryPrivate* pointer.
+            // Since we already have the value, write it to a temporary and pass that address.
+            // Easier: just pass objAddr + off, which is where the pointer lives in-process.
+            {
+                auto di = ReadDictionaryInternals(objAddr + off);
+                if (di.count > 0 && di.head) {
+                    dictsHit++;
+                    int p = di.elemPrefix;
+                    // Walk the linked list to see if addr falls within an element
+                    size_t elemSize = static_cast<size_t>(p) + 16 + static_cast<size_t>(variantStride) * 2;
+                    uint64_t cur = di.head;
+                    int walked = 0;
+                    int maxWalk = (std::min)(di.count, 1000);
+                    while (cur && walked < maxWalk) {
+                        if (addr >= cur && addr < cur + elemSize) {
+                            result.objectAddr = objAddr;
+                            result.memberIndex = -1;
+                            result.containerType = "NativeDict";
+                            Solitaer::Info("WALK",
+                                "FindNativeContainer: FOUND in NativeDict at Object %p +0x%X "
+                                "(dictCount=%d, elem=%p prefix=%d)",
+                                reinterpret_cast<void*>(objAddr), off, di.count,
+                                reinterpret_cast<void*>(cur), p);
+                            return false; // stop iteration
+                        }
+                        uint64_t next = Zoltraak::ReadSafe<uint64_t>(cur + p, 0);
+                        if (next == cur) break;
+                        cur = next;
+                        walked++;
+                    }
+                }
+            }
+
+            // Try as Array: val is an ArrayPrivate* pointer directly
+            {
+                auto [arrCount, cowPtr] = ReadArrayInternals(objAddr + off);
+                if (arrCount > 0 && cowPtr) {
+                    arraysHit++;
+                    uint64_t rangeEnd = cowPtr + static_cast<uint64_t>(arrCount) * variantStride;
+                    if (addr >= cowPtr && addr < rangeEnd) {
+                        result.objectAddr = objAddr;
+                        result.memberIndex = -1;
+                        result.containerType = "NativeArray";
+                        Solitaer::Info("WALK",
+                            "FindNativeContainer: FOUND in NativeArray at Object %p +0x%X "
+                            "(arrCount=%d, range=%p..%p)",
+                            reinterpret_cast<void*>(objAddr), off, arrCount,
+                            reinterpret_cast<void*>(cowPtr),
+                            reinterpret_cast<void*>(rangeEnd));
+                        return false;
+                    }
+                }
+            }
+        }
+        return true; // continue
+    });
+
+    s_bulkScanQuiet = false;
+
+    Solitaer::Info("WALK",
+        "FindNativeContainer: scanned %d objects, validated %d dicts + %d arrays. %s",
+        objScanned, dictsHit, arraysHit,
+        result.objectAddr ? "FOUND" : "NOT FOUND");
+
+    return result;
 }
 
 } // namespace Zolt::Ubel

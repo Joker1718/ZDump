@@ -112,6 +112,9 @@ public partial class InstanceFinderViewModel : ViewModelBase
                     "script_member" => $"Found: {result.Name} ({result.ClassName}) [GDScript member]",
                     "range" => $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}",
                     "probe" => $"Found: {result.Name} ({result.ClassName}) [direct probe, not in ObjectDB]",
+                    "container_member" => $"Found: {result.Name} ({result.ClassName}) [script container]",
+                    "native_container" => $"Found: {result.Name} ({result.ClassName}) [native container]",
+                    "dict_element_chase" => $"Found: {result.Name} ({result.ClassName}) [Dictionary element]",
                     _ => $"Found: {result.Name} ({result.ClassName})"
                 };
             }
