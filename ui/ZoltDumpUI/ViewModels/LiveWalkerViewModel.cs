@@ -40,6 +40,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _statusMessage = "";
     [ObservableProperty] private bool _isNode;
+    /// <summary>
+    /// Set by Back/navigation to request the View scroll to and select a specific field by name.
+    /// The View observes this property change and scrolls the DataGrid accordingly.
+    /// Reset to null after the View processes it.
+    /// </summary>
+    [ObservableProperty] private string? _pendingScrollTarget;
 
     /// <summary>Module name (process name) for CE XML export address formatting.</summary>
     public string ModuleName { get; set; } = "";
@@ -75,13 +81,13 @@ public partial class LiveWalkerViewModel : ViewModelBase
         _sdk = sdk;
     }
 
-    public async Task NavigateToAddressAsync(string address)
+    public async Task NavigateToAddressAsync(string address, string? sourceFieldName = null)
     {
         await FetchAndShowAsync(address);
         // Add breadcrumb only on navigation (not refresh)
         if (!string.IsNullOrEmpty(CurrentAddress))
             Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName,
-                isNodeObject: IsNode));
+                isNodeObject: IsNode, memberName: sourceFieldName));
     }
 
     /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
@@ -161,12 +167,18 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task NavigateBackAsync()
     {
         if (Breadcrumbs.Count <= 1) return;
+        // Remember the member name we came from (to scroll to it after loading)
+        var leaving = Breadcrumbs[^1];
+        string? scrollTarget = leaving.MemberName; // e.g. "values" when leaving values(Dict)
         Breadcrumbs.RemoveAt(Breadcrumbs.Count - 1);
         var prev = Breadcrumbs[^1];
         if (prev.IsContainer)
             await FetchAndShowContainerAsync(prev.Address, prev.VariantType, prev.Name);
         else
             await FetchAndShowAsync(prev.Address);
+        // Request the View to scroll to the field we navigated from
+        if (!string.IsNullOrEmpty(scrollTarget))
+            PendingScrollTarget = scrollTarget;
     }
 
     [RelayCommand]
@@ -192,7 +204,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task NavigatePointerAsync(LiveFieldValue field)
     {
         if (!field.IsPointer || string.IsNullOrEmpty(field.PtrValue)) return;
-        await NavigateToAddressAsync(field.PtrValue);
+        await NavigateToAddressAsync(field.PtrValue, sourceFieldName: field.Name);
     }
 
     [RelayCommand]
@@ -522,6 +534,10 @@ public partial class LiveWalkerViewModel : ViewModelBase
     /// <summary>
     /// Walk breadcrumbs backwards to find the parent object context when inside a container.
     /// Returns null if not inside a container drill-down.
+    ///
+    /// Currently supports single-level container depth only (parent → Dict/Array → element).
+    /// Multi-level nested containers (Dict → Dict → element) return null because the DLL's
+    /// matchStr field only supports one key lookup per command.
     /// </summary>
     private (string parentName, string parentClassName, string memberName, bool isNode)?
         FindContainerContext()
@@ -533,21 +549,16 @@ public partial class LiveWalkerViewModel : ViewModelBase
         var containerCrumb = Breadcrumbs[^1];
         if (!containerCrumb.IsContainer) return null;
 
+        // The previous breadcrumb must be the parent OBJECT (not another container).
+        // If it's also a container, we're in a nested container → not supported yet.
+        var parentCrumb = Breadcrumbs[^2];
+        if (parentCrumb.IsContainer) return null; // multi-level nested — not supported
+
         // The member name that leads to this container (stored when navigating into container)
         string? memberName = containerCrumb.MemberName;
         if (string.IsNullOrEmpty(memberName)) return null;
 
-        // Walk backwards to find the parent non-container breadcrumb (the actual object)
-        for (int i = Breadcrumbs.Count - 2; i >= 0; i--)
-        {
-            var crumb = Breadcrumbs[i];
-            if (!crumb.IsContainer)
-            {
-                return (crumb.Name, crumb.ClassName, memberName, crumb.IsNodeObject);
-            }
-        }
-
-        return null;
+        return (parentCrumb.Name, parentCrumb.ClassName, memberName, parentCrumb.IsNodeObject);
     }
 
     /// <summary>

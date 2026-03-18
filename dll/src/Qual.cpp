@@ -290,12 +290,19 @@ static void HandleGetMemberAddr() {
         return;
     }
 
-    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-    if (count == 0 || count > 500) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Invalid member count: %u", count);
-        SetError(-4, msg);
+    // Scan members until invalid Variant type to determine real count.
+    // Don't trust CowData count — custom builds may store refcount instead of size.
+    int stride = DynOff::VARIANT_STRIDE;
+    int maxType2 = GodotVer::VariantTypeMax();
+    uint32_t count = 0;
+    for (uint32_t m = 0; m < 500; m++) {
+        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+            membersPtr + static_cast<uint64_t>(m) * stride, -1);
+        if (mType < 0 || mType >= maxType2) break;
+        count = m + 1;
+    }
+    if (count == 0) {
+        SetError(-4, "No valid members found (scan-until-invalid)");
         return;
     }
 
@@ -345,7 +352,6 @@ static void HandleGetMemberAddr() {
     }
 
     // Step 6: Calculate address and read type
-    int stride = DynOff::VARIANT_STRIDE;
     uint64_t varAddr = membersPtr + foundIndex * stride;
     uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
     int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
@@ -1014,10 +1020,19 @@ static void HandleFindInstanceByPath() {
         return;
     }
 
-    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-    if (count == 0 || count > 500) {
-        SetError(-4, "Invalid member count on found object");
+    // Scan members until invalid Variant type (don't trust CowData count —
+    // custom builds may store refcount instead of size at ptr-8)
+    int stride = DynOff::VARIANT_STRIDE;
+    int maxType2 = GodotVer::VariantTypeMax();
+    uint32_t count = 0;
+    for (uint32_t m = 0; m < 500; m++) {
+        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+            membersPtr + static_cast<uint64_t>(m) * stride, -1);
+        if (mType < 0 || mType >= maxType2) break;
+        count = m + 1;
+    }
+    if (count == 0) {
+        SetError(-4, "No valid members found on object (scan-until-invalid)");
         return;
     }
 
@@ -1041,13 +1056,11 @@ static void HandleFindInstanceByPath() {
 
     if (foundIndex < 0 || foundIndex >= static_cast<int>(count)) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Found object but member '%s' not found (%d names resolved)",
-                 memberName, static_cast<int>(nameMap.size()));
+        snprintf(msg, sizeof(msg), "Found object but member '%s' not found (%d names resolved, %u scanned)",
+                 memberName, static_cast<int>(nameMap.size()), count);
         SetError(-5, msg);
         return;
     }
-
-    int stride = DynOff::VARIANT_STRIDE;
     uint64_t varAddr = membersPtr + foundIndex * stride;
     uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
     int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
