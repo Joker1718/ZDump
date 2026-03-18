@@ -118,7 +118,7 @@ public sealed class DumpService : IDumpService
     }
 
     public async Task<ContainerWalkResult> WalkContainerAsync(string address, int variantType,
-        int offset = 0, int limit = 100, CancellationToken ct = default)
+        int offset = 0, int limit = 500, CancellationToken ct = default)
     {
         var payload = new JsonObject
         {

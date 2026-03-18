@@ -46,6 +46,12 @@ struct AddressMatch {
 // Used when the user has a member variable address (e.g. from CE) and wants to find the owning Object.
 AddressMatch FindByAddressRange(uint64_t addr);
 
+// Directly validate whether an address looks like a valid Godot Object.
+// Checks: readable, vtable in module range, first two vtable entries in .text.
+// Does NOT require the object to be in ObjectDB — used as fallback when
+// ObjectDB lookup fails (e.g. slot_max estimation too low).
+bool ValidateObjectAddress(uint64_t addr);
+
 // One-shot diagnostics dump
 void LogDiagnostics();
 

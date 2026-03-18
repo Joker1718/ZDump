@@ -30,6 +30,11 @@ bool IsReady();
 // When true, QueueWorkSync returns false immediately without waiting.
 bool IsPtrcallDisabled();
 
+// Reset the consecutive timeout counter and re-enable ptrcall if disabled.
+// Use after one-shot operations (like vtable classification) that may have
+// caused timeouts but shouldn't permanently disable ptrcall for the session.
+void ResetTimeoutState();
+
 // Shut down the dispatcher: unhook, signal pending sync callers, discard queue.
 void Shutdown();
 

@@ -71,6 +71,23 @@ ScriptMemberMatch FindScriptMemberByAddress(uint64_t addr);
 // Public wrapper around internal ReadGDScriptMemberNames for mailbox use.
 std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr);
 
+// Result for container owner address lookup
+struct ContainerOwnerMatch {
+    uint64_t objectAddr   = 0;    // Owning Object address
+    int      memberIndex  = -1;   // Script member index containing the container
+    std::string containerType;    // "Array" or "Dictionary"
+};
+
+// Search ObjectDB for an Object whose script member containers (Array/Dictionary)
+// hold the target address in their internal data. Handles addresses inside
+// container elements that FindScriptMemberByAddress misses.
+ContainerOwnerMatch FindContainerOwnerByAddress(uint64_t addr);
+
+// Search ALL ObjectDB objects' raw memory for native Dictionary/Array properties
+// containing the target address. Scans Object body bytes for potential container
+// private pointers. Slower but catches native C++ properties that scripts don't expose.
+ContainerOwnerMatch FindNativeContainerByAddress(uint64_t addr);
+
 // ============================================================
 // Container reading (Array / Dictionary / PackedArray)
 // ============================================================
@@ -101,5 +118,16 @@ ContainerInfo ReadContainerInfo(uint64_t dataAddr, int variantType);
 // offset/limit = pagination (0-based).
 std::vector<ContainerElement> ReadContainerElements(uint64_t dataAddr, int variantType,
                                                      int offset = 0, int limit = 100);
+
+// Find a dictionary element by key string and return its value Variant's data address.
+// Walks the dictionary linked list, decoding each key and comparing to `key`.
+// Returns the value Variant data address (Variant + VARIANT_DATA), or 0 if not found.
+// dataAddr = address of the Variant data field (the pointer to DictPrivate).
+uint64_t FindDictValueByKey(uint64_t dataAddr, const std::string& key);
+
+// Find an array element by index and return its value Variant's data address.
+// Returns the element Variant data address (Variant + VARIANT_DATA), or 0 if not found.
+// dataAddr = address of the Variant data field (the pointer to array internals).
+uint64_t FindArrayValueByIndex(uint64_t dataAddr, int index);
 
 } // namespace Zolt::Ubel

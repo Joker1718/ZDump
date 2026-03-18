@@ -325,6 +325,11 @@ bool IsPtrcallDisabled() {
     return s_ptrcallDisabled.load();
 }
 
+void ResetTimeoutState() {
+    s_consecTimeouts.store(0);
+    s_ptrcallDisabled.store(false);
+}
+
 bool IsReady() {
     return s_hookActive.load();
 }

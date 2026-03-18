@@ -1,8 +1,11 @@
 using System;
+using System.ComponentModel;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ZoltDumpUI.Models;
 using ZoltDumpUI.ViewModels;
@@ -19,6 +22,55 @@ public partial class LiveWalkerPanel : UserControl
         InitializeComponent();
         BuildFieldsContextMenu();
         WireDoubleClick();
+        WireScrollTarget();
+    }
+
+    /// <summary>
+    /// When the ViewModel sets PendingScrollTarget, scroll the DataGrid to
+    /// the matching field row and select it. This restores scroll position
+    /// when pressing Back from a container drill-down.
+    /// </summary>
+    /// <summary>Previously observed ViewModel (for unsubscription).</summary>
+    private LiveWalkerViewModel? _observedVm;
+
+    private void WireScrollTarget()
+    {
+        // Subscribe to DataContext changes to watch the ViewModel's property
+        DataContextChanged += (_, _) =>
+        {
+            if (_observedVm is not null)
+            {
+                _observedVm.PropertyChanged -= OnViewModelPropertyChanged;
+                _observedVm = null;
+            }
+            if (DataContext is LiveWalkerViewModel vm)
+            {
+                vm.PropertyChanged += OnViewModelPropertyChanged;
+                _observedVm = vm;
+            }
+        };
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(LiveWalkerViewModel.PendingScrollTarget)) return;
+        if (sender is not LiveWalkerViewModel vm) return;
+        string? target = vm.PendingScrollTarget;
+        if (string.IsNullOrEmpty(target)) return;
+
+        // Clear immediately so we don't process it twice
+        vm.PendingScrollTarget = null;
+
+        // Dispatch after layout so the DataGrid has the new items
+        Dispatcher.UIThread.Post(() =>
+        {
+            var match = vm.Fields.FirstOrDefault(f => f.Name == target);
+            if (match is not null)
+            {
+                FieldsGrid.SelectedItem = match;
+                FieldsGrid.ScrollIntoView(match, null);
+            }
+        }, DispatcherPriority.Background);
     }
 
     /// <summary>Enter key in address TextBox triggers Go navigation.</summary>

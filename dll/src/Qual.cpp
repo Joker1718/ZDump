@@ -290,12 +290,19 @@ static void HandleGetMemberAddr() {
         return;
     }
 
-    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-    if (count == 0 || count > 500) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Invalid member count: %u", count);
-        SetError(-4, msg);
+    // Scan members until invalid Variant type to determine real count.
+    // Don't trust CowData count — custom builds may store refcount instead of size.
+    int stride = DynOff::VARIANT_STRIDE;
+    int maxType2 = GodotVer::VariantTypeMax();
+    uint32_t count = 0;
+    for (uint32_t m = 0; m < 500; m++) {
+        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+            membersPtr + static_cast<uint64_t>(m) * stride, -1);
+        if (mType < 0 || mType >= maxType2) break;
+        count = m + 1;
+    }
+    if (count == 0) {
+        SetError(-4, "No valid members found (scan-until-invalid)");
         return;
     }
 
@@ -345,10 +352,85 @@ static void HandleGetMemberAddr() {
     }
 
     // Step 6: Calculate address and read type
-    int stride = DynOff::VARIANT_STRIDE;
     uint64_t varAddr = membersPtr + foundIndex * stride;
     uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
     int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
+
+    // ── Dict/Array key traversal via matchStr ──
+    // When matchStr is set, the member should be a Dictionary or Array.
+    // Walk into it to find the element matching the key/index.
+    char dictKey[256];
+    memcpy(dictKey, g_zoltMailbox.matchStr, sizeof(dictKey));
+    dictKey[255] = '\0';
+
+    if (dictKey[0] != '\0') {
+        // Map type to 4.x for unified check
+        int type4x = varType;
+        if (GodotVer::IsGodot3()) {
+            // 3.x → 4.x mapping: Dictionary=18→27, Array=19→28
+            if (type4x == 18) type4x = 27;
+            else if (type4x == 19) type4x = 28;
+        }
+
+        if (type4x == 27) { // Dictionary
+            uint64_t elemAddr = Ubel::FindDictValueByKey(dataAddr, std::string(dictKey));
+            if (!elemAddr) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Dict key '%s' not found in member '%s'",
+                         dictKey, memberName);
+                SetError(-6, msg);
+                return;
+            }
+            uint64_t elemVarAddr = elemAddr - DynOff::VARIANT_DATA;
+            int32_t elemType = Zoltraak::ReadSafe<int32_t>(elemVarAddr + DynOff::VARIANT_TYPE, -1);
+
+            g_zoltMailbox.objectAddr   = objAddr;
+            g_zoltMailbox.memberAddr   = elemAddr;
+            g_zoltMailbox.memberIndex  = foundIndex;
+            g_zoltMailbox.memberType   = elemType;
+
+            Solitaer::Info("PIPE", "Qual: GET_MEMBER_ADDR '%s.%s' dictKey='%s' → type=%d addr=%p",
+                           className, memberName, dictKey, elemType,
+                           reinterpret_cast<void*>(elemAddr));
+            SetDone(0);
+            return;
+        }
+        else if (type4x == 28) { // Array
+            int idx = -1;
+            try { idx = std::stoi(dictKey); } catch (...) {}
+            if (idx < 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Invalid array index '%s' for member '%s'",
+                         dictKey, memberName);
+                SetError(-6, msg);
+                return;
+            }
+            uint64_t elemAddr = Ubel::FindArrayValueByIndex(dataAddr, idx);
+            if (!elemAddr) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Array index %d out of range in member '%s'",
+                         idx, memberName);
+                SetError(-6, msg);
+                return;
+            }
+            uint64_t elemVarAddr = elemAddr - DynOff::VARIANT_DATA;
+            int32_t elemType = Zoltraak::ReadSafe<int32_t>(elemVarAddr + DynOff::VARIANT_TYPE, -1);
+
+            g_zoltMailbox.objectAddr   = objAddr;
+            g_zoltMailbox.memberAddr   = elemAddr;
+            g_zoltMailbox.memberIndex  = foundIndex;
+            g_zoltMailbox.memberType   = elemType;
+
+            Solitaer::Info("PIPE", "Qual: GET_MEMBER_ADDR '%s.%s' arrayIdx=%d → type=%d addr=%p",
+                           className, memberName, idx, elemType,
+                           reinterpret_cast<void*>(elemAddr));
+            SetDone(0);
+            return;
+        }
+        // Not a container type — fall through to normal result
+        Solitaer::Warn("PIPE", "Qual: GET_MEMBER_ADDR matchStr='%s' but member type=%d is not Dict/Array, ignoring",
+                        dictKey, varType);
+    }
 
     g_zoltMailbox.objectAddr   = objAddr;
     g_zoltMailbox.memberAddr   = dataAddr;
@@ -627,6 +709,74 @@ static void HandleFindInstanceWithMember() {
     uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
     int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
 
+    // ── Dict/Array key traversal via matchStr ──
+    char dictKey[256];
+    memcpy(dictKey, g_zoltMailbox.matchStr, sizeof(dictKey));
+    dictKey[255] = '\0';
+
+    if (dictKey[0] != '\0') {
+        int type4x = varType;
+        if (GodotVer::IsGodot3()) {
+            if (type4x == 18) type4x = 27;
+            else if (type4x == 19) type4x = 28;
+        }
+
+        if (type4x == 27) { // Dictionary
+            uint64_t elemAddr = Ubel::FindDictValueByKey(dataAddr, std::string(dictKey));
+            if (!elemAddr) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Dict key '%s' not found in '%s.%s' (scanned %d)",
+                         dictKey, className, memberName, scannedCount);
+                SetError(-6, msg);
+                return;
+            }
+            uint64_t elemVarAddr = elemAddr - DynOff::VARIANT_DATA;
+            int32_t elemType = Zoltraak::ReadSafe<int32_t>(elemVarAddr + DynOff::VARIANT_TYPE, -1);
+
+            g_zoltMailbox.objectAddr  = foundObj;
+            g_zoltMailbox.memberAddr  = elemAddr;
+            g_zoltMailbox.memberIndex = foundIndex;
+            g_zoltMailbox.memberType  = elemType;
+
+            Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_WITH_MEMBER '%s.%s' dictKey='%s' "
+                           "→ obj=%p type=%d addr=%p (scanned %d)",
+                           className, memberName, dictKey,
+                           reinterpret_cast<void*>(foundObj), elemType,
+                           reinterpret_cast<void*>(elemAddr), scannedCount);
+            SetDone(0);
+            return;
+        }
+        else if (type4x == 28) { // Array
+            int idx = -1;
+            try { idx = std::stoi(dictKey); } catch (...) {}
+            if (idx >= 0) {
+                uint64_t elemAddr = Ubel::FindArrayValueByIndex(dataAddr, idx);
+                if (elemAddr) {
+                    uint64_t elemVarAddr = elemAddr - DynOff::VARIANT_DATA;
+                    int32_t elemType = Zoltraak::ReadSafe<int32_t>(elemVarAddr + DynOff::VARIANT_TYPE, -1);
+
+                    g_zoltMailbox.objectAddr  = foundObj;
+                    g_zoltMailbox.memberAddr  = elemAddr;
+                    g_zoltMailbox.memberIndex = foundIndex;
+                    g_zoltMailbox.memberType  = elemType;
+
+                    Solitaer::Info("PIPE", "Qual: FIND_INSTANCE_WITH_MEMBER '%s.%s' arrayIdx=%d "
+                                   "→ obj=%p type=%d addr=%p (scanned %d)",
+                                   className, memberName, idx,
+                                   reinterpret_cast<void*>(foundObj), elemType,
+                                   reinterpret_cast<void*>(elemAddr), scannedCount);
+                    SetDone(0);
+                    return;
+                }
+            }
+            Solitaer::Warn("PIPE", "Qual: matchStr='%s' but array lookup failed, returning member addr", dictKey);
+        }
+        else {
+            Solitaer::Warn("PIPE", "Qual: matchStr='%s' but member type=%d is not Dict/Array, ignoring",
+                            dictKey, varType);
+        }
+    }
+
     g_zoltMailbox.objectAddr  = foundObj;
     g_zoltMailbox.memberAddr  = dataAddr;
     g_zoltMailbox.memberIndex = foundIndex;
@@ -870,10 +1020,19 @@ static void HandleFindInstanceByPath() {
         return;
     }
 
-    int sizeOff = GodotVer::IsGodot3() ? 4 : 8;
-    uint32_t count = Zoltraak::ReadSafe<uint32_t>(membersPtr - sizeOff, 0);
-    if (count == 0 || count > 500) {
-        SetError(-4, "Invalid member count on found object");
+    // Scan members until invalid Variant type (don't trust CowData count —
+    // custom builds may store refcount instead of size at ptr-8)
+    int stride = DynOff::VARIANT_STRIDE;
+    int maxType2 = GodotVer::VariantTypeMax();
+    uint32_t count = 0;
+    for (uint32_t m = 0; m < 500; m++) {
+        int32_t mType = Zoltraak::ReadSafe<int32_t>(
+            membersPtr + static_cast<uint64_t>(m) * stride, -1);
+        if (mType < 0 || mType >= maxType2) break;
+        count = m + 1;
+    }
+    if (count == 0) {
+        SetError(-4, "No valid members found on object (scan-until-invalid)");
         return;
     }
 
@@ -897,13 +1056,11 @@ static void HandleFindInstanceByPath() {
 
     if (foundIndex < 0 || foundIndex >= static_cast<int>(count)) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Found object but member '%s' not found (%d names resolved)",
-                 memberName, static_cast<int>(nameMap.size()));
+        snprintf(msg, sizeof(msg), "Found object but member '%s' not found (%d names resolved, %u scanned)",
+                 memberName, static_cast<int>(nameMap.size()), count);
         SetError(-5, msg);
         return;
     }
-
-    int stride = DynOff::VARIANT_STRIDE;
     uint64_t varAddr = membersPtr + foundIndex * stride;
     uint64_t dataAddr = varAddr + DynOff::VARIANT_DATA;
     int32_t varType = Zoltraak::ReadSafe<int32_t>(varAddr + DynOff::VARIANT_TYPE, -1);
