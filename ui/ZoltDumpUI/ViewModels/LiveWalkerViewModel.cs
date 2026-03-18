@@ -685,9 +685,9 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private static CeValueType MapGodotTypeToCeValueType(string godotType) => godotType.ToUpperInvariant() switch
     {
         "BOOL" => CeValueType.Byte,
-        "INT" => CeValueType.Dword,
+        "INT" => CeValueType.Qword,                      // Godot Variant::INT = int64 (8 bytes)
         "REAL" => CeValueType.Double,                     // Godot 3.x real_t = always double
-        "FLOAT" => CeValueType.Float,
+        "FLOAT" => CeValueType.Double,                    // Godot 4.x Variant::FLOAT = double (8 bytes)
         "STRING" or "STRING_NAME" or "NODE_PATH" => CeValueType.String,
         "OBJECT" => CeValueType.Qword,
         _ => CeValueType.Dword
