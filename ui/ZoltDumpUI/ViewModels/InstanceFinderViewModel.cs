@@ -110,6 +110,8 @@ public partial class InstanceFinderViewModel : ViewModelBase
                 StatusText = result.MatchType switch
                 {
                     "script_member" => $"Found: {result.Name} ({result.ClassName}) [GDScript member]",
+                    "script_instance" => $"Found: {result.Name} ({result.ClassName}) [ScriptInstance+0x{result.OffsetFromBase:X}]",
+                    "managed_instance" => $"Found: {result.Name} ({result.ClassName}) [.NET managed+0x{result.OffsetFromBase:X}]",
                     "range" => $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}",
                     "probe" => $"Found: {result.Name} ({result.ClassName}) [direct probe, not in ObjectDB]",
                     "container_member" => $"Found: {result.Name} ({result.ClassName}) [script container]",

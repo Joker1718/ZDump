@@ -17,6 +17,8 @@
 #include "Grimoire.h"
 
 #include <cstdio>
+#include <cmath>
+#include <chrono>
 #include <iterator>
 #include <unordered_map>
 
@@ -2007,6 +2009,175 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force =
     }
 }
 
+// ============================================================
+// ReadCSharpManagedFields — Read .NET managed object fields
+// ============================================================
+// For .NET/C# Godot games, the chain is:
+//   GodotObject[+ScriptInstance] → CSharpInstance → GCHandle → .NET managed object
+// This function resolves the chain and emits raw fields from the managed object.
+// Field names are not available (would require .NET metadata parsing), so we use
+// offset-based names like "(managed) +0x10" with heuristic type detection.
+static void ReadCSharpManagedFields(uint64_t objAddr,
+                                     const std::function<void(const FieldEntry& entry)>& callback) {
+    if (!DynOff::bIsDotNetGame.load(std::memory_order_acquire)) return;
+    if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return;
+
+    uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+        objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+    if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return;
+
+    // Verify this is NOT a GDScriptInstance (owner at GDScript offset would match)
+    uint64_t ownerAtGdsi = Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + DynOff::GDSCRIPT_OWNER_OFF, 0);
+    if (ownerAtGdsi == objAddr) return; // GDScriptInstance — handled by ReadGDScriptMembers
+
+    // Verify CSharpInstance owner at +0x08 matches our object
+    uint64_t csOwner = Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + DynOff::CSHARP_OWNER_OFF, 0);
+    if (csOwner != objAddr) {
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: SI at %p owner mismatch (%p != %p)",
+            reinterpret_cast<void*>(scriptInst), reinterpret_cast<void*>(csOwner),
+            reinterpret_cast<void*>(objAddr));
+        return;
+    }
+
+    // Read GCHandle — pointer into CLR handle table
+    uint64_t gcHandle = Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + DynOff::CSHARP_GCHANDLE_OFF, 0);
+    if (!gcHandle || !Zoltraak::IsReadable(gcHandle)) {
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: no GCHandle at SI+0x%X for obj %p",
+            DynOff::CSHARP_GCHANDLE_OFF, reinterpret_cast<void*>(objAddr));
+        return;
+    }
+
+    // Dereference GCHandle → .NET managed object address
+    uint64_t managedObj = Zoltraak::ReadSafe<uint64_t>(gcHandle, 0);
+    if (!managedObj || (managedObj & 0x7) != 0 || !Zoltraak::IsReadable(managedObj)) {
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: GCHandle deref failed (gcHandle=%p → %p)",
+            reinterpret_cast<void*>(gcHandle), reinterpret_cast<void*>(managedObj));
+        return;
+    }
+
+    // Validate first qword = MethodTable pointer (should be in module range)
+    uint64_t methodTable = Zoltraak::ReadSafe<uint64_t>(managedObj, 0);
+    if (!methodTable || (methodTable & 0x7) != 0 || (methodTable >> 40) < 0x7F) {
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: invalid MethodTable at managed %p (mt=%p)",
+            reinterpret_cast<void*>(managedObj), reinterpret_cast<void*>(methodTable));
+        return;
+    }
+
+    // Read base instance size from MethodTable.
+    // .NET MethodTable layout (CoreCLR):
+    //   +0x04: uint16_t m_wFlags
+    //   +0x04: uint32_t m_BaseSize (at MT+0x04)
+    // Actually in CoreCLR: MT+0x04 = m_dwFlags (uint32_t), MT+0x04 is overloaded.
+    // The actual BaseSize in .NET 8+ is at MT+0x04 (lower 16 bits of flags << 2 or direct).
+    // Safer approach: just scan a fixed size and heuristically detect types.
+    constexpr int MANAGED_SCAN_SIZE = 0x200; // Scan first 512 bytes
+    constexpr int FIELD_START = 0x08;        // Fields start after MethodTable pointer
+
+    uint8_t buf[MANAGED_SCAN_SIZE];
+    if (!Zoltraak::ReadSafe(managedObj, buf, MANAGED_SCAN_SIZE)) {
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: failed to read managed body at %p",
+            reinterpret_cast<void*>(managedObj));
+        return;
+    }
+
+    Solitaer::Info("WALK", "ReadCSharpManagedFields: obj=%p SI=%p GCHandle=%p managed=%p MT=%p",
+        reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(scriptInst),
+        reinterpret_cast<void*>(gcHandle), reinterpret_cast<void*>(managedObj),
+        reinterpret_cast<void*>(methodTable));
+
+    // Try to read BaseSize from MethodTable for precise scan range.
+    // CoreCLR layout: MethodTable+0x04 = m_BaseSize (uint32_t)
+    uint32_t baseSize = Zoltraak::ReadSafe<uint32_t>(methodTable + 0x04, 0);
+    int scanEnd = MANAGED_SCAN_SIZE;
+    if (baseSize >= 0x10 && baseSize <= 0x2000) {
+        scanEnd = static_cast<int>(baseSize);
+        if (scanEnd > MANAGED_SCAN_SIZE) scanEnd = MANAGED_SCAN_SIZE;
+        Solitaer::Debug("WALK", "ReadCSharpManagedFields: MT BaseSize=0x%X, scanning %d bytes",
+            baseSize, scanEnd);
+    }
+
+    // Heuristic field emission: scan with 4-byte steps from +0x08 onward.
+    // .NET CLR aligns fields: references at 8-byte boundaries, int/float at 4-byte.
+    // At each 4-byte offset, determine if it's a pointer (8 bytes) or value (4 bytes).
+    // When a pointer is detected, emit it and skip the next 4 bytes.
+    int fieldCount = 0;
+    for (int off = FIELD_START; off + 4 <= scanEnd; ) {
+        FieldEntry entry;
+        entry.className = "(managed)";
+        entry.offset = off;
+        entry.value.rawAddr = managedObj + off;
+
+        char nameBuf[64];
+        snprintf(nameBuf, sizeof(nameBuf), "+0x%02X", off);
+        entry.name = nameBuf;
+
+        // At 8-byte-aligned offsets, check if this is a pointer (8 bytes)
+        bool emittedPtr = false;
+        if ((off & 0x7) == 0 && off + 8 <= scanEnd) {
+            uint64_t val8;
+            memcpy(&val8, buf + off, sizeof(val8));
+
+            bool isPointer = (val8 != 0) && ((val8 & 0x7) == 0) && ((val8 >> 40) != 0)
+                             && Zoltraak::IsReadable(val8);
+
+            if (isPointer) {
+                uint64_t childMt = Zoltraak::ReadSafe<uint64_t>(val8, 0);
+                bool isNetObj = (childMt != 0) && ((childMt & 0x7) == 0)
+                                && ((childMt >> 40) >= 0x7F) && Zoltraak::IsReadable(childMt);
+
+                entry.value.type = 24; // Object
+                entry.nativeSize = 8;
+                char valBuf[64];
+                snprintf(valBuf, sizeof(valBuf), "Object@%llX", static_cast<unsigned long long>(val8));
+                entry.value.value = valBuf;
+                entry.value.ptrTarget = val8;
+                entry.name += isNetObj ? " (ref)" : " (ptr)";
+                entry.value.typeName = VariantTypeName(entry.value.type);
+                callback(entry);
+                fieldCount++;
+                off += 8; // Pointer consumed 8 bytes
+                emittedPtr = true;
+            }
+        }
+
+        if (!emittedPtr) {
+            // Read as 4-byte value (int, float, bool, enum)
+            uint32_t val4;
+            memcpy(&val4, buf + off, sizeof(val4));
+
+            entry.nativeSize = 4;
+
+            // Heuristic: float detection
+            float fval;
+            memcpy(&fval, &val4, sizeof(fval));
+            bool isLikelyFloat = (val4 != 0) && !std::isinf(fval) && !std::isnan(fval)
+                                 && std::abs(fval) > 1e-10f && std::abs(fval) < 1e10f
+                                 && (val4 & 0x7F800000) != 0 && (val4 & 0x7F800000) != 0x7F800000;
+
+            if (isLikelyFloat && (val4 > 0xFFFF || (val4 & 0xFF000000) != 0)) {
+                entry.value.type = 3; // FLOAT
+                char fmtBuf[32];
+                snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", fval);
+                entry.value.value = fmtBuf;
+            } else {
+                entry.value.type = 2; // INT
+                entry.value.value = std::to_string(static_cast<int32_t>(val4));
+            }
+
+            entry.value.typeName = VariantTypeName(entry.value.type);
+            callback(entry);
+            fieldCount++;
+            off += 4;
+        }
+    }
+
+    Solitaer::Info("WALK", "ReadCSharpManagedFields: emitted %d fields for obj %p (managed scan %d bytes)",
+        fieldCount, reinterpret_cast<void*>(objAddr), scanEnd);
+}
+
 // Read GDScript members from an Object's ScriptInstance
 // Appends FieldEntry items to the callback for each script member.
 static void ReadGDScriptMembers(uint64_t objAddr,
@@ -2205,6 +2376,89 @@ void WalkInstance(uint64_t objAddr,
     // Step 1: Determine object class via RTTI
     std::string className = Diagoldze::GetObjectClass(objAddr);
     if (className.empty()) {
+        // Not a Godot Object — might be a .NET managed object address.
+        // If .NET game, check if the first qword looks like a MethodTable pointer.
+        if (DynOff::bIsDotNetGame.load(std::memory_order_acquire)) {
+            uint64_t mt = Zoltraak::ReadSafe<uint64_t>(objAddr, 0);
+            if (mt && (mt & 0x7) == 0 && (mt >> 40) >= 0x7F && Zoltraak::IsReadable(mt)) {
+                Solitaer::Info("WALK", "WalkInstance: %p is not a Godot Object but has MethodTable %p — reading as .NET managed object",
+                    reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(mt));
+                // Emit raw managed fields directly (reuse the same logic as ReadCSharpManagedFields
+                // but without the CSharpInstance chain — we already have the managed object address)
+                constexpr int MANAGED_SCAN_SIZE = 0x200;
+                constexpr int FIELD_START = 0x08;
+                uint8_t buf[MANAGED_SCAN_SIZE];
+                if (Zoltraak::ReadSafe(objAddr, buf, MANAGED_SCAN_SIZE)) {
+                    // Try to read BaseSize from MethodTable
+                    uint32_t baseSize = Zoltraak::ReadSafe<uint32_t>(mt + 0x04, 0);
+                    int scanEnd = MANAGED_SCAN_SIZE;
+                    if (baseSize >= 0x10 && baseSize <= 0x2000) {
+                        scanEnd = static_cast<int>(baseSize);
+                        if (scanEnd > MANAGED_SCAN_SIZE) scanEnd = MANAGED_SCAN_SIZE;
+                    }
+
+                    // 4-byte stride scan: pointers at 8-byte boundaries, values at 4-byte
+                    for (int off = FIELD_START; off + 4 <= scanEnd; ) {
+                        FieldEntry entry;
+                        entry.className = "(managed)";
+                        entry.offset = off;
+                        entry.value.rawAddr = objAddr + off;
+
+                        char nameBuf[64];
+                        snprintf(nameBuf, sizeof(nameBuf), "+0x%02X", off);
+                        entry.name = nameBuf;
+
+                        // At 8-byte-aligned offsets, check if pointer
+                        bool emittedPtr = false;
+                        if ((off & 0x7) == 0 && off + 8 <= scanEnd) {
+                            uint64_t val8;
+                            memcpy(&val8, buf + off, sizeof(val8));
+                            bool isPtr = (val8 != 0) && ((val8 & 0x7) == 0) && ((val8 >> 40) != 0)
+                                         && Zoltraak::IsReadable(val8);
+                            if (isPtr) {
+                                uint64_t childMt = Zoltraak::ReadSafe<uint64_t>(val8, 0);
+                                bool isNetObj = (childMt != 0) && ((childMt & 0x7) == 0)
+                                                && ((childMt >> 40) >= 0x7F) && Zoltraak::IsReadable(childMt);
+                                entry.value.type = 24;
+                                entry.nativeSize = 8;
+                                char valBuf[64];
+                                snprintf(valBuf, sizeof(valBuf), "Object@%llX", static_cast<unsigned long long>(val8));
+                                entry.value.value = valBuf;
+                                entry.value.ptrTarget = val8;
+                                entry.name += isNetObj ? " (ref)" : " (ptr)";
+                                entry.value.typeName = VariantTypeName(entry.value.type);
+                                callback(entry);
+                                off += 8;
+                                emittedPtr = true;
+                            }
+                        }
+                        if (!emittedPtr) {
+                            uint32_t val4;
+                            memcpy(&val4, buf + off, sizeof(val4));
+                            entry.nativeSize = 4;
+                            float fval;
+                            memcpy(&fval, &val4, sizeof(fval));
+                            bool isFloat = (val4 != 0) && !std::isinf(fval) && !std::isnan(fval)
+                                           && std::abs(fval) > 1e-10f && std::abs(fval) < 1e10f
+                                           && (val4 & 0x7F800000) != 0 && (val4 & 0x7F800000) != 0x7F800000;
+                            if (isFloat && (val4 > 0xFFFF || (val4 & 0xFF000000) != 0)) {
+                                entry.value.type = 3;
+                                char fmtBuf[32];
+                                snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", fval);
+                                entry.value.value = fmtBuf;
+                            } else {
+                                entry.value.type = 2;
+                                entry.value.value = std::to_string(static_cast<int32_t>(val4));
+                            }
+                            entry.value.typeName = VariantTypeName(entry.value.type);
+                            callback(entry);
+                            off += 4;
+                        }
+                    }
+                }
+                return;
+            }
+        }
         Solitaer::Debug("WALK", "WalkInstance: could not determine class for object at %p",
             reinterpret_cast<void*>(objAddr));
         return;
@@ -2215,9 +2469,10 @@ void WalkInstance(uint64_t objAddr,
     if (properties.empty()) {
         Solitaer::Debug("WALK", "WalkInstance: no ClassDB properties for class '%s', trying GDScript members",
             className.c_str());
-        // Don't return — still try GDScript members below
+        // Don't return — still try GDScript/CSharp members below
         ProbeScriptInstanceOffset(objAddr);
         ReadGDScriptMembers(objAddr, callback);
+        ReadCSharpManagedFields(objAddr, callback);
         return;
     }
 
@@ -2372,6 +2627,11 @@ void WalkInstance(uint64_t objAddr,
 
     // Step 5: Read GDScript member variables (if object has a script attached)
     ReadGDScriptMembers(objAddr, callback);
+
+    // Step 6: Read .NET/C# managed object fields (if .NET Godot game detected)
+    // This reads raw fields from the managed wrapper object via CSharpInstance → GCHandle chain.
+    // Only runs for non-GDScript ScriptInstance objects in .NET Godot games.
+    ReadCSharpManagedFields(objAddr, callback);
 }
 
 // ============================================================
@@ -2791,13 +3051,26 @@ ContainerOwnerMatch FindNativeContainerByAddress(uint64_t addr) {
     int objScanned = 0, dictsHit = 0, arraysHit = 0;
     constexpr int SCAN_SIZE = 0x200; // Scan first 512 bytes of each Object body
     constexpr int PTR_ALIGN = 8;
+    constexpr int TIME_BUDGET_SEC = 10; // Abort after 10 seconds
+    bool timedOut = false;
 
-    Solitaer::Info("WALK", "FindNativeContainer: scanning ObjectDB bodies for %p (scanSize=0x%X)",
-        reinterpret_cast<void*>(addr), SCAN_SIZE);
+    Solitaer::Info("WALK", "FindNativeContainer: scanning ObjectDB bodies for %p (scanSize=0x%X, budget=%ds)",
+        reinterpret_cast<void*>(addr), SCAN_SIZE, TIME_BUDGET_SEC);
+
+    auto startTime = std::chrono::steady_clock::now();
 
     s_bulkScanQuiet = true;
     Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
         objScanned++;
+
+        // Check time budget every 1000 objects to avoid chrono overhead per-object
+        if ((objScanned & 0x3FF) == 0) {
+            auto elapsed = std::chrono::steady_clock::now() - startTime;
+            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= TIME_BUDGET_SEC) {
+                timedOut = true;
+                return false; // Stop scanning
+            }
+        }
 
         // Bulk-read the Object body
         uint8_t buf[SCAN_SIZE];
@@ -2875,9 +3148,10 @@ ContainerOwnerMatch FindNativeContainerByAddress(uint64_t addr) {
     s_bulkScanQuiet = false;
 
     Solitaer::Info("WALK",
-        "FindNativeContainer: scanned %d objects, validated %d dicts + %d arrays. %s",
+        "FindNativeContainer: scanned %d objects, validated %d dicts + %d arrays. %s%s",
         objScanned, dictsHit, arraysHit,
-        result.objectAddr ? "FOUND" : "NOT FOUND");
+        result.objectAddr ? "FOUND" : "NOT FOUND",
+        timedOut ? " (TIMED OUT)" : "");
 
     return result;
 }

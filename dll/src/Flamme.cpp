@@ -96,7 +96,18 @@ static std::string TryCname(uint64_t dataPtr) {
 
     // 3.x & 4.0-4.4: cname is const char* (ASCII pointer into .rdata)
     std::string result = Zoltraak::ReadString(ptr, 256);
-    if (IsPlausibleName(result)) return result;
+    if (IsPlausibleName(result)) {
+        // Guard: char32_t data like "Object" = {0x4F,0x00,0x00,0x00, 0x62,...}
+        // reads as single-char ASCII "O" (0x4F followed by 0x00 null terminator).
+        // When version is unknown and ASCII gives ≤2 chars, also try char32
+        // and prefer the longer result — this catches undetected 4.5+ builds.
+        if (result.size() <= 2 && GodotVer::Major == 0) {
+            std::string c32 = Zoltraak::ReadChar32String(ptr, 256);
+            if (IsPlausibleName(c32) && c32.size() > result.size())
+                return c32;
+        }
+        return result;
+    }
 
     // Fallback: try char32_t in case layout differs from expectation
     result = Zoltraak::ReadChar32String(ptr, 256);
@@ -177,16 +188,21 @@ void ProbeLayout(uint64_t sampleDataPtr) {
     }
 
     // Try resolving with current offsets
+    // Require ≥2 chars — single-char results are likely misreads of char32_t data
     std::string resolved = TryCname(sampleDataPtr);
-    if (!resolved.empty()) {
+    if (!resolved.empty() && resolved.size() >= 2) {
         Solitaer::Info("FLAMME", "ProbeLayout: resolved via cname at +0x%X: '%s'",
             DynOff::SDATA_CNAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
         return;
     }
+    if (!resolved.empty()) {
+        Solitaer::Debug("FLAMME", "ProbeLayout: cname at +0x%X gave short result '%s', continuing probe",
+            DynOff::SDATA_CNAME, resolved.c_str());
+    }
 
     resolved = TryName(sampleDataPtr);
-    if (IsPlausibleName(resolved)) {
+    if (IsPlausibleName(resolved) && resolved.size() >= 2) {
         Solitaer::Info("FLAMME", "ProbeLayout: resolved via name at +0x%X: '%s'",
             DynOff::SDATA_NAME, resolved.c_str());
         DynOff::bStringNameProbed.store(true, std::memory_order_release);
@@ -215,6 +231,13 @@ void ProbeLayout(uint64_t sampleDataPtr) {
             DynOff::SDATA_CNAME = offset;
             Solitaer::Info("FLAMME", "ProbeLayout: found char32 string at +0x%X: '%s'",
                 offset, s.c_str());
+            // char32 at +0x08 strongly indicates Godot 4.5+ (cname removed, name at +0x08)
+            if (offset == 0x08 && GodotVer::Major == 0) {
+                GodotVer::Major = 4;
+                GodotVer::Minor = 5;
+                DynOff::SDATA_NAME = 0x08;
+                Solitaer::Info("FLAMME", "ProbeLayout: auto-detected Godot 4.5+ (char32 name at +0x08)");
+            }
             DynOff::bStringNameProbed.store(true, std::memory_order_release);
             return;
         }

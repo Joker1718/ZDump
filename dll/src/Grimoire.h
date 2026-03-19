@@ -74,6 +74,21 @@ namespace DynOff {
                                               // (40 bytes / 0x28 if REAL_T_IS_DOUBLE — extremely rare)
     inline std::atomic<bool> bScriptInstanceProbed{false};
 
+    // ----- .NET / CSharp Godot detection -----
+    // Set to true at init if GodotSharp module is loaded (C# Godot build).
+    // When true, WalkInstance will attempt to read managed object fields
+    // via CSharpInstance → GCHandle → .NET managed object chain.
+    inline std::atomic<bool> bIsDotNetGame{false};
+
+    // CSharpInstance layout (confirmed via diagnostic hexdump):
+    //   +0x00: vtable (same for all CSharpInstance objects)
+    //   +0x08: Object* owner (back-link to Godot Object)
+    //   +0x10: flags (usually 0)
+    //   +0x18: Ref<CSharpScript> script
+    //   +0x20: GCHandle (pointer into CLR handle table; *gchandle = managed object)
+    inline int CSHARP_OWNER_OFF   = 0x08;   // Object* owner within CSharpInstance
+    inline int CSHARP_GCHANDLE_OFF = 0x20;  // GCHandle within CSharpInstance
+
     // ----- ObjectSlot layout (fixed) -----
     inline int SLOT_STRIDE         = 16;    // 8 bytes metadata + 8 bytes pointer
     inline int SLOT_OBJECT_OFFSET  = 8;     // Object* at offset 8 within slot
