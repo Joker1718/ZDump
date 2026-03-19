@@ -248,6 +248,72 @@ zolt_shutdown()
       </CheatEntries>
     </CheatEntry>
     <CheatEntry>
+      <ID>200</ID>
+      <Description>"--- .NET Managed Object Records ---"</Description>
+      <Color>00BB5E</Color>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>201</ID>
+          <Description>".NET Managed HP Scanner"</Description>
+          <Options moHideChildren="1"/>
+          <VariableType>Auto Assembler Script</VariableType>
+          <AssemblerScript>[ENABLE]
+{$lua}
+if syntaxcheck then return end
+
+-- ============================================================
+-- .NET Managed Records — Scan &amp; Generate
+-- Requires [init] enabled first (DLL injected + auto-started)
+-- ============================================================
+
+-- Load the managed records script from same directory as DLL
+local scriptDir = extractFilePath(DLL_PATH or "")
+local scriptPath = scriptDir .. "zolt_managed_records.lua"
+
+local loaded = false
+local f = io.open(scriptPath, "r")
+if f then
+    local code = f:read("*all")
+    f:close()
+    local fn, err = load(code)
+    if fn then
+        fn()
+        loaded = true
+    else
+        zolt_logError("Managed records load error: %s", tostring(err))
+    end
+else
+    zolt_logError("Managed records script not found: %s", scriptPath)
+end
+
+if loaded and zolt_managed_enable then
+    -- Find this entry as parent for generated records
+    local parentMR = nil
+    local al = getAddressList()
+    for i = 0, al.Count - 1 do
+        local mr = al.getMemoryRecord(i)
+        if mr.Description == '".NET Managed HP Scanner"' or
+           mr.Description == '.NET Managed HP Scanner' then
+            parentMR = mr
+            break
+        end
+    end
+    zolt_managed_enable(parentMR)
+end
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+
+if zolt_managed_disable then
+    zolt_managed_disable()
+end
+</AssemblerScript>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
       <ID>20</ID>
       <Description>"--- Setup Instructions ---"</Description>
       <Color>8000FF</Color>

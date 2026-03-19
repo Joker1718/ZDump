@@ -89,6 +89,24 @@ public sealed class DumpService : IDumpService
     {
         var payload = new JsonObject { ["address"] = address };
         var resp = await _pipe.SendAsync("find_by_address", payload, ct);
+
+        // Parse alternatives (L2 managed_instance matches with multiple parent objects)
+        var alts = new List<AlternativeEntry>();
+        if (resp["alternatives"] is JsonArray altsArr)
+        {
+            foreach (var altNode in altsArr)
+            {
+                if (altNode is not JsonObject altObj) continue;
+                alts.Add(new AlternativeEntry
+                {
+                    Address = altObj["address"]?.GetValue<string>() ?? "",
+                    Name = altObj["name"]?.GetValue<string>() ?? "",
+                    ClassName = altObj["class_name"]?.GetValue<string>() ?? "",
+                    SlotIndex = altObj["slot_index"]?.GetValue<int>() ?? 0
+                });
+            }
+        }
+
         return new AddressLookupResult
         {
             Found = resp["found"]?.GetValue<bool>() ?? false,
@@ -99,7 +117,8 @@ public sealed class DumpService : IDumpService
             ClassName = resp["class_name"]?.GetValue<string>() ?? "",
             ParentAddr = resp["parent_addr"]?.GetValue<string>() ?? "",
             OffsetFromBase = resp["member_offset"]?.GetValue<int>() ?? resp["offset_from_base"]?.GetValue<int>() ?? 0,
-            QueryAddress = address
+            QueryAddress = address,
+            Alternatives = alts
         };
     }
 

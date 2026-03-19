@@ -106,12 +106,29 @@ public partial class InstanceFinderViewModel : ViewModelBase
                     ClassName = result.ClassName,
                     SlotIndex = result.SlotIndex
                 });
-                InstanceCount = 1;
+
+                // Add alternative parent objects (L2 managed_instance matches where
+                // multiple Godot objects reference the same nested .NET data object)
+                foreach (var alt in result.Alternatives)
+                {
+                    Instances.Add(new ObjectEntry
+                    {
+                        Address = alt.Address,
+                        Name = alt.Name,
+                        ClassName = alt.ClassName,
+                        SlotIndex = alt.SlotIndex
+                    });
+                }
+
+                InstanceCount = Instances.Count;
+                string altSuffix = result.Alternatives.Count > 0
+                    ? $" (+{result.Alternatives.Count} alt)"
+                    : "";
                 StatusText = result.MatchType switch
                 {
                     "script_member" => $"Found: {result.Name} ({result.ClassName}) [GDScript member]",
                     "script_instance" => $"Found: {result.Name} ({result.ClassName}) [ScriptInstance+0x{result.OffsetFromBase:X}]",
-                    "managed_instance" => $"Found: {result.Name} ({result.ClassName}) [.NET managed+0x{result.OffsetFromBase:X}]",
+                    "managed_instance" => $"Found: {result.Name} ({result.ClassName}) [.NET managed+0x{result.OffsetFromBase:X}]{altSuffix}",
                     "range" => $"Found: {result.Name} ({result.ClassName}) at +0x{result.OffsetFromBase:X}",
                     "probe" => $"Found: {result.Name} ({result.ClassName}) [direct probe, not in ObjectDB]",
                     "container_member" => $"Found: {result.Name} ({result.ClassName}) [script container]",

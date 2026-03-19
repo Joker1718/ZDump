@@ -428,24 +428,53 @@ public partial class LiveWalkerViewModel : ViewModelBase
             }
             else
             {
-                // Non-Node (Reference, Resource, etc.): show criteria dialog then use
-                // FIND_INSTANCE_WITH_MEMBER with value-based filtering.
+                // Non-Node (Reference, Resource, etc.): decide between GDScript and .NET managed mode.
                 string className = CurrentClassName;
 
-                // Collect sibling base-type script members for the dialog
-                var siblings = GetBaseTypeSiblingMembers(memberName);
+                // Detect managed mode: if we have positive-offset int/float fields
+                // and no script members (Offset < 0), this is a .NET managed object.
+                bool isManagedMode = IsManagedObjectContext();
 
-                // Show dialog for criteria selection
-                var criteria = await ShowMemberFilterDialogAsync(memberName, siblings);
-                if (criteria is null)
+                if (isManagedMode)
                 {
-                    SetStatus("CE script generation cancelled");
-                    return; // user cancelled
-                }
+                    // .NET managed mode: use CMD_FIND_MANAGED_INSTANCES (bulk scan)
+                    var managedSiblings = GetManagedSiblingFields(field);
 
-                symbolName = CeLuaScriptService.MakeSymbolName(className, memberName);
-                script = _ceLua.GenerateFindInstanceMemberScript(className, memberName, criteria, symbolName);
-                label = $"{className}.{memberName}";
+                    var criteria = await ShowManagedFilterDialogAsync(
+                        memberName, field.Offset, managedSiblings);
+                    if (criteria is null)
+                    {
+                        SetStatus("CE script generation cancelled");
+                        return;
+                    }
+
+                    // Use the Godot class from breadcrumbs (the parent object's class)
+                    string godotClass = GetParentGodotClass() ?? className;
+                    // Get MethodTable hex from breadcrumbs for precise type matching
+                    string? mtHex = GetCurrentMethodTableHex();
+                    symbolName = CeLuaScriptService.MakeSymbolName(godotClass, $"managed_0x{field.Offset:X}");
+                    script = _ceLua.GenerateManagedInstanceScript(
+                        godotClass, criteria, symbolName, memberName, mtHex);
+                    label = criteria.FindAll
+                        ? $"{godotClass} .NET managed +0x{field.Offset:X} (all)"
+                        : $"{godotClass} .NET managed +0x{field.Offset:X}";
+                }
+                else
+                {
+                    // GDScript mode: FIND_INSTANCE_WITH_MEMBER with value-based filtering.
+                    var siblings = GetBaseTypeSiblingMembers(memberName);
+
+                    var criteria = await ShowMemberFilterDialogAsync(memberName, siblings);
+                    if (criteria is null)
+                    {
+                        SetStatus("CE script generation cancelled");
+                        return;
+                    }
+
+                    symbolName = CeLuaScriptService.MakeSymbolName(className, memberName);
+                    script = _ceLua.GenerateFindInstanceMemberScript(className, memberName, criteria, symbolName);
+                    label = $"{className}.{memberName}";
+                }
             }
 
             // Always copy to clipboard so user has the script
@@ -457,18 +486,24 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
             if (sent)
             {
-                var ceType = MapGodotTypeToCeValueType(field.Type);
-                try
+                // For multi-result managed mode, the Lua script creates its own group header
+                // + child memory records. Don't create an extra single-address record.
+                bool isManagedMultiResult = label.Contains(".NET managed") && label.Contains("(all)");
+                if (!isManagedMultiResult)
                 {
-                    await _aobMaker.CreateMemoryRecordAsync(
-                        label,
-                        symbolName,
-                        ceType,
-                        isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
-                }
-                catch (Exception ex)
-                {
-                    _log.Debug("view", $"CreateMemoryRecord failed: {ex.Message}");
+                    var ceType = MapGodotTypeToCeValueType(field.Type);
+                    try
+                    {
+                        await _aobMaker.CreateMemoryRecordAsync(
+                            label,
+                            symbolName,
+                            ceType,
+                            isSigned: ceType is CeValueType.Dword or CeValueType.Qword);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Debug("view", $"CreateMemoryRecord failed: {ex.Message}");
+                    }
                 }
             }
 
@@ -621,7 +656,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Show the member filter criteria dialog and return the result.
+    /// Show the member filter criteria dialog and return the result (GDScript mode).
     /// Returns null if the user cancels.
     /// </summary>
     private static async Task<MemberFilterCriteria?> ShowMemberFilterDialogAsync(
@@ -636,6 +671,120 @@ public partial class LiveWalkerViewModel : ViewModelBase
         var dialog = new MemberFilterDialog(targetMember, siblingMembers);
         await dialog.ShowDialog(window);
         return dialog.Result;
+    }
+
+    /// <summary>
+    /// Show the managed filter criteria dialog (.NET mode) with offset-based fields.
+    /// Returns null if the user cancels.
+    /// </summary>
+    private static async Task<MemberFilterCriteria?> ShowManagedFilterDialogAsync(
+        string targetMember, int targetOffset,
+        List<MemberFilterDialog.ManagedFieldInfo> managedSiblings)
+    {
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+            return null;
+
+        var window = desktop.MainWindow;
+        if (window is null) return null;
+
+        var dialog = new MemberFilterDialog(targetMember, targetOffset, managedSiblings);
+        await dialog.ShowDialog(window);
+        return dialog.Result;
+    }
+
+    /// <summary>
+    /// Detect if the current view is showing .NET managed object fields.
+    /// Managed objects have no GDScript members (Offset &lt; 0) and have
+    /// positive-offset fields with names like "+0x84".
+    /// </summary>
+    private bool IsManagedObjectContext()
+    {
+        bool hasScriptMembers = false;
+        bool hasManagedFields = false;
+
+        foreach (var f in Fields)
+        {
+            if (f.Offset < 0) hasScriptMembers = true;
+            if (f.Offset >= 0 && f.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+                hasManagedFields = true;
+        }
+
+        // Managed mode: has managed-style fields and no GDScript members
+        return hasManagedFields && !hasScriptMembers;
+    }
+
+    /// <summary>
+    /// Get sibling managed fields for the filter dropdown (excluding the target field).
+    /// Returns fields with their current values for reference.
+    /// </summary>
+    private List<MemberFilterDialog.ManagedFieldInfo> GetManagedSiblingFields(LiveFieldValue excludeField)
+    {
+        var result = new List<MemberFilterDialog.ManagedFieldInfo>();
+        foreach (var f in Fields)
+        {
+            if (f == excludeField) continue;
+            if (f.Offset < 0) continue; // skip script members
+            // Only include int/float types that can be compared
+            string t = f.Type.ToUpperInvariant();
+            if (t is not ("INT" or "FLOAT" or "REAL" or "BOOL")) continue;
+            // Determine size from type
+            int size = t is "FLOAT" or "REAL" ? 4 : 4; // int32 / float = 4 bytes
+            result.Add(new MemberFilterDialog.ManagedFieldInfo(
+                f.Name, f.Offset, f.Type, f.Value, size));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Get the Godot class name from the parent breadcrumb (before managed object drill-down).
+    /// When viewing a managed object, the current class may be "ManagedObject" or empty.
+    /// Walk back through breadcrumbs to find the original Godot class.
+    /// </summary>
+    private string? GetParentGodotClass()
+    {
+        for (int i = Breadcrumbs.Count - 1; i >= 0; i--)
+        {
+            var crumb = Breadcrumbs[i];
+            if (!string.IsNullOrEmpty(crumb.ClassName) &&
+                crumb.ClassName != "ManagedObject")
+            {
+                return crumb.ClassName;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Extract the .NET MethodTable hex value from the current breadcrumb context.
+    /// Breadcrumb names for managed objects follow the pattern: "MT:7FF7D90BE0F8 (size=0xB0)"
+    /// Returns the hex string (e.g. "7FF7D90BE0F8") or null if not found.
+    /// </summary>
+    private string? GetCurrentMethodTableHex()
+    {
+        // Check current name first, then walk breadcrumbs
+        string? ExtractMT(string name)
+        {
+            const string prefix = "MT:";
+            int idx = name.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return null;
+            int start = idx + prefix.Length;
+            int end = start;
+            while (end < name.Length && Uri.IsHexDigit(name[end])) end++;
+            return end > start ? name[start..end] : null;
+        }
+
+        // Current object might be the managed object
+        var mt = ExtractMT(CurrentName);
+        if (mt is not null) return mt;
+
+        // Walk breadcrumbs backwards — the managed object entry has the MT
+        for (int i = Breadcrumbs.Count - 1; i >= 0; i--)
+        {
+            mt = ExtractMT(Breadcrumbs[i].Name);
+            if (mt is not null) return mt;
+        }
+
+        return null;
     }
 
     /// <summary>

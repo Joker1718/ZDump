@@ -25,6 +25,10 @@ enum Cmd : int32_t {
     CMD_FIND_NODE                = 3,  // Find node by name in scene tree (returns objectAddr)
     CMD_FIND_INSTANCE_WITH_MEMBER = 4, // Find Object by class + member name; nodeName = optional 2nd member filter for disambiguation
     CMD_FIND_INSTANCE_BY_PATH    = 5, // Find Object by class + nested property path string match (e.g. item.my_id == "item_tree")
+    CMD_FIND_MANAGED_INSTANCES   = 6, // Bulk: find ALL .NET managed objects of a class with optional field filter
+                                      //   Input:  className, targetOp+targetValue (managed field filter),
+                                      //           filterOp = managed field offset (repurposed), filterValue = read size (repurposed)
+                                      //   Output: result = count, results in g_zoltManagedResults buffer
     CMD_PING                     = 99, // Connectivity check (returns STATUS_DONE immediately)
 };
 
@@ -99,6 +103,37 @@ void NotifyReady();
 
 } // namespace Zolt::Qual
 
+// ============================================================
+// Bulk results buffer for CMD_FIND_MANAGED_INSTANCES
+// Separate from mailbox to keep MailboxData small.
+// CE Lua reads via: getAddress("g_zoltManagedResults") + offset
+//
+// Layout:
+//   +0x000: int32  count       (number of valid entries)
+//   +0x004: int32  capacity    (max entries = 256)
+//   +0x008: entry[0].objectAddr   (uint64)
+//   +0x010: entry[0].managedAddr  (uint64)
+//   +0x018: entry[1].objectAddr   (uint64)
+//   ...
+// Each entry is 16 bytes. Total: 8 + 256*16 = 4104 bytes.
+// ============================================================
+
+struct ManagedSearchEntry {
+    uint64_t objectAddr;     // Godot Object*
+    uint64_t managedAddr;    // .NET managed object pointer
+};
+
+constexpr int MANAGED_RESULTS_MAX = 256;
+
+struct ManagedSearchResults {
+    volatile int32_t count;                         // 0x000: Number of valid entries
+    int32_t          capacity;                      // 0x004: Max capacity (256)
+    ManagedSearchEntry entries[MANAGED_RESULTS_MAX]; // 0x008: Results array
+};
+
 // Exported global — CE Lua uses getAddress("g_zoltMailbox") to find it.
 // No function call needed! CE resolves the symbol from the DLL export table.
 extern "C" __declspec(dllexport) extern Zolt::Qual::MailboxData g_zoltMailbox;
+
+// Exported bulk results buffer — CE Lua uses getAddress("g_zoltManagedResults")
+extern "C" __declspec(dllexport) extern ManagedSearchResults g_zoltManagedResults;
