@@ -154,6 +154,65 @@ int Zolt_AutoStart() {
         Zolt::Ubel::ProbeScriptInstanceEarly();
     }
 
+    // .NET/C# Godot detection + CSharpInstance layout probe.
+    // Must run here (not just in trigger_scan) so the CE Lua mailbox can use
+    // CMD_FIND_MANAGED_INSTANCES without requiring the UI to connect first.
+    {
+        using namespace Zolt;
+        bool isDotNet = (Zoltraak::GetModuleBase("GodotSharp") != 0);
+        if (!isDotNet) {
+            isDotNet = (Zoltraak::GetModuleBase("coreclr") != 0);
+        }
+        DynOff::bIsDotNetGame.store(isDotNet, std::memory_order_release);
+        if (isDotNet) {
+            Solitaer::Info("INIT", ".NET Godot game detected (GodotSharp/coreclr module found)");
+
+            // Probe CSharpInstance layout: discover owner and GCHandle offsets
+            int siOff = DynOff::OBJECT_SCRIPT_INSTANCE;
+            if (siOff >= 0 && s_objectDBAddr) {
+                LOG_TIMED("INIT", "CSharpInstance layout probe");
+                bool probed = false;
+                static const int ownerCandidates[] = { 0x08, 0x10 };
+                static const int gcCandidates[] = { 0x20, 0x28 };
+
+                Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    if (probed) return false;
+                    uint64_t si = Zoltraak::ReadSafe<uint64_t>(objAddr + siOff, 0);
+                    if (!si || !Zoltraak::IsReadable(si)) return true;
+
+                    for (int ownerOff : ownerCandidates) {
+                        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(si + ownerOff, 0);
+                        if (owner != objAddr) continue;
+
+                        for (int gcOff : gcCandidates) {
+                            uint64_t gcH = Zoltraak::ReadSafe<uint64_t>(si + gcOff, 0);
+                            if (!gcH || !Zoltraak::IsReadable(gcH)) continue;
+                            uint64_t managed = Zoltraak::ReadSafe<uint64_t>(gcH, 0);
+                            if (!managed || !Zoltraak::IsReadable(managed)) continue;
+                            uint64_t mt = Zoltraak::ReadSafe<uint64_t>(managed, 0);
+                            if (mt < 0x7F0000000000ULL || (mt & 0x7) != 0) continue;
+
+                            DynOff::CSHARP_OWNER_OFF = ownerOff;
+                            DynOff::CSHARP_GCHANDLE_OFF = gcOff;
+                            probed = true;
+                            Solitaer::Info("INIT",
+                                "CSharpInstance layout: owner=+0x%X gchandle=+0x%X (obj=%llX)",
+                                ownerOff, gcOff, static_cast<unsigned long long>(objAddr));
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+
+                if (!probed) {
+                    Solitaer::Warn("INIT",
+                        "CSharpInstance probe failed — using defaults (owner=+0x%X gc=+0x%X)",
+                        DynOff::CSHARP_OWNER_OFF, DynOff::CSHARP_GCHANDLE_OFF);
+                }
+            }
+        }
+    }
+
     // Start Fern pipe server for UI communication
     Zolt::Fern::Start();
 
