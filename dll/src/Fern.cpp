@@ -26,6 +26,7 @@
 #include <mutex>
 #include <sstream>
 #include <iomanip>
+#include <vector>
 #include <algorithm>
 #include <thread>
 #include <chrono>
@@ -509,6 +510,302 @@ static json HandleFindByAddress(int id, const json& req) {
         return resp;
     }
 
+    // Phase 4.5: ScriptInstance range scan — target might be a field inside a
+    // C#/.NET or GDScript ScriptInstance object. For each ObjectDB object, read
+    // its ScriptInstance pointer at [obj+OBJECT_SCRIPT_INSTANCE] and check if
+    // the target address falls within that ScriptInstance's memory region.
+    // This is critical for .NET/C# Godot builds (e.g., Slay the Spire 2) where
+    // C# fields like HP live in the managed object at ScriptInstance+offset.
+    if (DynOff::OBJECT_SCRIPT_INSTANCE >= 0) {
+        constexpr uint64_t MAX_SCRIPT_SIZE = 0x400; // 1KB max script instance body
+        uint64_t bestObj = 0;
+        int bestSlot = -1;
+        uint64_t bestScript = 0;
+        uint64_t bestOffset = UINT64_MAX;
+
+        Ausetiese::ForEachEx([&](int index, uint64_t objAddr) {
+            uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(
+                objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+            if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+            if (addr >= scriptInst && addr < scriptInst + MAX_SCRIPT_SIZE) {
+                uint64_t off = addr - scriptInst;
+                if (off < bestOffset) {
+                    bestObj = objAddr;
+                    bestSlot = index;
+                    bestScript = scriptInst;
+                    bestOffset = off;
+                }
+                return false; // Early exit — ScriptInstance ranges don't overlap
+            }
+            return true;
+        });
+
+        Solitaer::Debug("PIPE", "find_by_address: Phase 4.5 (script instance): obj=%p script=%p offset=+0x%X",
+            reinterpret_cast<void*>(bestObj), reinterpret_cast<void*>(bestScript),
+            bestOffset == UINT64_MAX ? 0 : static_cast<unsigned>(bestOffset));
+
+        if (bestObj) {
+            std::string name      = ReadObjectName(bestObj);
+            std::string className = Diagoldze::GetObjectClass(bestObj);
+            int slotIndex = bestSlot;
+
+            json resp = OkResponse(id);
+            resp["found"]           = true;
+            resp["match_type"]      = "script_instance";
+            resp["address"]         = AddrToHex(bestObj);
+            resp["name"]            = SafeStr(name);
+            resp["class_name"]      = SafeStr(className);
+            resp["slot_index"]      = slotIndex;
+            resp["member_offset"]   = 0;
+            resp["script_offset"]   = static_cast<int>(bestOffset);
+            resp["script_instance"] = AddrToHex(bestScript);
+            resp["offset_from_base"]= static_cast<int>(bestOffset);
+            return resp;
+        }
+    }
+
+    // Phase 4.6: .NET CSharpInstance → GCHandle → managed object scan.
+    // For .NET/C# Godot builds (e.g., Slay the Spire 2), the chain is:
+    //   GodotObject[+0x68] → CSharpInstance → GCHandle → .NET managed object → field
+    // The .NET managed object lives on a separate heap, NOT contiguous with the
+    // CSharpInstance. Phase 4.5 misses these because it only checks the CSharpInstance
+    // address range. Here we dereference pointer candidates inside each CSharpInstance
+    // body — one of them is the GCHandle (pointer into handle table), and the table
+    // entry holds the .NET managed object address. If target falls within that managed
+    // object, we've found the owning Godot Object.
+    //
+    // Levels of search:
+    //   Level 1: target inside managed wrapper directly  (GCHandle → wrapper → target)
+    //   Level 2: target inside child object of wrapper   (wrapper → field → child → target)
+    //            Validates child pointer has a MethodTable (first qword in module range)
+    //   Level 3: bottom-up — scan backward from target to find .NET object header,
+    //            then match against all collected GCHandle dereferences
+    if (DynOff::OBJECT_SCRIPT_INSTANCE >= 0) {
+        constexpr int SI_SCAN_SIZE = 0x100; // Scan first 256 bytes of ScriptInstance body
+        constexpr uint64_t MAX_MANAGED_L1 = 0x400; // Level 1: direct wrapper range
+        constexpr uint64_t MAX_MANAGED_L2 = 0x200; // Level 2: child object range (tighter)
+        uint64_t foundObj46 = 0;
+        int foundSlot46 = -1;
+        uint64_t foundManagedObj = 0;
+        uint64_t foundManagedOff = 0;
+        int foundLevel = 0;   // Which level matched (1, 2, or 3)
+        int siCount = 0;      // Count of objects with ScriptInstance
+        int csharpCount = 0;  // Count of non-GDScript ScriptInstances
+
+        // Helper: validate a pointer looks like a .NET MethodTable pointer.
+        // MethodTables live in module/CLR address space (typically 0x7FFx on Win64),
+        // are 8-byte aligned, and point to readable memory.
+        auto isLikelyMethodTable = [](uint64_t mt) -> bool {
+            if (!mt || (mt & 0x7) != 0) return false;
+            // Module-range check: high 24 bits should be > 0x7F0000 (i.e., addr >= 0x7F0000_00000000)
+            // This filters out heap pointers which are typically < 0x7F...
+            if ((mt >> 40) < 0x7F) return false;
+            return Zoltraak::IsReadable(mt);
+        };
+
+        // Collect GCHandle → managed object mappings for Level 3 bottom-up search.
+        // Maps: managedObj → { objAddr, slotIndex }
+        struct GCEntry { uint64_t objAddr; int slot; };
+        std::vector<GCEntry> gcMap; // entry per unique managed object address
+        std::vector<uint64_t> gcManagedAddrs; // parallel: managed object addresses
+
+        Ausetiese::ForEachEx([&](int index, uint64_t objAddr) {
+            uint64_t si = Zoltraak::ReadSafe<uint64_t>(
+                objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
+            if (!si || !Zoltraak::IsReadable(si)) return true;
+            siCount++;
+
+            // Bulk-read CSharpInstance/ScriptInstance body
+            uint8_t siBuf[SI_SCAN_SIZE];
+            if (!Zoltraak::ReadSafe(si, siBuf, SI_SCAN_SIZE)) return true;
+
+            // Check if this is a GDScriptInstance by validating owner at known offset
+            uint64_t ownerAtGdsi;
+            memcpy(&ownerAtGdsi, siBuf + DynOff::GDSCRIPT_OWNER_OFF, sizeof(ownerAtGdsi));
+            bool isGDScript = (ownerAtGdsi == objAddr);
+
+            if (!isGDScript) {
+                csharpCount++;
+            }
+
+            // For each pointer-sized field in the ScriptInstance body:
+            for (int off = 8; off + 8 <= SI_SCAN_SIZE; off += 8) {
+                uint64_t val;
+                memcpy(&val, siBuf + off, sizeof(val));
+
+                // Quick filter: must look like a heap pointer (aligned, high address)
+                if (!val || (val & 0x7) != 0) continue;
+                if ((val >> 40) == 0) continue;
+
+                // Dereference: val might be a GCHandle (pointer to handle table entry)
+                // The table entry contains the .NET managed object address.
+                uint64_t managedObj = Zoltraak::ReadSafe<uint64_t>(val, 0);
+                if (!managedObj || (managedObj & 0x7) != 0) continue;
+                if ((managedObj >> 40) == 0) continue;
+
+                // Validate managedObj looks like a .NET object (first qword = MethodTable)
+                uint64_t mt = Zoltraak::ReadSafe<uint64_t>(managedObj, 0);
+                if (!isLikelyMethodTable(mt)) continue;
+
+                // This is a valid GCHandle → managed object. Collect for Level 3.
+                gcMap.push_back({objAddr, index});
+                gcManagedAddrs.push_back(managedObj);
+
+                // Level 1: Check if target falls directly within this managed object
+                if (addr >= managedObj && addr < managedObj + MAX_MANAGED_L1) {
+                    uint64_t off46 = addr - managedObj;
+                    // Keep best (smallest offset) match
+                    if (!foundObj46 || off46 < foundManagedOff) {
+                        foundObj46 = objAddr;
+                        foundSlot46 = index;
+                        foundManagedObj = managedObj;
+                        foundManagedOff = off46;
+                        foundLevel = 1;
+                    }
+                    // Don't return early — keep scanning for better match
+                }
+
+                // Level 2: Scan managed wrapper's fields for child .NET objects
+                // that might contain the target. Validates child has MethodTable.
+                if (!isGDScript) {
+                    constexpr int WRAPPER_SCAN = 0x200;
+                    uint8_t wrapBuf[WRAPPER_SCAN];
+                    if (Zoltraak::ReadSafe(managedObj, wrapBuf, WRAPPER_SCAN)) {
+                        for (int w = 8; w + 8 <= WRAPPER_SCAN; w += 8) {
+                            uint64_t wval;
+                            memcpy(&wval, wrapBuf + w, sizeof(wval));
+
+                            if (!wval || (wval & 0x7) != 0) continue;
+                            if ((wval >> 40) == 0) continue;
+
+                            // Range check first (cheap), then validate MethodTable
+                            if (addr >= wval && addr < wval + MAX_MANAGED_L2) {
+                                // Validate: wval should point to a .NET managed object
+                                uint64_t childMt = Zoltraak::ReadSafe<uint64_t>(wval, 0);
+                                if (!isLikelyMethodTable(childMt)) continue;
+
+                                uint64_t off46 = addr - wval;
+                                if (!foundObj46 || off46 < foundManagedOff) {
+                                    foundObj46 = objAddr;
+                                    foundSlot46 = index;
+                                    foundManagedObj = wval;
+                                    foundManagedOff = off46;
+                                    foundLevel = 2;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return true; // Always continue — collect all GCHandles for Level 3
+        });
+
+        Solitaer::Info("PIPE", "find_by_address: Phase 4.6 stats: %d with SI, %d non-GDScript (CSharp), %d GCHandles collected",
+            siCount, csharpCount, static_cast<int>(gcMap.size()));
+
+        // Level 3: Bottom-up search. If Level 1/2 didn't find a match,
+        // scan backward from target to find the .NET object header (MethodTable pointer),
+        // then match the discovered base against collected GCHandle dereferences.
+        if (!foundObj46 && !gcManagedAddrs.empty()) {
+            Solitaer::Debug("PIPE", "find_by_address: Phase 4.6 Level 3 — bottom-up scan from %p",
+                reinterpret_cast<void*>(addr));
+
+            // Scan backward from target in 8-byte steps to find .NET object base.
+            // A .NET managed object starts with a MethodTable pointer (module-range address).
+            // We look for the nearest such pointer before our target.
+            constexpr int MAX_BACKTRACK = 0x400; // max bytes to scan backward
+            uint64_t alignedAddr = addr & ~7ULL;
+            uint64_t candidateBase = 0;
+            uint64_t candidateMt = 0;
+
+            for (int back = 0; back <= MAX_BACKTRACK; back += 8) {
+                uint64_t probe = alignedAddr - back;
+                uint64_t val = Zoltraak::ReadSafe<uint64_t>(probe, 0);
+                if (isLikelyMethodTable(val)) {
+                    candidateBase = probe;
+                    candidateMt = val;
+                    break; // First (closest) MethodTable-like value wins
+                }
+            }
+
+            if (candidateBase) {
+                Solitaer::Debug("PIPE", "find_by_address: Phase 4.6 L3 candidate base=%p MT=%p",
+                    reinterpret_cast<void*>(candidateBase), reinterpret_cast<void*>(candidateMt));
+
+                // Now search collected GCHandle mappings for any wrapper that
+                // directly references this candidate base, or for any wrapper whose
+                // fields contain a pointer to this candidate base.
+                for (size_t i = 0; i < gcManagedAddrs.size(); i++) {
+                    uint64_t managedObj = gcManagedAddrs[i];
+
+                    // Direct match: GCHandle → candidateBase
+                    if (managedObj == candidateBase) {
+                        foundObj46 = gcMap[i].objAddr;
+                        foundSlot46 = gcMap[i].slot;
+                        foundManagedObj = candidateBase;
+                        foundManagedOff = addr - candidateBase;
+                        foundLevel = 3;
+                        Solitaer::Debug("PIPE", "find_by_address: Phase 4.6 L3 direct GCHandle match: obj=%p",
+                            reinterpret_cast<void*>(foundObj46));
+                        break;
+                    }
+
+                    // Indirect: wrapper field → candidateBase
+                    constexpr int WRAPPER_SCAN = 0x200;
+                    uint8_t wrapBuf[WRAPPER_SCAN];
+                    if (!Zoltraak::ReadSafe(managedObj, wrapBuf, WRAPPER_SCAN)) continue;
+
+                    for (int w = 8; w + 8 <= WRAPPER_SCAN; w += 8) {
+                        uint64_t wval;
+                        memcpy(&wval, wrapBuf + w, sizeof(wval));
+                        if (wval == candidateBase) {
+                            foundObj46 = gcMap[i].objAddr;
+                            foundSlot46 = gcMap[i].slot;
+                            foundManagedObj = candidateBase;
+                            foundManagedOff = addr - candidateBase;
+                            foundLevel = 3;
+                            Solitaer::Debug("PIPE",
+                                "find_by_address: Phase 4.6 L3 wrapper field match: obj=%p wrapper=%p +0x%X → base",
+                                reinterpret_cast<void*>(foundObj46), reinterpret_cast<void*>(managedObj), w);
+                            break;
+                        }
+                    }
+                    if (foundObj46) break;
+                }
+            }
+
+            if (!foundObj46) {
+                Solitaer::Debug("PIPE", "find_by_address: Phase 4.6 Level 3 — no match (base=%p)",
+                    reinterpret_cast<void*>(candidateBase));
+            }
+        }
+
+        Solitaer::Debug("PIPE", "find_by_address: Phase 4.6 result: obj=%p managed=%p offset=+0x%X level=%d",
+            reinterpret_cast<void*>(foundObj46), reinterpret_cast<void*>(foundManagedObj),
+            static_cast<unsigned>(foundManagedOff), foundLevel);
+
+        if (foundObj46) {
+            std::string name      = ReadObjectName(foundObj46);
+            std::string className = Diagoldze::GetObjectClass(foundObj46);
+
+            Solitaer::Info("PIPE",
+                "find_by_address: Phase 4.6 HIT (L%d)! Object=%p (%s/%s) → managed=%p +0x%X",
+                foundLevel, reinterpret_cast<void*>(foundObj46), name.c_str(), className.c_str(),
+                reinterpret_cast<void*>(foundManagedObj), static_cast<unsigned>(foundManagedOff));
+
+            json resp = OkResponse(id);
+            resp["found"]           = true;
+            resp["match_type"]      = "managed_instance";
+            resp["address"]         = AddrToHex(foundObj46);
+            resp["name"]            = SafeStr(name);
+            resp["class_name"]      = SafeStr(className);
+            resp["slot_index"]      = foundSlot46;
+            resp["managed_object"]  = AddrToHex(foundManagedObj);
+            resp["offset_from_base"]= static_cast<int>(foundManagedOff);
+            return resp;
+        }
+    }
+
     // Phase 5: Container owner search — target might be inside an Array or Dictionary
     // that's a value of a GDScript member variable (not the member itself).
     auto containerMatch = Ubel::FindContainerOwnerByAddress(addr);
@@ -556,6 +853,22 @@ static json HandleFindByAddress(int id, const json& req) {
         resp["container_type"] = nativeMatch.containerType;
         return resp;
     }
+
+    // Shared time budget for Phase 7 + 7b + 7c combined (dict chain chase)
+    constexpr int PHASE7_BUDGET_SEC = 15;
+    auto phase7Start = std::chrono::steady_clock::now();
+    int phase7ObjScanned = 0;
+    bool phase7TimedOut = false;
+    auto checkPhase7Budget = [&]() -> bool {
+        if ((++phase7ObjScanned & 0x3FF) == 0) {
+            auto elapsed = std::chrono::steady_clock::now() - phase7Start;
+            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= PHASE7_BUDGET_SEC) {
+                phase7TimedOut = true;
+                return false; // budget exhausted
+            }
+        }
+        return true;
+    };
 
     // Phase 7: Backward Dictionary element chase.
     // Detects if the target is inside a HashMap element (Dictionary entry),
@@ -671,6 +984,7 @@ static json HandleFindByAddress(int id, const json& req) {
                 };
 
                 Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    if (!checkPhase7Budget()) return false;
                     // Skip script definition objects — their internal HashMaps
                     // (member_indices etc.) cause false positive matches
                     if (isScriptDefinition(objAddr)) return true;
@@ -768,7 +1082,7 @@ static json HandleFindByAddress(int id, const json& req) {
     // Chain: Object → member Dict → element value (Dict) → inner DictPrivate → head.
     // We scan all script member dictionaries, walk their elements, and for any
     // DICTIONARY-valued element, check if the inner DictPrivate contains our head.
-    {
+    if (!phase7TimedOut) {
         int stride = DynOff::VARIANT_STRIDE;
         int maxType = GodotVer::VariantTypeMax();
 
@@ -844,6 +1158,7 @@ static json HandleFindByAddress(int id, const json& req) {
             int nestedDictsChecked = 0;
 
             Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                if (!checkPhase7Budget()) return false;
                 if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return true;
                 uint64_t si = Zoltraak::ReadSafe<uint64_t>(
                     objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
@@ -950,7 +1265,7 @@ static json HandleFindByAddress(int id, const json& req) {
         // ObjectDB scan (DICT_PROBE too small, or DictPrivate not directly in
         // object body), scan memory pages near the head to find the DictPrivate
         // struct that contains a pointer to head. Then trace DictPrivate → ObjectDB.
-        if (foundHead) {
+        if (foundHead && !phase7TimedOut) {
             Solitaer::Info("PIPE", "find_by_address: Phase 7c (reverse ptr scan) head=%p",
                 reinterpret_cast<void*>(foundHead));
 
@@ -1001,9 +1316,10 @@ static json HandleFindByAddress(int id, const json& req) {
             uint64_t foundDP = 0;
 
             for (auto dpCand : dictPrivateCandidates) {
-                if (foundObj) break;
+                if (foundObj || phase7TimedOut) break;
 
                 Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                    if (!checkPhase7Budget()) return false;
                     // Skip script definitions (GDScript internal HashMaps)
                     std::string cls = Diagoldze::GetObjectClass(objAddr);
                     if (cls == "GDScript" || cls == "GDScriptNativeClass" ||
@@ -1069,12 +1385,13 @@ static json HandleFindByAddress(int id, const json& req) {
             // Walk outer dict elements looking for dpCand as a value's data field.
             // Chain: Object → member(Dict) → DictPrivate_outer → element → value(Dict)
             //        → DictPrivate_inner(==dpCand) → head
-            if (!foundObj && !dictPrivateCandidates.empty()) {
+            if (!foundObj && !phase7TimedOut && !dictPrivateCandidates.empty()) {
                 int nestedWalked = 0;
                 for (auto dpCand : dictPrivateCandidates) {
-                    if (foundObj) break;
+                    if (foundObj || phase7TimedOut) break;
 
                     Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                        if (!checkPhase7Budget()) return false;
                         if (DynOff::OBJECT_SCRIPT_INSTANCE < 0) return true;
                         uint64_t si = Zoltraak::ReadSafe<uint64_t>(
                             objAddr + DynOff::OBJECT_SCRIPT_INSTANCE, 0);
@@ -1187,10 +1504,17 @@ static json HandleFindByAddress(int id, const json& req) {
                 return resp;
             }
         }
+
+    }
+
+    if (phase7TimedOut) {
+        Solitaer::Warn("PIPE", "find_by_address: Phase 7 dict chase timed out after %ds (%d objects scanned)",
+            PHASE7_BUDGET_SEC, phase7ObjScanned);
     }
 
     // Not found in any phase
-    Solitaer::Warn("PIPE", "find_by_address: %s NOT FOUND in any phase", addrStr.c_str());
+    Solitaer::Warn("PIPE", "find_by_address: %s NOT FOUND in any phase%s",
+        addrStr.c_str(), phase7TimedOut ? " (dict chase timed out)" : "");
     json resp = OkResponse(id);
     resp["found"]   = false;
     resp["address"] = addrStr;
@@ -1343,8 +1667,32 @@ static json HandleWalkInstance(int id, const json& req) {
     std::string name      = ReadObjectName(addr);
     std::string className = Diagoldze::GetObjectClass(addr);
 
-    Solitaer::Debug("PIPE:cmd", "walk_instance: addr=%s name='%s' class='%s'",
-        addrStr.c_str(), name.c_str(), className.c_str());
+    // If not a Godot Object, check if it's a .NET managed object
+    bool isManagedObject = false;
+    if (className.empty() && DynOff::bIsDotNetGame.load(std::memory_order_acquire)) {
+        uint64_t mt = Zoltraak::ReadSafe<uint64_t>(addr, 0);
+        if (mt && (mt & 0x7) == 0 && (mt >> 40) >= 0x7F && Zoltraak::IsReadable(mt)) {
+            isManagedObject = true;
+            className = "ManagedObject";
+            // Try to read BaseSize from MethodTable for display
+            uint32_t baseSize = Zoltraak::ReadSafe<uint32_t>(mt + 0x04, 0);
+            if (baseSize >= 0x10 && baseSize <= 0x2000) {
+                char mtName[80];
+                snprintf(mtName, sizeof(mtName), "MT:%llX (size=0x%X)",
+                    static_cast<unsigned long long>(mt), baseSize);
+                name = mtName;
+            } else {
+                char mtName[64];
+                snprintf(mtName, sizeof(mtName), "MT:%llX",
+                    static_cast<unsigned long long>(mt));
+                name = mtName;
+            }
+        }
+    }
+
+    Solitaer::Debug("PIPE:cmd", "walk_instance: addr=%s name='%s' class='%s'%s",
+        addrStr.c_str(), name.c_str(), className.c_str(),
+        isManagedObject ? " [managed]" : "");
 
     json fields = json::array();
     Ubel::WalkInstance(addr, [&](const Ubel::FieldEntry& entry) {
@@ -1374,6 +1722,23 @@ static json HandleWalkInstance(int id, const json& req) {
         f["from_ptrcall"] = entry.fromPtrcall;
         if (!entry.className.empty()) {
             f["class_name"] = SafeStr(entry.className);
+        }
+        // Hex column: read raw bytes at field address for hex display
+        if (entry.value.rawAddr) {
+            int readSize = entry.nativeSize > 0 ? entry.nativeSize : VariantTypeSize(entry.value.type);
+            if (readSize <= 0) readSize = 8;
+            if (readSize > 8) readSize = 8;
+            uint64_t raw = 0;
+            if (Zoltraak::ReadSafe(entry.value.rawAddr, &raw, readSize)) {
+                char hexBuf[32];
+                if (readSize <= 1)
+                    snprintf(hexBuf, sizeof(hexBuf), "%02X", static_cast<uint8_t>(raw));
+                else if (readSize <= 4)
+                    snprintf(hexBuf, sizeof(hexBuf), "%X", static_cast<uint32_t>(raw));
+                else
+                    snprintf(hexBuf, sizeof(hexBuf), "%llX", static_cast<unsigned long long>(raw));
+                f["hex"] = hexBuf;
+            }
         }
         // For Object-type variants, provide ptr_value and ptr_class for drilldown navigation
         if (IsPointerType(entry.value.type) && entry.value.ptrTarget) {
@@ -1765,6 +2130,24 @@ static json HandleTriggerScan(int id, const json& /*req*/) {
             int unresolved = Diagoldze::GetUnresolvedVtableCount();
             if (unresolved > 0) {
                 Diagoldze::ClassifyVtablesViaHeiter();
+            }
+        }
+    }
+
+    // Deferred .NET/C# Godot detection: runs once on first trigger_scan.
+    // Checks if GodotSharp module is loaded — present ONLY in .NET Godot builds.
+    // When detected, WalkInstance will read managed object fields via CSharpInstance.
+    {
+        static std::atomic<bool> s_dotnetDetectRun{false};
+        if (!s_dotnetDetectRun.exchange(true)) {
+            bool isDotNet = (Zoltraak::GetModuleBase("GodotSharp") != 0);
+            if (!isDotNet) {
+                // Fallback: check for coreclr.dll (NativeAOT builds may not load GodotSharp as module)
+                isDotNet = (Zoltraak::GetModuleBase("coreclr") != 0);
+            }
+            DynOff::bIsDotNetGame.store(isDotNet, std::memory_order_release);
+            if (isDotNet) {
+                Solitaer::Info("PIPE", ".NET Godot game detected (GodotSharp/coreclr module found)");
             }
         }
     }

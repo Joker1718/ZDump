@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.ComponentModel;
 using System.Linq;
 using Avalonia;
@@ -25,6 +26,7 @@ public partial class LiveWalkerPanel : UserControl
         WireDoubleClick();
         WireScrollTarget();
         WireSelectionTracking();
+        WireNumericOffsetSort();
         // Re-apply search highlights when virtualized rows are recycled during scroll
         FieldsGrid.LayoutUpdated += (_, _) =>
         {
@@ -111,6 +113,30 @@ public partial class LiveWalkerPanel : UserControl
             if (DataContext is LiveWalkerViewModel vm && FieldsGrid.SelectedItem is LiveFieldValue field)
                 vm.SelectedFieldName = field.Name;
         };
+    }
+
+    /// <summary>
+    /// Set up numeric sorting for the Offs column.
+    /// Avalonia DataGrid sorts by the bound string (OffsetDisplay) by default,
+    /// which gives lexicographic order ("0x10" &lt; "0x8"). Use CustomSortComparer
+    /// to sort by the numeric Offset value instead.
+    /// </summary>
+    private void WireNumericOffsetSort()
+    {
+        // First column is "Offs" (index 0)
+        if (FieldsGrid.Columns.Count > 0)
+        {
+            FieldsGrid.Columns[0].CustomSortComparer =
+                Comparer<object?>.Create((a, b) =>
+                {
+                    var fa = a as LiveFieldValue;
+                    var fb = b as LiveFieldValue;
+                    if (fa is null && fb is null) return 0;
+                    if (fa is null) return -1;
+                    if (fb is null) return 1;
+                    return fa.Offset.CompareTo(fb.Offset);
+                });
+        }
     }
 
     /// <summary>Enter key in address TextBox triggers Go; Enter/F3 in search triggers next match.</summary>

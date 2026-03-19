@@ -13,8 +13,11 @@ public sealed class LiveFieldValue
     public string Address { get; init; } = "";
     public int Offset { get; init; }
 
-    /// <summary>Formatted offset for display: "0xNN" for native, "(script)" for GDScript members.</summary>
+    /// <summary>Formatted offset for display: "0xNN" for native, "(script)" for GDScript/managed members.</summary>
     public string OffsetDisplay => Offset < 0 ? "(script)" : $"0x{Offset:X}";
+
+    /// <summary>Numeric sort key for the Offs column. Script members sort to top (-1), native/managed by offset.</summary>
+    public int SortOffset => Offset;
 
     public int Size { get; init; }
     public int BitShift { get; init; }
