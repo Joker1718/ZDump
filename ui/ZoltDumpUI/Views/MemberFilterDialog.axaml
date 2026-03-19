@@ -13,6 +13,10 @@
         <TextBlock Text="Set value criteria for instance disambiguation"
                    Foreground="#CCCCCC" FontSize="13" Margin="0,0,0,4" />
 
+        <!-- Find all checkbox (visible in managed mode) -->
+        <CheckBox x:Name="FindAllCheck" Content="Find all matching instances (multi-result)"
+                  Foreground="#CCCCCC" IsVisible="False" />
+
         <!-- ═══ Target member criteria ═══ -->
         <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
             <StackPanel Spacing="6">

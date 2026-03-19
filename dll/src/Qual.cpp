@@ -30,6 +30,10 @@
 // The exported mailbox — zero-initialized by default, starts with STATUS_INIT
 extern "C" __declspec(dllexport) Zolt::Qual::MailboxData g_zoltMailbox = {};
 
+// Bulk results buffer for CMD_FIND_MANAGED_INSTANCES
+// CE Lua reads via getAddress("g_zoltManagedResults") + offset
+extern "C" __declspec(dllexport) ManagedSearchResults g_zoltManagedResults = { 0, MANAGED_RESULTS_MAX, {} };
+
 namespace Zolt::Qual {
 
 // Polling thread state
@@ -42,6 +46,7 @@ static void HandleGetMemberAddr();
 static void HandleFindNode();
 static void HandleFindInstanceWithMember();
 static void HandleFindInstanceByPath();
+static void HandleFindManagedInstances();
 static void SetError(int32_t code, const char* msg);
 static void SetDone(int32_t resultCode);
 
@@ -84,6 +89,9 @@ static DWORD WINAPI PollingThreadProc(LPVOID /*param*/) {
                 break;
             case CMD_FIND_INSTANCE_BY_PATH:
                 HandleFindInstanceByPath();
+                break;
+            case CMD_FIND_MANAGED_INSTANCES:
+                HandleFindManagedInstances();
                 break;
             case CMD_PING:
                 SetDone(0);
@@ -1075,6 +1083,291 @@ static void HandleFindInstanceByPath() {
                    reinterpret_cast<void*>(foundObj), memberName, foundIndex, varType,
                    reinterpret_cast<void*>(dataAddr), scannedCount, pathWalkCount);
     SetDone(0);
+}
+
+// CMD_FIND_MANAGED_INSTANCES — Bulk: find ALL .NET managed objects matching criteria
+// Input:
+//   className       = Godot class filter (empty = all classes)
+//   targetOp        = FilterOp for managed field comparison (FILTER_NONE = no filter)
+//   targetValue     = comparison value (int64)
+//   filterOp        = repurposed: managed field offset within .NET object (int32)
+//   filterValue     = repurposed: field read size in bytes (4=int32, 8=int64; default 4)
+// Output:
+//   result          = count of matching objects
+//   g_zoltManagedResults buffer populated with objectAddr + managedAddr pairs
+//
+// Performance: single-pass through ObjectDB with direct memory reads.
+// Typical: <500ms for 50k+ objects (no CreateRemoteThread overhead).
+// Timeout: 10 seconds max to prevent UI freeze on pathological cases.
+static void HandleFindManagedInstances() {
+    char className[256];
+    memcpy(className, g_zoltMailbox.className, sizeof(className));
+    className[255] = '\0';
+
+    // nodeName field: optional MethodTable hex value for type matching
+    // (e.g. "7FF7D90BE0F8" — filters to only .NET objects with this exact MT)
+    char mtHexStr[256];
+    memcpy(mtHexStr, g_zoltMailbox.nodeName, sizeof(mtHexStr));
+    mtHexStr[255] = '\0';
+    uint64_t requiredMT = 0;
+    if (mtHexStr[0] != '\0') {
+        char* endp = nullptr;
+        requiredMT = strtoull(mtHexStr, &endp, 16);
+        if (endp == mtHexStr) requiredMT = 0; // parse failed
+    }
+
+    int32_t filterFieldOp = g_zoltMailbox.targetOp;
+    int64_t filterFieldValue = g_zoltMailbox.targetValue;
+    int32_t managedFieldOffset = g_zoltMailbox.filterOp;       // repurposed
+    int64_t managedFieldSize = g_zoltMailbox.filterValue;      // repurposed
+    if (managedFieldSize <= 0 || managedFieldSize > 8) managedFieldSize = 4;
+
+    bool hasClassFilter = (className[0] != '\0');
+    bool hasFieldFilter = (filterFieldOp != Zolt::Qual::FILTER_NONE && managedFieldOffset >= 0);
+    bool hasMTFilter = (requiredMT != 0);
+
+    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES class='%s' MT=%s fieldOff=0x%X fieldOp=%d fieldVal=%lld fieldSize=%lld",
+                   hasClassFilter ? className : "*",
+                   hasMTFilter ? mtHexStr : "(any)",
+                   managedFieldOffset, filterFieldOp,
+                   static_cast<long long>(filterFieldValue),
+                   static_cast<long long>(managedFieldSize));
+
+    // Check .NET game
+    if (!DynOff::bIsDotNetGame.load(std::memory_order_relaxed)) {
+        SetError(-1, "Not a .NET Godot game");
+        return;
+    }
+
+    int siOff = DynOff::OBJECT_SCRIPT_INSTANCE;
+    if (siOff < 0) {
+        SetError(-2, "ScriptInstance offset not probed");
+        return;
+    }
+
+    // Prepare class filter
+    std::string targetClass(className);
+    std::string targetClassLower = targetClass;
+    if (hasClassFilter) {
+        std::transform(targetClassLower.begin(), targetClassLower.end(), targetClassLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
+    // Clear results buffer
+    g_zoltManagedResults.count = 0;
+
+    int scannedCount = 0;
+    int managedCount = 0;
+    int matchedCount = 0;
+
+    // Timeout: 10 seconds max
+    DWORD startTick = GetTickCount();
+    constexpr DWORD TIMEOUT_MS = 10000;
+
+    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+        // Timeout check every 1000 objects
+        if ((scannedCount & 0x3FF) == 0 && scannedCount > 0) {
+            if (GetTickCount() - startTick > TIMEOUT_MS) {
+                Solitaer::Warn("PIPE", "Qual: FIND_MANAGED_INSTANCES timeout after %d objects", scannedCount);
+                return false;
+            }
+        }
+
+        scannedCount++;
+
+        // Class filter
+        if (hasClassFilter) {
+            std::string cls = Diagoldze::GetObjectClass(objAddr);
+            if (cls.empty()) return true;
+            std::string clsLower = cls;
+            std::transform(clsLower.begin(), clsLower.end(), clsLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (cls != targetClass && clsLower != targetClassLower) return true;
+        }
+
+        // Read ScriptInstance
+        uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(objAddr + siOff, 0);
+        if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
+
+        // Verify CSharpInstance owner backlink
+        uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::CSHARP_OWNER_OFF, 0);
+        if (owner != objAddr) return true;
+
+        // Read GCHandle
+        uint64_t gcHandle = Zoltraak::ReadSafe<uint64_t>(
+            scriptInst + DynOff::CSHARP_GCHANDLE_OFF, 0);
+        if (!gcHandle || !Zoltraak::IsReadable(gcHandle)) return true;
+
+        // Dereference GCHandle → managed object
+        uint64_t managedObj = Zoltraak::ReadSafe<uint64_t>(gcHandle, 0);
+        if (!managedObj || !Zoltraak::IsReadable(managedObj)) return true;
+
+        // MethodTable validation (first qword must be high, aligned pointer)
+        uint64_t mt = Zoltraak::ReadSafe<uint64_t>(managedObj, 0);
+        if (mt < 0x7F0000000000ULL || (mt & 0x7) != 0) return true;
+
+        // NOTE: MT filter is applied INSIDE L1/L2 logic, not here.
+        // For L1 (wrapper direct): MT = wrapper's MethodTable.
+        // For L2 (nested child):   MT = child's MethodTable.
+        // This is critical because the user provides the CHILD's MT (from Instance Finder),
+        // not the wrapper's MT.
+
+        managedCount++;
+
+        // Apply managed field filter — with Level 2 nested object scanning.
+        // The GCHandle chain gives a .NET WRAPPER object, but the actual game data
+        // (HP, Side, etc.) often lives in a NESTED .NET object referenced by the wrapper.
+        // Level 1: check field directly on wrapper (managedObj + offset).
+        // Level 2: scan wrapper's reference fields for child .NET objects, check those.
+        if (hasFieldFilter) {
+            // Helper: read a managed field value at a given base + offset
+            auto readManagedField = [&](uint64_t base, int offset) -> int64_t {
+                uint64_t fieldAddr = base + offset;
+                if (managedFieldSize == 4)
+                    return static_cast<int64_t>(Zoltraak::ReadSafe<int32_t>(fieldAddr, 0));
+                else if (managedFieldSize == 8)
+                    return Zoltraak::ReadSafe<int64_t>(fieldAddr, 0);
+                else if (managedFieldSize == 2)
+                    return static_cast<int64_t>(Zoltraak::ReadSafe<int16_t>(fieldAddr, 0));
+                else
+                    return static_cast<int64_t>(Zoltraak::ReadSafe<int8_t>(fieldAddr, 0));
+            };
+
+            // Level 1: try the wrapper directly (MT check against wrapper MT)
+            bool matched = false;
+            uint64_t finalManagedObj = managedObj;
+            uint64_t matchedChildMt = 0; // MT of the matched object (for auto-lock)
+
+            {
+                bool mtOk = !hasMTFilter || (mt == requiredMT);
+                if (mtOk) {
+                    int64_t actual = readManagedField(managedObj, managedFieldOffset);
+                    if (ApplyFilterOp(filterFieldOp, actual, filterFieldValue)) {
+                        matched = true;
+                        matchedChildMt = mt;
+                    }
+                }
+            }
+
+            // Level 2: if L1 failed, scan wrapper's reference fields for nested .NET objects.
+            // Same approach as Phase 4.6 in Fern.cpp — scan 8-byte aligned fields in the
+            // wrapper for pointers to child .NET objects, then check their fields.
+            // MT filter applies to the CHILD's MethodTable here (not the wrapper's).
+            if (!matched) {
+                constexpr int L2_WRAPPER_SCAN = 0x200; // scan up to 512 bytes of wrapper
+                uint8_t wrapBuf[L2_WRAPPER_SCAN];
+                if (Zoltraak::ReadSafe(managedObj, wrapBuf, L2_WRAPPER_SCAN)) {
+                    for (int w = 8; w + 8 <= L2_WRAPPER_SCAN; w += 8) {
+                        uint64_t childPtr;
+                        memcpy(&childPtr, wrapBuf + w, sizeof(childPtr));
+
+                        // Filter: must be non-null, 8-byte aligned, heap pointer
+                        if (!childPtr || (childPtr & 0x7) != 0) continue;
+                        if ((childPtr >> 40) == 0) continue;
+
+                        // Validate child has a MethodTable
+                        uint64_t childMt = Zoltraak::ReadSafe<uint64_t>(childPtr, 0);
+                        if (childMt < 0x7F0000000000ULL || (childMt & 0x7) != 0) continue;
+                        if (!Zoltraak::IsReadable(childMt)) continue;
+
+                        // MT filter: check child's MT (user provides child MT from Instance Finder)
+                        if (hasMTFilter && childMt != requiredMT) continue;
+
+                        // Field offset must be past MethodTable
+                        if (managedFieldOffset < 8) continue;
+
+                        int64_t childActual = readManagedField(childPtr, managedFieldOffset);
+                        if (ApplyFilterOp(filterFieldOp, childActual, filterFieldValue)) {
+                            matched = true;
+                            finalManagedObj = childPtr;
+                            matchedChildMt = childMt;
+                            if (managedCount <= 5) {
+                                Solitaer::Info("PIPE", "Qual: [diag] managed#%d L2 HIT wrapper=%llX +0x%X→child=%llX "
+                                               "childMT=%llX field@0x%X=%lld",
+                                               managedCount,
+                                               static_cast<unsigned long long>(managedObj), w,
+                                               static_cast<unsigned long long>(childPtr),
+                                               static_cast<unsigned long long>(childMt),
+                                               managedFieldOffset,
+                                               static_cast<long long>(childActual));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Debug: log first 5 non-matching managed objects for diagnostics
+            if (managedCount <= 5 && !matched) {
+                Solitaer::Info("PIPE", "Qual: [diag] managed#%d obj=%llX managed=%llX wrapperMT=%llX "
+                               "→ NO MATCH (L1+L2)",
+                               managedCount,
+                               static_cast<unsigned long long>(objAddr),
+                               static_cast<unsigned long long>(managedObj),
+                               static_cast<unsigned long long>(mt));
+            }
+
+            if (!matched) return true;
+
+            // Auto-lock MethodTable on first match — use the MATCHED object's MT
+            // (child MT for L2 hits, wrapper MT for L1 hits) for type consistency.
+            bool isL2 = (finalManagedObj != managedObj);
+            if (!hasMTFilter && matchedCount == 0 && matchedChildMt != 0) {
+                requiredMT = matchedChildMt;
+                hasMTFilter = true;
+                Solitaer::Info("PIPE", "Qual: Auto-locked MT to %llX from first matching %s object",
+                               static_cast<unsigned long long>(matchedChildMt),
+                               isL2 ? "L2 child" : "L1 wrapper");
+            }
+
+            // Use finalManagedObj (could be wrapper or nested child) for the result
+            managedObj = finalManagedObj;
+        } else {
+            // No field filter — just MT filter on wrapper
+            if (hasMTFilter && mt != requiredMT) return true;
+        }
+
+        // Deduplicate by managedAddr — multiple Godot Controls can reference the
+        // same nested .NET object (e.g., Creature node + HP bar + name label all
+        // share the same .NET data object). Only store unique managedAddr values.
+        {
+            int idx = g_zoltManagedResults.count;
+            bool duplicate = false;
+            for (int d = 0; d < idx; d++) {
+                if (g_zoltManagedResults.entries[d].managedAddr == managedObj) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) return true; // skip — already recorded this managed object
+
+            matchedCount++;
+            if (idx < MANAGED_RESULTS_MAX) {
+                g_zoltManagedResults.entries[idx].objectAddr = objAddr;
+                g_zoltManagedResults.entries[idx].managedAddr = managedObj;
+                g_zoltManagedResults.count = idx + 1;
+            }
+        }
+
+        return true; // continue — find ALL matches
+    });
+
+    g_zoltMailbox.result = matchedCount;
+
+    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES → %d matched (%d managed, %d scanned) in %lu ms",
+                   matchedCount, managedCount, scannedCount,
+                   GetTickCount() - startTick);
+
+    if (matchedCount == 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "No managed objects matched (class='%s', %d managed found, %d scanned)",
+                 hasClassFilter ? className : "*", managedCount, scannedCount);
+        SetError(-3, msg);
+    } else {
+        SetDone(matchedCount);
+    }
 }
 
 // ---- Helpers ----

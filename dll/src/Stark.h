@@ -72,6 +72,21 @@ __declspec(dllexport) void Zolt_StopPipeServer();
 // Check if a UI client is connected to the pipe (returns 1/0)
 __declspec(dllexport) int Zolt_IsPipeConnected();
 
+// ----- Phase 4: .NET Managed Object exports -----
+
+// Check if the target game is a .NET Godot game (GodotSharp/coreclr loaded)
+// Returns 1 if .NET detected, 0 otherwise
+__declspec(dllexport) int Zolt_IsDotNetGame();
+
+// Get the .NET managed object address for a Godot Object.
+// Traverses: Object → CSharpInstance → GCHandle → managed object
+// Returns managed object pointer (0 if not a .NET object or chain broken)
+__declspec(dllexport) uint64_t Zolt_GetManagedObject(uint64_t objectAddr);
+
+// Get the ScriptInstance offset within a Godot Object (probed at runtime).
+// Returns offset (e.g. 0x68) or -1 if not yet probed.
+__declspec(dllexport) int Zolt_GetScriptInstanceOffset();
+
 } // extern "C"
 
 // Internal C++ interface used by dllmain
