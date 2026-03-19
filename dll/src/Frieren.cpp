@@ -18,12 +18,14 @@
 #include "Flamme.h"
 #include "Grimoire.h"
 #include "GodotSig.h"
+#include "Diagoldze.h"
 
 #include <Windows.h>
 #include <Psapi.h>
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -1222,11 +1224,20 @@ static std::string TrimVersionString(const std::string& raw) {
     return raw.substr(0, end);
 }
 
+// Helper: check if a string looks like a Godot version (e.g., "4.5.1.stable.official")
+static bool IsVersionCandidate(const std::string& s) {
+    if (s.size() < 3) return false;
+    if (s[0] < '1' || s[0] > '9') return false;
+    if (s[1] != '.') return false;
+    if (s[2] < '0' || s[2] > '9') return false;
+    return true;
+}
+
 // Scan .rdata for version strings (supports Godot 3.x and 4.x)
 static std::string DetectVersionFromRdata() {
     EnsureModuleInfo();
 
-    // Try 1: "Godot Engine v" (works for both 3.x and 4.x when present)
+    // Try 1a: "Godot Engine v" (works for both 3.x and 4.x when present)
     uint64_t match = Zoltraak::AOBScan(
         "47 6F 64 6F 74 20 45 6E 67 69 6E 65 20 76");
 
@@ -1239,8 +1250,40 @@ static std::string DetectVersionFromRdata() {
         }
     }
 
-    // Try 2: "4.?.?.stable" pattern (Godot 4.x stripped builds)
+    // Try 1b: "GodotEngine/" — HTTP User-Agent format used in multiplayer/networking
+    // e.g., "User-Agent: GodotEngine/4.5.1.m.8.mono.custom_build"
+    match = Zoltraak::AOBScan("47 6F 64 6F 74 45 6E 67 69 6E 65 2F");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match + 12, 48));
+        if (IsVersionCandidate(version)) {
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (GodotEngine/): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 1c: "[GodotVersionNumber]\0X.Y" — shader metadata format
+    match = Zoltraak::AOBScan(
+        "5B 47 6F 64 6F 74 56 65 72 73 69 6F 6E 4E 75 6D 62 65 72 5D 00");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match + 21, 32));
+        if (IsVersionCandidate(version)) {
+            Solitaer::Info("SCAN:Ver", "Found .rdata version ([GodotVersionNumber]): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 2: "4.?.?.stable" pattern (Godot 4.x with patch number)
     match = Zoltraak::AOBScan("34 2E ?? 2E ?? 2E 73 74 61 62 6C 65");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
+        if (!version.empty() && version[0] == '4') {
+            Solitaer::Info("SCAN:Ver", "Found .rdata version (4.x.y.stable): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 3: "4.?.stable" pattern (Godot 4.x WITHOUT patch, e.g., "4.5.stable")
+    match = Zoltraak::AOBScan("34 2E ?? 2E 73 74 61 62 6C 65");
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
         if (!version.empty() && version[0] == '4') {
@@ -1249,7 +1292,7 @@ static std::string DetectVersionFromRdata() {
         }
     }
 
-    // Try 3: "3.?.?.stable" pattern (Godot 3.x stable builds)
+    // Try 4: "3.?.?.stable" pattern (Godot 3.x stable builds)
     match = Zoltraak::AOBScan("33 2E ?? 2E ?? 2E 73 74 61 62 6C 65");
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
@@ -1259,7 +1302,7 @@ static std::string DetectVersionFromRdata() {
         }
     }
 
-    // Try 4: "3.?.dev" pattern (Godot 3.x development builds)
+    // Try 5: "3.?.dev" pattern (Godot 3.x development builds)
     match = Zoltraak::AOBScan("33 2E ?? 2E 64 65 76");
     if (match) {
         std::string version = TrimVersionString(Zoltraak::ReadString(match, 32));
@@ -1269,7 +1312,114 @@ static std::string DetectVersionFromRdata() {
         }
     }
 
+    // Try 6: Broader " v4." pattern — catches custom-named engines ("<name> v4.X...")
+    match = Zoltraak::AOBScan("20 76 34 2E");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match + 2, 32));
+        if (IsVersionCandidate(version)) {
+            Solitaer::Info("SCAN:Ver", "Found .rdata version ( v4.): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 7: Broader " v3." pattern — catches custom-named 3.x engines
+    match = Zoltraak::AOBScan("20 76 33 2E");
+    if (match) {
+        std::string version = TrimVersionString(Zoltraak::ReadString(match + 2, 32));
+        if (IsVersionCandidate(version)) {
+            Solitaer::Info("SCAN:Ver", "Found .rdata version ( v3.): '%s'", version.c_str());
+            return version;
+        }
+    }
+
+    // Try 8: Custom status patterns — "4.?.?.beta", "4.?.?.dev", "4.?.?.rc",
+    //         "4.?.?.custom", "4.?.?.alpha" (for forked/custom Godot builds)
+    static const char* customStatuses[] = {
+        "62 65 74 61",   // "beta"
+        "64 65 76",      // "dev"
+        "72 63",         // "rc"
+        "63 75 73 74 6F 6D", // "custom"
+        "61 6C 70 68 61",    // "alpha"
+    };
+    static const char* statusNames[] = { "beta", "dev", "rc", "custom", "alpha" };
+    for (int i = 0; i < 5; ++i) {
+        // Build pattern: "34 2E ?? 2E" + status
+        std::string pat = std::string("34 2E ?? 2E ") + customStatuses[i];
+        match = Zoltraak::AOBScan(pat.c_str());
+        if (match) {
+            std::string version = TrimVersionString(Zoltraak::ReadString(match, 48));
+            if (!version.empty() && version[0] == '4') {
+                Solitaer::Info("SCAN:Ver", "Found .rdata version (4.x.%s): '%s'",
+                    statusNames[i], version.c_str());
+                return version;
+            }
+        }
+    }
+
     Solitaer::Debug("SCAN:Ver", "No version string found in .rdata");
+    return "";
+}
+
+// Detect version by checking for landmark classes in ClassDB.
+// Each Godot version adds specific new classes. By checking for their presence,
+// we can infer the engine version even when string-based detection fails
+// (e.g., custom builds, forked engines, GCC/MinGW builds with modified version.py).
+static std::string DetectVersionFromClassDB() {
+    int classCount = Diagoldze::GetClassCount();
+    if (classCount <= 0) return "";
+
+    // Build a set of all class names for fast lookup
+    std::unordered_set<std::string> classes;
+    classes.reserve(classCount);
+    Diagoldze::EnumerateClasses([&](const std::string& name, uint64_t) {
+        classes.insert(name);
+    });
+
+    Solitaer::Info("SCAN:Ver", "ClassDB heuristic: %d classes loaded", classCount);
+
+    // Landmark classes per version (added in that specific version)
+    // Check from newest to oldest — first match wins
+    // 4.5: AimModifier3D, FoldableContainer
+    if (classes.count("AimModifier3D") || classes.count("FoldableContainer")) {
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.5 (AimModifier3D/FoldableContainer)");
+        return "4.5";
+    }
+    // 4.4: SpringBoneSimulator3D, LookAtModifier3D
+    if (classes.count("SpringBoneSimulator3D") || classes.count("LookAtModifier3D")) {
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.4 (SpringBoneSimulator3D/LookAtModifier3D)");
+        return "4.4";
+    }
+    // 4.3: Parallax2D, TileMapLayer, Compositor
+    if (classes.count("Parallax2D") || classes.count("TileMapLayer")) {
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.3 (Parallax2D/TileMapLayer)");
+        return "4.3";
+    }
+    // 4.2: GraphElement, Texture2DRD
+    if (classes.count("GraphElement") || classes.count("Texture2DRD")) {
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.2 (GraphElement/Texture2DRD)");
+        return "4.2";
+    }
+    // 4.1: check by exclusion (has Node3D but not 4.2 classes)
+    if (classes.count("Node3D") && !classes.count("GraphElement")) {
+        // Could be 4.0 or 4.1 — check for AudioStreamRandomizer (4.1+)
+        // Actually AudioStreamRandomizer was renamed in 4.1, check for SubViewportContainer
+        // which is in both. Use class count range as tiebreaker.
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.1 (Node3D present, no 4.2+ classes)");
+        return "4.1";
+    }
+    // 4.0: has Node3D (Spatial renamed to Node3D in 4.0)
+    if (classes.count("Node3D")) {
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 4.0");
+        return "4.0";
+    }
+    // 3.x: has Spatial instead of Node3D
+    if (classes.count("Spatial")) {
+        // 3.5+: has VisualShaderNodeVectorDecompose (added in 3.1, but always present in 3.5+)
+        Solitaer::Info("SCAN:Ver", "ClassDB heuristic: detected Godot 3.x (Spatial present)");
+        return "3.5";
+    }
+
+    Solitaer::Debug("SCAN:Ver", "ClassDB heuristic: no version markers found");
     return "";
 }
 
@@ -1592,9 +1742,16 @@ bool FindAll(EnginePointers& out, ScanProgressFn progress) {
         if (out.godotVersion.empty()) {
             out.godotVersion = DetectVersionFromRdata();
         }
+        // Fallback: infer version from ClassDB landmark classes
+        // (works for custom/forked Godot builds where version strings are modified)
+        if (out.godotVersion.empty()) {
+            out.godotVersion = DetectVersionFromClassDB();
+        }
         if (!out.godotVersion.empty()) {
             ParseVersion(out.godotVersion, out.godotMajor, out.godotMinor, out.godotPatch);
             StoreGodotVersion(out.godotMajor, out.godotMinor, out.godotPatch);
+            Solitaer::Summary("Phase 8: detected version '%s' (major=%u minor=%u patch=%u)",
+                out.godotVersion.c_str(), out.godotMajor, out.godotMinor, out.godotPatch);
         }
     }
 
