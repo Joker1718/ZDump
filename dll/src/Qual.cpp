@@ -1116,6 +1116,13 @@ static void HandleFindManagedInstances() {
         if (endp == mtHexStr) requiredMT = 0; // parse failed
     }
 
+    // memberName field: optional Godot node name filter (e.g. "Creature")
+    // Narrows scan to only objects whose node name contains this substring.
+    // This prevents Game/HealthBar/etc. from polluting auto-discover MT.
+    char nodeNameFilter[256];
+    memcpy(nodeNameFilter, g_zoltMailbox.memberName, sizeof(nodeNameFilter));
+    nodeNameFilter[255] = '\0';
+
     int32_t filterFieldOp = g_zoltMailbox.targetOp;
     int64_t filterFieldValue = g_zoltMailbox.targetValue;
     int32_t managedFieldOffset = g_zoltMailbox.filterOp;       // repurposed
@@ -1123,11 +1130,13 @@ static void HandleFindManagedInstances() {
     if (managedFieldSize <= 0 || managedFieldSize > 8) managedFieldSize = 4;
 
     bool hasClassFilter = (className[0] != '\0');
+    bool hasNodeNameFilter = (nodeNameFilter[0] != '\0');
     bool hasFieldFilter = (filterFieldOp != Zolt::Qual::FILTER_NONE && managedFieldOffset >= 0);
     bool hasMTFilter = (requiredMT != 0);
 
-    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES class='%s' MT=%s fieldOff=0x%X fieldOp=%d fieldVal=%lld fieldSize=%lld",
+    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES class='%s' node='%s' MT=%s fieldOff=0x%X fieldOp=%d fieldVal=%lld fieldSize=%lld",
                    hasClassFilter ? className : "*",
+                   hasNodeNameFilter ? nodeNameFilter : "*",
                    hasMTFilter ? mtHexStr : "(any)",
                    managedFieldOffset, filterFieldOp,
                    static_cast<long long>(filterFieldValue),
@@ -1186,6 +1195,22 @@ static void HandleFindManagedInstances() {
             std::transform(clsLower.begin(), clsLower.end(), clsLower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (cls != targetClass && clsLower != targetClassLower) return true;
+        }
+
+        // Node name filter — skip objects whose Godot node name doesn't contain
+        // the filter substring (case-insensitive). This narrows the search so
+        // auto-discover MT only locks to the correct .NET type.
+        if (hasNodeNameFilter) {
+            std::string nodeName = Serie::GetNodeName(objAddr);
+            if (nodeName.empty()) return true;
+            // Case-insensitive substring match
+            std::string nodeNameLower = nodeName;
+            std::string filterLower(nodeNameFilter);
+            std::transform(nodeNameLower.begin(), nodeNameLower.end(), nodeNameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (nodeNameLower.find(filterLower) == std::string::npos) return true;
         }
 
         // Read ScriptInstance
