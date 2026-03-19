@@ -1575,8 +1575,8 @@ static json HandleFindInstances(int id, const json& req) {
 
         bool match = false;
         if (exact) {
-            // Exact class name match (legacy behavior)
-            match = (cls == query);
+            // Exact match on class name OR object name
+            match = (cls == query) || (name == query);
         } else {
             // Partial, case-insensitive match on class name OR object name
             match = ContainsCaseInsensitive(cls, queryLower) ||

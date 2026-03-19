@@ -79,7 +79,7 @@ All DLL-side functionality is implemented and tested. UI is ~85% complete.
 - [x] **test_all_versions.ps1** — 13 targets (5 editors + 8 games)
 - [x] **test_pipe.ps1** — Pipe protocol integration tests
 - [x] **test_phase3b.ps1** — Phase 3b assertion tests
-- [ ] **xUnit UI tests** — Not started
+- [x] **xUnit UI tests** — 215 tests across 11 test classes (AddressHelper, CeLuaScriptService, CeXmlExportService, CsxExportService, DumpServiceParse, FieldValueConverter, KnownStructLayout, NodeFilterViewModel, PropertySearchViewModel, SdkExportService, VdfParser)
 
 ---
 

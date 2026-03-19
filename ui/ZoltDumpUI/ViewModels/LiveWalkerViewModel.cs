@@ -188,16 +188,29 @@ public partial class LiveWalkerViewModel : ViewModelBase
         await NavigateToAddressAsync(ParentAddr);
     }
 
+    /// <summary>
+    /// Name of the currently selected field in the DataGrid.
+    /// Set by the View; used to restore selection after Refresh.
+    /// </summary>
+    [ObservableProperty] private string? _selectedFieldName;
+
     [RelayCommand]
     private async Task RefreshAsync()
     {
         if (string.IsNullOrEmpty(CurrentAddress)) return;
+        // Remember selected field to restore after refresh
+        string? restoreField = SelectedFieldName;
+
         // If current view is a container drill-down, re-fetch container instead of instance
         var current = Breadcrumbs.Count > 0 ? Breadcrumbs[^1] : null;
         if (current?.IsContainer == true)
             await FetchAndShowContainerAsync(current.Address, current.VariantType, current.Name);
         else
             await FetchAndShowAsync(CurrentAddress);
+
+        // Restore selection and scroll position
+        if (!string.IsNullOrEmpty(restoreField))
+            PendingScrollTarget = restoreField;
     }
 
     [RelayCommand]
@@ -880,10 +893,13 @@ public partial class LiveWalkerViewModel : ViewModelBase
             {
                 try
                 {
+                    string? restoreField = SelectedFieldName;
                     var result = await _dump.WalkInstanceAsync(CurrentAddress, ct);
                     Fields.Clear();
                     foreach (var f in result.Fields)
                         Fields.Add(f);
+                    if (!string.IsNullOrEmpty(restoreField))
+                        PendingScrollTarget = restoreField;
                 }
                 catch (OperationCanceledException) { break; }
                 catch { /* ignore refresh errors */ }
@@ -891,18 +907,43 @@ public partial class LiveWalkerViewModel : ViewModelBase
         }
     }
 
+    partial void OnSearchQueryChanged(string value)
+    {
+        ApplySearch();
+    }
+
     public void ApplySearch()
     {
+        _searchMatchIndex = -1;
         if (string.IsNullOrWhiteSpace(SearchQuery))
         {
             foreach (var f in Fields) f.IsSearchMatch = false;
             return;
         }
+        LiveFieldValue? firstMatch = null;
         foreach (var f in Fields)
         {
-            f.IsSearchMatch = f.Name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
-                             f.Type.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase);
+            bool match = f.Name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                         f.Type.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase);
+            f.IsSearchMatch = match;
+            firstMatch ??= match ? f : null;
         }
+        // Scroll to first match
+        if (firstMatch is not null)
+            PendingScrollTarget = firstMatch.Name;
+    }
+
+    /// <summary>Index of current search match for next/prev navigation.</summary>
+    private int _searchMatchIndex = -1;
+
+    /// <summary>Navigate to the next search match. Wraps around at the end.</summary>
+    public void NextSearchMatch()
+    {
+        if (string.IsNullOrWhiteSpace(SearchQuery)) return;
+        var matches = Fields.Where(f => f.IsSearchMatch).ToList();
+        if (matches.Count == 0) return;
+        _searchMatchIndex = (_searchMatchIndex + 1) % matches.Count;
+        PendingScrollTarget = matches[_searchMatchIndex].Name;
     }
 }
 
