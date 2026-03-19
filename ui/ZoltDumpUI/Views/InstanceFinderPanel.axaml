@@ -17,7 +17,7 @@
                             Command="{Binding FindInstancesCommand}" />
                     <CheckBox Content="Exact" DockPanel.Dock="Right" IsChecked="{Binding ExactMatch}"
                               Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
-                    <TextBox x:Name="ClassNameBox" Text="{Binding SearchClassName}" Watermark="Class name..." />
+                    <TextBox x:Name="ClassNameBox" Text="{Binding SearchClassName}" Watermark="Name or class..." />
                 </DockPanel>
                 <DockPanel>
                     <Button Content="Lookup" DockPanel.Dock="Right" Margin="4,0,0,0"

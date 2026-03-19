@@ -1577,6 +1577,14 @@ static json HandleFindInstances(int id, const json& req) {
         if (exact) {
             // Exact match on class name OR object name
             match = (cls == query) || (name == query);
+            // Backup: try confirmed NODE_NAME offset directly.
+            // ProbeObjectName may return wrong StringName for some objects
+            // (e.g. a field at a lower offset gets picked up before the actual name).
+            if (!match && DynOff::NODE_NAME >= 0) {
+                std::string nodeName = Flamme::Resolve(objAddr + DynOff::NODE_NAME);
+                if (!nodeName.empty() && nodeName != name)
+                    match = (nodeName == query);
+            }
         } else {
             // Partial, case-insensitive match on class name OR object name
             match = ContainsCaseInsensitive(cls, queryLower) ||
