@@ -41,7 +41,8 @@ $games = @(
     @{ Name="Virtual Cottage";           Exe="H:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="H:\SteamLibrary\steamapps\common\Virtual Cottage" },
     @{ Name="Upload Labs";               Exe="H:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="H:\SteamLibrary\steamapps\common\Upload Labs" },
     @{ Name="Holo X Break";              Exe="H:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="H:\SteamLibrary\steamapps\common\Holo X Break" },
-    @{ Name="Dome Keeper";               Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" }
+    @{ Name="Dome Keeper";               Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" },
+    @{ Name="Slay the Spire 2";         Exe="H:\SteamLibrary\steamapps\common\Slay the Spire 2\SlayTheSpire2.exe";         Args=$null; LogDir="SlayTheSpire2";             ProxyDir="H:\SteamLibrary\steamapps\common\Slay the Spire 2" }
 )
 
 # Select which targets to test
