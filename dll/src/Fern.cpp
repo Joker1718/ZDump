@@ -589,8 +589,14 @@ static json HandleFindByAddress(int id, const json& req) {
         uint64_t foundManagedObj = 0;
         uint64_t foundManagedOff = 0;
         int foundLevel = 0;   // Which level matched (1, 2, or 3)
+        int foundWrapOff = INT_MAX; // L2: wrapper field offset where child ref was found
         int siCount = 0;      // Count of objects with ScriptInstance
         int csharpCount = 0;  // Count of non-GDScript ScriptInstances
+
+        // Collect all L2 parent objects (deduplicated) for returning alternatives.
+        // Multiple Godot objects can reference the same nested .NET child.
+        struct L2Alt { uint64_t objAddr; int slot; int wrapOff; };
+        std::vector<L2Alt> l2Alts;
 
         // Helper: validate a pointer looks like a .NET MethodTable pointer.
         // MethodTables live in module/CLR address space (typically 0x7FFx on Win64),
@@ -685,12 +691,30 @@ static json HandleFindByAddress(int id, const json& req) {
                                 if (!isLikelyMethodTable(childMt)) continue;
 
                                 uint64_t off46 = addr - wval;
-                                if (!foundObj46 || off46 < foundManagedOff) {
+
+                                // Collect all L2 parent objects (deduplicated by objAddr)
+                                {
+                                    bool dup = false;
+                                    for (auto& a : l2Alts) {
+                                        if (a.objAddr == objAddr) { dup = true; break; }
+                                    }
+                                    if (!dup && l2Alts.size() < 32) {
+                                        l2Alts.push_back({objAddr, index, w});
+                                    }
+                                }
+
+                                // Prefer: (1) smaller target offset, (2) same offset but
+                                // smaller wrapper field offset (closer field = more likely owner)
+                                bool better = !foundObj46
+                                    || off46 < foundManagedOff
+                                    || (off46 == foundManagedOff && foundLevel == 2 && w < foundWrapOff);
+                                if (better) {
                                     foundObj46 = objAddr;
                                     foundSlot46 = index;
                                     foundManagedObj = wval;
                                     foundManagedOff = off46;
                                     foundLevel = 2;
+                                    foundWrapOff = w;
                                 }
                             }
                         }
@@ -802,6 +826,29 @@ static json HandleFindByAddress(int id, const json& req) {
             resp["slot_index"]      = foundSlot46;
             resp["managed_object"]  = AddrToHex(foundManagedObj);
             resp["offset_from_base"]= static_cast<int>(foundManagedOff);
+
+            // Include all L2 alternative parent objects so the UI can show them all.
+            // Multiple Godot objects often reference the same nested .NET child
+            // (e.g. Creature + TypeLabel + HealthBar all share the same data object).
+            if (foundLevel == 2 && l2Alts.size() > 1) {
+                json alts = json::array();
+                for (auto& alt : l2Alts) {
+                    if (alt.objAddr == foundObj46) continue; // skip primary
+                    std::string altName = ReadObjectName(alt.objAddr);
+                    std::string altClass = Diagoldze::GetObjectClass(alt.objAddr);
+                    json a;
+                    a["address"]    = AddrToHex(alt.objAddr);
+                    a["name"]       = SafeStr(altName);
+                    a["class_name"] = SafeStr(altClass);
+                    a["slot_index"] = alt.slot;
+                    alts.push_back(a);
+                }
+                if (!alts.empty()) {
+                    resp["alternatives"] = alts;
+                    Solitaer::Info("PIPE", "find_by_address: Phase 4.6 L2 has %d alternative parent objects",
+                        static_cast<int>(alts.size()));
+                }
+            }
             return resp;
         }
     }
@@ -2148,6 +2195,60 @@ static json HandleTriggerScan(int id, const json& /*req*/) {
             DynOff::bIsDotNetGame.store(isDotNet, std::memory_order_release);
             if (isDotNet) {
                 Solitaer::Info("PIPE", ".NET Godot game detected (GodotSharp/coreclr module found)");
+                // Probe CSharpInstance layout: find a real CSharp object and determine
+                // owner and GCHandle offsets by testing backlink + MT validation.
+                // The probed GDScript layout has owner=+0x10, but CSharpInstance may differ.
+                int siOff = DynOff::OBJECT_SCRIPT_INSTANCE;
+                if (siOff >= 0) {
+                    Solitaer::Info("PIPE", "Probing CSharpInstance layout (SI offset=+0x%X)...", siOff);
+                    bool probed = false;
+                    // Test owner at candidate offsets (+0x08 and +0x10)
+                    static const int ownerCandidates[] = { 0x08, 0x10 };
+                    // Test GCHandle at candidate offsets (+0x20 and +0x28)
+                    static const int gcCandidates[] = { 0x20, 0x28 };
+
+                    Ausetiese::ForEachEx([&](int /*index*/, uint64_t objAddr) {
+                        if (probed) return false;
+                        uint64_t si = Zoltraak::ReadSafe<uint64_t>(objAddr + siOff, 0);
+                        if (!si || !Zoltraak::IsReadable(si)) return true;
+
+                        // Try each owner offset candidate
+                        for (int ownerOff : ownerCandidates) {
+                            uint64_t owner = Zoltraak::ReadSafe<uint64_t>(si + ownerOff, 0);
+                            if (owner != objAddr) continue;
+
+                            // Owner matches! Now try GCHandle candidates
+                            for (int gcOff : gcCandidates) {
+                                uint64_t gcH = Zoltraak::ReadSafe<uint64_t>(si + gcOff, 0);
+                                if (!gcH || !Zoltraak::IsReadable(gcH)) continue;
+                                uint64_t managed = Zoltraak::ReadSafe<uint64_t>(gcH, 0);
+                                if (!managed || !Zoltraak::IsReadable(managed)) continue;
+                                // MethodTable validation
+                                uint64_t mt = Zoltraak::ReadSafe<uint64_t>(managed, 0);
+                                if (mt < 0x7F0000000000ULL || (mt & 0x7) != 0) continue;
+
+                                // Valid CSharpInstance chain found!
+                                DynOff::CSHARP_OWNER_OFF = ownerOff;
+                                DynOff::CSHARP_GCHANDLE_OFF = gcOff;
+                                probed = true;
+                                Solitaer::Info("PIPE", "CSharpInstance layout probed: owner=+0x%X gchandle=+0x%X "
+                                               "(from obj=%llX si=%llX managed=%llX MT=%llX)",
+                                               ownerOff, gcOff,
+                                               static_cast<unsigned long long>(objAddr),
+                                               static_cast<unsigned long long>(si),
+                                               static_cast<unsigned long long>(managed),
+                                               static_cast<unsigned long long>(mt));
+                                return false; // stop scan
+                            }
+                        }
+                        return true; // continue
+                    });
+
+                    if (!probed) {
+                        Solitaer::Warn("PIPE", "CSharpInstance layout probe FAILED — using defaults (owner=+0x%X gc=+0x%X)",
+                                       DynOff::CSHARP_OWNER_OFF, DynOff::CSHARP_GCHANDLE_OFF);
+                    }
+                }
             }
         }
     }

@@ -13,6 +13,7 @@
 #include "Qual.h"
 #include "Heiter.h"
 #include "Solitaer.h"
+#include "Zoltraak.h"
 #include "Grimoire.h"
 #include "BuildInfo.h"
 
@@ -306,6 +307,52 @@ void Zolt_StopPipeServer() {
 
 int Zolt_IsPipeConnected() {
     return Zolt::Fern::IsConnected() ? 1 : 0;
+}
+
+// ----- Phase 4: .NET Managed Object exports -----
+
+int Zolt_IsDotNetGame() {
+    return Zolt::DynOff::bIsDotNetGame.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+uint64_t Zolt_GetManagedObject(uint64_t objectAddr) {
+    if (!objectAddr || !Zolt::DynOff::bIsDotNetGame.load(std::memory_order_relaxed))
+        return 0;
+
+    // Step 1: Read ScriptInstance* from Object
+    int siOff = Zolt::DynOff::OBJECT_SCRIPT_INSTANCE;
+    if (siOff < 0) return 0;
+
+    uint64_t scriptInst = Zolt::Zoltraak::ReadSafe<uint64_t>(objectAddr + siOff, 0);
+    if (!scriptInst || !Zolt::Zoltraak::IsReadable(scriptInst))
+        return 0;
+
+    // Step 2: Verify it's a CSharpInstance (owner backlink at +0x08)
+    uint64_t owner = Zolt::Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + Zolt::DynOff::CSHARP_OWNER_OFF, 0);
+    if (owner != objectAddr) return 0;
+
+    // Step 3: Read GCHandle at CSharpInstance+0x20
+    uint64_t gcHandle = Zolt::Zoltraak::ReadSafe<uint64_t>(
+        scriptInst + Zolt::DynOff::CSHARP_GCHANDLE_OFF, 0);
+    if (!gcHandle || !Zolt::Zoltraak::IsReadable(gcHandle))
+        return 0;
+
+    // Step 4: Dereference GCHandle → managed object
+    uint64_t managedObj = Zolt::Zoltraak::ReadSafe<uint64_t>(gcHandle, 0);
+    if (!managedObj || !Zolt::Zoltraak::IsReadable(managedObj))
+        return 0;
+
+    // Step 5: Basic MethodTable validation (first qword should be a high pointer)
+    uint64_t mt = Zolt::Zoltraak::ReadSafe<uint64_t>(managedObj, 0);
+    if (mt < 0x7F0000000000ULL || (mt & 0x7) != 0)
+        return 0;
+
+    return managedObj;
+}
+
+int Zolt_GetScriptInstanceOffset() {
+    return Zolt::DynOff::OBJECT_SCRIPT_INSTANCE;
 }
 
 } // extern "C"
