@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ZoltDumpUI.Models;
@@ -23,6 +24,13 @@ public partial class LiveWalkerPanel : UserControl
         BuildFieldsContextMenu();
         WireDoubleClick();
         WireScrollTarget();
+        WireSelectionTracking();
+        // Re-apply search highlights when virtualized rows are recycled during scroll
+        FieldsGrid.LayoutUpdated += (_, _) =>
+        {
+            if (DataContext is LiveWalkerViewModel { SearchQuery.Length: > 0 })
+                ApplySearchHighlights();
+        };
     }
 
     /// <summary>
@@ -51,36 +59,80 @@ public partial class LiveWalkerPanel : UserControl
         };
     }
 
+    private static readonly IBrush SearchHighlightBrush = new SolidColorBrush(Color.FromArgb(60, 255, 200, 0)); // subtle yellow
+    private static readonly IBrush DefaultRowBrush = new SolidColorBrush(Color.Parse("#1E1E1E"));
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName != nameof(LiveWalkerViewModel.PendingScrollTarget)) return;
         if (sender is not LiveWalkerViewModel vm) return;
-        string? target = vm.PendingScrollTarget;
-        if (string.IsNullOrEmpty(target)) return;
 
-        // Clear immediately so we don't process it twice
-        vm.PendingScrollTarget = null;
-
-        // Dispatch after layout so the DataGrid has the new items
-        Dispatcher.UIThread.Post(() =>
+        if (e.PropertyName == nameof(LiveWalkerViewModel.PendingScrollTarget))
         {
-            var match = vm.Fields.FirstOrDefault(f => f.Name == target);
-            if (match is not null)
+            string? target = vm.PendingScrollTarget;
+            if (string.IsNullOrEmpty(target)) return;
+
+            // Clear immediately so we don't process it twice
+            vm.PendingScrollTarget = null;
+
+            // Dispatch after layout so the DataGrid has the new items
+            Dispatcher.UIThread.Post(() =>
             {
-                FieldsGrid.SelectedItem = match;
-                FieldsGrid.ScrollIntoView(match, null);
-            }
-        }, DispatcherPriority.Background);
+                var match = vm.Fields.FirstOrDefault(f => f.Name == target);
+                if (match is not null)
+                {
+                    FieldsGrid.SelectedItem = match;
+                    FieldsGrid.ScrollIntoView(match, null);
+                }
+            }, DispatcherPriority.Background);
+        }
+        else if (e.PropertyName == nameof(LiveWalkerViewModel.SearchQuery))
+        {
+            // Update row highlights after search changes
+            Dispatcher.UIThread.Post(ApplySearchHighlights, DispatcherPriority.Background);
+        }
     }
 
-    /// <summary>Enter key in address TextBox triggers Go navigation.</summary>
+    /// <summary>Apply background highlight to DataGrid rows matching the search.</summary>
+    private void ApplySearchHighlights()
+    {
+        // Walk visible DataGridRow containers and set background based on IsSearchMatch
+        foreach (var row in FieldsGrid.GetVisualDescendants().OfType<DataGridRow>())
+        {
+            if (row.DataContext is LiveFieldValue field)
+                row.Background = field.IsSearchMatch ? SearchHighlightBrush : DefaultRowBrush;
+        }
+    }
+
+    /// <summary>Track DataGrid selection changes so ViewModel knows the selected field name for refresh restore.</summary>
+    private void WireSelectionTracking()
+    {
+        FieldsGrid.SelectionChanged += (_, _) =>
+        {
+            if (DataContext is LiveWalkerViewModel vm && FieldsGrid.SelectedItem is LiveFieldValue field)
+                vm.SelectedFieldName = field.Name;
+        };
+    }
+
+    /// <summary>Enter key in address TextBox triggers Go; Enter/F3 in search triggers next match.</summary>
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.Key == Key.Enter && AddressBox.IsFocused && DataContext is LiveWalkerViewModel vm)
+        if (DataContext is not LiveWalkerViewModel vm) return;
+
+        if (e.Key == Key.Enter && AddressBox.IsFocused)
         {
             if (vm.GoToAddressCommand.CanExecute(null))
                 vm.GoToAddressCommand.Execute(null);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && SearchBox.IsFocused)
+        {
+            vm.NextSearchMatch();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.F3)
+        {
+            vm.NextSearchMatch();
             e.Handled = true;
         }
     }

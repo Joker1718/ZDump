@@ -89,6 +89,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         // ── Editable container key at the top (if applicable) ──
         if (hasKey)
@@ -145,6 +146,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X', addr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("else");
         sb.AppendLine($"  print('[ZoltDump] WARNING: {displayTarget} address is 0')");
         sb.AppendLine("end");
@@ -154,6 +156,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"print('[ZoltDump] {symbolName} symbol removed')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -184,6 +187,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         // ── Mailbox init check ──
         EmitMailboxInit(sb);
@@ -209,12 +213,14 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"print(string.format('[ZoltDump] {symbolName} = %X (obj+0x{offset:X})', addr))");
+        sb.AppendLine("closeLuaEngine()");
         sb.AppendLine();
         sb.AppendLine("[DISABLE]");
         sb.AppendLine($"{{$lua}}");
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"print('[ZoltDump] {symbolName} symbol removed')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -247,6 +253,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         // ── Mailbox init check ──
         EmitMailboxInit(sb);
@@ -271,6 +278,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X', addr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("else");
         sb.AppendLine($"  print('[ZoltDump] WARNING: {memberName} address is 0')");
         sb.AppendLine("end");
@@ -280,6 +288,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"print('[ZoltDump] {symbolName} symbol removed')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -325,6 +334,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         // ── Editable container key at the top (if applicable) ──
         if (hasKey)
@@ -415,6 +425,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X (obj @ %X)', addr, objAddr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("else");
         sb.AppendLine($"  print('[ZoltDump] WARNING: {displayTarget} address is 0')");
         sb.AppendLine("end");
@@ -424,6 +435,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"print('[ZoltDump] {symbolName} symbol removed')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -467,6 +479,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         EmitMailboxInit(sb);
 
@@ -481,12 +494,14 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X', addr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("end");
         sb.AppendLine();
         sb.AppendLine("[DISABLE]");
         sb.AppendLine($"{{$lua}}");
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -506,6 +521,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         EmitMailboxInit(sb);
 
@@ -520,12 +536,14 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X', addr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("end");
         sb.AppendLine();
         sb.AppendLine("[DISABLE]");
         sb.AppendLine($"{{$lua}}");
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -560,6 +578,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine();
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine();
+        EmitCloseLuaEngineDef(sb);
 
         // ── Editable search criteria at the top ──
         sb.AppendLine("-- ═══ Search criteria (edit these to find a different instance) ═══");
@@ -600,6 +619,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  unregisterSymbol('{symbolName}')");
         sb.AppendLine($"  registerSymbol('{symbolName}', addr)");
         sb.AppendLine($"  print(string.format('[ZoltDump] {symbolName} = %X (obj @ %X)', addr, objAddr))");
+        sb.AppendLine("  closeLuaEngine()");
         sb.AppendLine("else");
         sb.AppendLine($"  print('[ZoltDump] WARNING: {memberName} address is 0')");
         sb.AppendLine("end");
@@ -609,6 +629,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine("if syntaxcheck then return end");
         sb.AppendLine($"unregisterSymbol('{symbolName}')");
         sb.AppendLine($"print('[ZoltDump] {symbolName} symbol removed')");
+        sb.AppendLine("closeLuaEngine()");
 
         return sb.ToString();
     }
@@ -616,6 +637,23 @@ public sealed class CeLuaScriptService
     // ============================================================
     // Shared Lua code emitters
     // ============================================================
+
+    /// <summary>
+    /// Emit closeLuaEngine() helper definition. Idempotent — only defines if not already present.
+    /// Closes the CE Lua Engine window after a successful script run.
+    /// </summary>
+    private static void EmitCloseLuaEngineDef(StringBuilder sb)
+    {
+        sb.AppendLine("if not closeLuaEngine then");
+        sb.AppendLine("    function closeLuaEngine()");
+        sb.AppendLine("        synchronize(function()");
+        sb.AppendLine("          getLuaEngine().Close()");
+        sb.AppendLine("        end)");
+        sb.AppendLine("    end");
+        sb.AppendLine("    registerLuaFunctionHighlight('closeLuaEngine')");
+        sb.AppendLine("end");
+        sb.AppendLine();
+    }
 
     /// <summary>Emit mailbox address resolution + DLL init wait.</summary>
     private void EmitMailboxInit(StringBuilder sb)

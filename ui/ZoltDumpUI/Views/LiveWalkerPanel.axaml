@@ -81,7 +81,7 @@
 
         <!-- Search -->
         <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526">
-            <TextBox Text="{Binding SearchQuery}" Watermark="Search fields..."
+            <TextBox x:Name="SearchBox" Text="{Binding SearchQuery}" Watermark="Search fields... (Enter/F3 = next)"
                      FontSize="12" />
         </Border>
 
