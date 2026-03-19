@@ -530,6 +530,11 @@ if ($Target -in "All", "DLL") {
         Copy-Item $dissectSrc -Destination $DIST_DIR -Force
         Write-Ok "zolt_dissect.lua copied to dist\"
     }
+    $managedSrc = Join-Path $ROOT_DIR "scripts\zolt_managed_records.lua"
+    if (Test-Path $managedSrc) {
+        Copy-Item $managedSrc -Destination $DIST_DIR -Force
+        Write-Ok "zolt_managed_records.lua copied to dist\"
+    }
     $buildNumSrc = Join-Path $ROOT_DIR "build_number.txt"
     if (Test-Path $buildNumSrc) {
         Copy-Item $buildNumSrc -Destination $DIST_DIR -Force
