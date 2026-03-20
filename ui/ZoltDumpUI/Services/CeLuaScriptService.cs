@@ -661,7 +661,8 @@ public sealed class CeLuaScriptService
     /// <returns>Complete AA script with [ENABLE]/[DISABLE] sections</returns>
     public string GenerateManagedInstanceScript(string className,
         Models.MemberFilterCriteria criteria, string symbolName, string fieldDisplayName,
-        string? methodTableHex = null, string? nodeName = null)
+        string? methodTableHex = null, string? nodeName = null,
+        int l2ChildRefOffset = -1)
     {
         int targetOffset = criteria.TargetFieldOffset;
         int filterOffset = criteria.FilterFieldOffset;
@@ -722,6 +723,13 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"local filter_value    = 0");
             sb.AppendLine($"local filter_size     = 4");
         }
+        // L2 child reference offset: when data lives in a nested child managed object
+        // (not directly in the wrapper), this tells the DLL which wrapper field offset
+        // to follow. -1 = auto-scan all offsets (default for L1/simple L2).
+        if (l2ChildRefOffset >= 8)
+            sb.AppendLine($"local l2_child_ref    = 0x{l2ChildRefOffset:X}       -- wrapper field offset to child managed object");
+        else
+            sb.AppendLine($"local l2_child_ref    = 0             -- 0 = auto-scan wrapper refs (no specific hint)");
         sb.AppendLine();
 
         // ── Mailbox + results buffer init ──
@@ -770,6 +778,10 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_FILTER_OP:X}, 0)");
         sb.AppendLine($"  writeQword(mb + 0x{OFF_FILTER_VALUE:X}, 4)");
         sb.AppendLine("end");
+        sb.AppendLine();
+        // L2 child ref offset hint (memberIndex field, 0x00C)
+        sb.AppendLine("-- L2 child ref: tells DLL which wrapper offset to follow for nested child");
+        sb.AppendLine($"writeInteger(mb + 0x{OFF_MEMBER_INDEX:X}, l2_child_ref)");
         sb.AppendLine();
         EmitTriggerAndPoll(sb, CMD_FIND_MANAGED_INSTANCES, "FIND_MANAGED_INSTANCES", resultIsCount: true);
         sb.AppendLine();

@@ -458,9 +458,13 @@ public partial class LiveWalkerViewModel : ViewModelBase
                     string? mtHex = nodeName is null
                         ? GetCurrentMethodTableHex()
                         : null;
+                    // L2 child ref offset: wrapper field that references the child
+                    // (e.g. 0x58 when navigated wrapper → +0x58 → child)
+                    int l2ChildRefOffset = GetL2ChildRefOffset();
                     symbolName = CeLuaScriptService.MakeSymbolName(godotClass, $"managed_0x{field.Offset:X}");
                     script = _ceLua.GenerateManagedInstanceScript(
-                        godotClass, criteria, symbolName, memberName, mtHex, nodeName);
+                        godotClass, criteria, symbolName, memberName, mtHex, nodeName,
+                        l2ChildRefOffset);
                     label = criteria.FindAll
                         ? $"{godotClass} .NET managed +0x{field.Offset:X} (all)"
                         : $"{godotClass} .NET managed +0x{field.Offset:X}";
@@ -848,6 +852,47 @@ public partial class LiveWalkerViewModel : ViewModelBase
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Get the L2 child reference offset within the wrapper managed object.
+    /// When the user navigated: Godot node → wrapper (MT:...) → +0x58 (ref) → child (MT:...),
+    /// this returns 0x58 — the wrapper field offset that references the child managed object.
+    /// Returns -1 if no L2 navigation detected (data is directly in the wrapper).
+    /// </summary>
+    private int GetL2ChildRefOffset()
+    {
+        // Walk breadcrumbs backwards looking for the pattern:
+        //   [wrapper: ClassName="ManagedObject", Name="MT:..."] → current managed child
+        // The current object's breadcrumb entry has MemberName like "+0x58 (ref)"
+        // which was the field clicked to drill down from wrapper to child.
+        if (Breadcrumbs.Count < 2) return -1;
+
+        // Current breadcrumb (the managed child we're viewing)
+        var current = Breadcrumbs[^1];
+        if (current.ClassName != "ManagedObject") return -1;
+
+        // The field used to navigate here should be like "+0x58 (ref)"
+        string? memberName = current.MemberName;
+        if (string.IsNullOrEmpty(memberName)) return -1;
+
+        // Parse "+0xNN" or "+0xNN (ref)" pattern
+        if (memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+        {
+            int end = 3;
+            while (end < memberName.Length && Uri.IsHexDigit(memberName[end])) end++;
+            if (end > 3 && int.TryParse(memberName[3..end], System.Globalization.NumberStyles.HexNumber,
+                null, out int offset))
+            {
+                // Verify the previous breadcrumb is also a ManagedObject (the wrapper)
+                var prev = Breadcrumbs[^2];
+                if (prev.ClassName == "ManagedObject" || prev.Name.Contains("MT:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return offset;
+                }
+            }
+        }
+        return -1;
     }
 
     /// <summary>
