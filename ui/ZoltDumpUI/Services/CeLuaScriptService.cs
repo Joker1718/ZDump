@@ -872,7 +872,7 @@ public sealed class CeLuaScriptService
         }
         else
         {
-            // ── Single-result: register symbol for first match ──
+            // ── Single-result: register symbol + create memory record ──
             sb.AppendLine("-- ═══ Register symbol for first match ═══");
             sb.AppendLine($"local entryBase = resBuf + 0x{RES_ENTRIES:X}");
             sb.AppendLine("local managedAddr = readQword(entryBase + 8)");
@@ -880,6 +880,16 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"unregisterSymbol('{symbolName}')");
             sb.AppendLine($"registerSymbol('{symbolName}', addr)");
             sb.AppendLine($"print(string.format('[ZoltDump] {symbolName} = %X (managed @ %X)', addr, managedAddr))");
+            sb.AppendLine();
+            sb.AppendLine($"local recDesc = '{EscapeLua(className)} .NET managed +0x{targetOffset:X}'");
+            sb.AppendLine("synchronize(function()");
+            sb.AppendLine("  local al = getAddressList()");
+            sb.AppendLine("  local rec = al.createMemoryRecord()");
+            sb.AppendLine("  rec.Description = recDesc");
+            sb.AppendLine("  rec.Address = string.format('%X', addr)");
+            sb.AppendLine("  rec.Vartype = vtDword  -- C# int = 32-bit");
+            sb.AppendLine("  rec.Color = 0xFF8000");
+            sb.AppendLine("end)");
             sb.AppendLine("closeLuaEngine()");
             sb.AppendLine();
             sb.AppendLine("[DISABLE]");
