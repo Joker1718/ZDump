@@ -467,3 +467,4 @@ test/kill_*
 test/run_*
 vendor/godot-4.5.1-rc2/
 vendor/minihook/
+vendor/Harmony/
