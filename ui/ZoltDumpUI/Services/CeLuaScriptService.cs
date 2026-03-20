@@ -51,6 +51,7 @@ public sealed class CeLuaScriptService
     private const int CMD_FIND_INSTANCE_WITH_MEMBER = 4;
     private const int CMD_FIND_INSTANCE_BY_PATH     = 5;
     private const int CMD_FIND_MANAGED_INSTANCES    = 6;
+    private const int CMD_RESOLVE_FIELD_OFFSET     = 7;
 
     // Results buffer offsets (must match ManagedSearchResults in Qual.h)
     private const int RES_COUNT    = 0x000;
@@ -696,7 +697,7 @@ public sealed class CeLuaScriptService
         // ── Editable configuration at the top ──
         sb.AppendLine("-- ═══ Configuration (edit these for your game) ═══");
         sb.AppendLine($"local godot_class     = '{EscapeLua(className)}'   -- Godot base class to search");
-        sb.AppendLine($"local target_offset   = 0x{targetOffset:X}         -- managed field offset for target");
+        sb.AppendLine($"local target_offset   = 0x{targetOffset:X}         -- managed field offset for target (fallback)");
         // Node name filter — narrows scan to Godot nodes whose name contains this substring.
         // Prevents unrelated nodes (Game, HealthBar) from polluting auto-discover MT.
         if (!string.IsNullOrEmpty(nodeName))
@@ -711,7 +712,7 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"local method_table    = ''  -- auto-discover from first match");
         if (filterOffset >= 0)
         {
-            sb.AppendLine($"local filter_offset   = 0x{filterOffset:X}         -- managed field offset for filter");
+            sb.AppendLine($"local filter_offset   = 0x{filterOffset:X}         -- managed field offset for filter (fallback)");
             sb.AppendLine($"local filter_op       = {filterOp}              -- {FormatFilterOp(filterOp)}");
             sb.AppendLine($"local filter_value    = {filterValue}           -- comparison value");
             sb.AppendLine($"local filter_size     = {filterSize}            -- read size in bytes (4=int32, 8=int64)");
@@ -730,6 +731,26 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"local l2_child_ref    = 0x{l2ChildRefOffset:X}       -- wrapper field offset to child managed object");
         else
             sb.AppendLine($"local l2_child_ref    = 0             -- 0 = auto-scan wrapper refs (no specific hint)");
+
+        // .NET reflection info — resolves field names to offsets at runtime.
+        // When present, the script survives game updates that change field layouts.
+        string dotNetType = criteria.DotNetTypeName;
+        string targetFieldName = criteria.TargetFieldName;
+        string filterFieldName = criteria.FilterFieldName;
+        bool hasReflection = !string.IsNullOrEmpty(dotNetType) &&
+                             !string.IsNullOrEmpty(targetFieldName);
+        if (hasReflection)
+        {
+            sb.AppendLine();
+            sb.AppendLine("-- .NET reflection: resolve field offsets by name at runtime.");
+            sb.AppendLine("-- Survives game updates that change field layouts but keep the same names.");
+            sb.AppendLine($"local dotnet_type      = '{EscapeLua(dotNetType)}'");
+            sb.AppendLine($"local target_field     = '{EscapeLua(targetFieldName)}'");
+            if (!string.IsNullOrEmpty(filterFieldName))
+                sb.AppendLine($"local filter_field     = '{EscapeLua(filterFieldName)}'");
+            else
+                sb.AppendLine($"local filter_field     = ''  -- no reflection for filter");
+        }
         sb.AppendLine();
 
         // ── Mailbox + results buffer init ──
@@ -738,6 +759,13 @@ public sealed class CeLuaScriptService
         sb.AppendLine("if resBuf == 0 or resBuf == nil then");
         sb.AppendLine("  error('[ZoltDump] g_zoltManagedResults not found — DLL too old')");
         sb.AppendLine("end");
+
+        // ── Resolve field offsets via CMD_RESOLVE_FIELD_OFFSET ──
+        if (hasReflection)
+        {
+            sb.AppendLine();
+            EmitResolveFieldOffset(sb, filterFieldName);
+        }
         sb.AppendLine();
 
         // ── CMD_FIND_MANAGED_INSTANCES ──
@@ -992,6 +1020,73 @@ public sealed class CeLuaScriptService
         sb.AppendLine("  print('[ZoltDump] ERROR: ' .. errMsg)");
         sb.AppendLine("  error(errMsg)");
         sb.AppendLine("end");
+    }
+
+    /// <summary>
+    /// Emit Lua code that resolves .NET field names to offsets via CMD_RESOLVE_FIELD_OFFSET.
+    /// Updates target_offset (and optionally filter_offset) in-place before the scan.
+    /// Falls back to hardcoded offsets if resolution fails (e.g. DLL too old, Denken not loaded).
+    /// </summary>
+    private void EmitResolveFieldOffset(StringBuilder sb, string filterFieldName)
+    {
+        bool hasFilterField = !string.IsNullOrEmpty(filterFieldName);
+
+        sb.AppendLine("-- ═══ Resolve .NET field offsets by name (survives game updates) ═══");
+        sb.AppendLine("local function resolveField(typeName, fieldName)");
+        sb.AppendLine("  -- Wait for mailbox idle");
+        sb.AppendLine("  for i = 1, 100 do");
+        sb.AppendLine($"    if readInteger(mb + 0x{OFF_STATUS:X}) == 0 then break end");
+        sb.AppendLine("    sleep(10)");
+        sb.AppendLine("  end");
+        sb.AppendLine();
+        sb.AppendLine("  -- Write type name and field name");
+        sb.AppendLine($"  writeString(mb + 0x{OFF_CLASS_NAME:X}, typeName)");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_CLASS_NAME:X} + #typeName, 0)");
+        sb.AppendLine($"  writeString(mb + 0x{OFF_MEMBER_NAME:X}, fieldName)");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_MEMBER_NAME:X} + #fieldName, 0)");
+        sb.AppendLine();
+        sb.AppendLine($"  writeInteger(mb + 0x{OFF_STATUS:X}, 0)");
+        sb.AppendLine($"  writeInteger(mb + 0x{OFF_RESULT:X}, 0)");
+        sb.AppendLine($"  writeInteger(mb + 0x{OFF_CMD:X}, {CMD_RESOLVE_FIELD_OFFSET})");
+        sb.AppendLine();
+        sb.AppendLine("  for i = 1, 200 do");
+        sb.AppendLine($"    if readInteger(mb + 0x{OFF_STATUS:X}) == 1 then break end");
+        sb.AppendLine("    sleep(10)");
+        sb.AppendLine("  end");
+        sb.AppendLine();
+        sb.AppendLine($"  if readInteger(mb + 0x{OFF_STATUS:X}) ~= 1 then return nil end");
+        sb.AppendLine($"  local off = readInteger(mb + 0x{OFF_RESULT:X})");
+        sb.AppendLine("  if off < 0 then return nil end");
+        sb.AppendLine("  return off");
+        sb.AppendLine("end");
+        sb.AppendLine();
+
+        // Resolve target field
+        sb.AppendLine("if #dotnet_type > 0 and #target_field > 0 then");
+        sb.AppendLine("  local resolved = resolveField(dotnet_type, target_field)");
+        sb.AppendLine("  if resolved then");
+        sb.AppendLine("    print(string.format('[ZoltDump] Resolved %s → 0x%X (was 0x%X)', target_field, resolved, target_offset))");
+        sb.AppendLine("    target_offset = resolved");
+        sb.AppendLine("  else");
+        sb.AppendLine("    print(string.format('[ZoltDump] WARN: %s not resolved, using fallback 0x%X', target_field, target_offset))");
+        sb.AppendLine("  end");
+
+        // Resolve filter field
+        if (hasFilterField)
+        {
+            sb.AppendLine("  if #filter_field > 0 and filter_offset >= 0 then");
+            sb.AppendLine("    resolved = resolveField(dotnet_type, filter_field)");
+            sb.AppendLine("    if resolved then");
+            sb.AppendLine("      print(string.format('[ZoltDump] Resolved filter %s → 0x%X (was 0x%X)', filter_field, resolved, filter_offset))");
+            sb.AppendLine("      filter_offset = resolved");
+            sb.AppendLine("    else");
+            sb.AppendLine("      print(string.format('[ZoltDump] WARN: filter %s not resolved, using fallback 0x%X', filter_field, filter_offset))");
+            sb.AppendLine("    end");
+            sb.AppendLine("  end");
+        }
+
+        sb.AppendLine("end");
+        sb.AppendLine();
     }
 
     // ============================================================

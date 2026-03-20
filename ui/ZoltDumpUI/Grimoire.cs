@@ -86,6 +86,9 @@ public static class Grimoire
     /// <summary>Legacy proxy DLL filename (version.dll — cleaned up on deploy)</summary>
     public const string LegacyProxyDllFileName = "version.dll";
 
+    /// <summary>.NET reflection bridge DLL (deployed alongside proxy for .NET Godot games)</summary>
+    public const string ReflectorDllFileName = "ZoltReflector.dll";
+
     /// <summary>PE ProductName embedded in proxy DLL for identification</summary>
     public const string ProxyProductName = "Zolt-Dump";
 

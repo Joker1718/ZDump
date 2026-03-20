@@ -15,6 +15,7 @@
 #include "Heiter.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
+#include "Denken.h"
 
 #include <cstdio>
 #include <cmath>
@@ -2014,9 +2015,45 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force =
 // ============================================================
 // For .NET/C# Godot games, the chain is:
 //   GodotObject[+ScriptInstance] → CSharpInstance → GCHandle → .NET managed object
-// This function resolves the chain and emits raw fields from the managed object.
-// Field names are not available (would require .NET metadata parsing), so we use
-// offset-based names like "(managed) +0x10" with heuristic type detection.
+// This function resolves the chain and emits fields from the managed object.
+// When Denken (CLR bridge) is active, uses reflection for real field names/types.
+// Otherwise falls back to heuristic offset-based scanning.
+
+// MethodTable → TypeName cache (populated lazily from Denken::EnumerateTypes)
+static std::unordered_map<uint64_t, std::string> s_mtToTypeName;
+static bool s_mtCacheBuilt = false;
+
+static const std::string& ResolveManagedTypeName(uint64_t methodTable) {
+    static const std::string empty;
+    if (!s_mtCacheBuilt && Zolt::Denken::IsReady()) {
+        auto types = Zolt::Denken::EnumerateTypes();
+        for (auto& ts : types) {
+            if (ts.methodTablePtr != 0)
+                s_mtToTypeName[ts.methodTablePtr] = ts.fullName;
+        }
+        s_mtCacheBuilt = true;
+        Solitaer::Info("WALK", "Denken MT cache built: %zu types", s_mtToTypeName.size());
+    }
+    auto it = s_mtToTypeName.find(methodTable);
+    return (it != s_mtToTypeName.end()) ? it->second : empty;
+}
+
+// Map C# type name to Variant::Type for display
+static int CSharpTypeToVariantType(const std::string& typeName) {
+    if (typeName == "System.Int32" || typeName == "System.Int64" ||
+        typeName == "System.Int16" || typeName == "System.Byte" ||
+        typeName == "System.SByte" || typeName == "System.UInt32" ||
+        typeName == "System.UInt64" || typeName == "System.UInt16")
+        return 2; // INT
+    if (typeName == "System.Single" || typeName == "System.Double")
+        return 3; // FLOAT
+    if (typeName == "System.Boolean")
+        return 1; // BOOL
+    if (typeName == "System.String" || typeName == "Godot.StringName")
+        return 4; // STRING
+    return 0; // NIL (unknown — will show raw hex)
+}
+
 static void ReadCSharpManagedFields(uint64_t objAddr,
                                      const std::function<void(const FieldEntry& entry)>& callback) {
     if (!DynOff::bIsDotNetGame.load(std::memory_order_acquire)) return;
@@ -2066,13 +2103,154 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
         return;
     }
 
-    // Read base instance size from MethodTable.
-    // .NET MethodTable layout (CoreCLR):
-    //   +0x04: uint16_t m_wFlags
-    //   +0x04: uint32_t m_BaseSize (at MT+0x04)
-    // Actually in CoreCLR: MT+0x04 = m_dwFlags (uint32_t), MT+0x04 is overloaded.
-    // The actual BaseSize in .NET 8+ is at MT+0x04 (lower 16 bits of flags << 2 or direct).
-    // Safer approach: just scan a fixed size and heuristically detect types.
+    Solitaer::Info("WALK", "ReadCSharpManagedFields: obj=%p SI=%p GCHandle=%p managed=%p MT=%p",
+        reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(scriptInst),
+        reinterpret_cast<void*>(gcHandle), reinterpret_cast<void*>(managedObj),
+        reinterpret_cast<void*>(methodTable));
+
+    // ============================================================
+    // Strategy 1: Denken reflection (real field names + types)
+    // ============================================================
+    const std::string& typeName = ResolveManagedTypeName(methodTable);
+    if (!typeName.empty()) {
+        auto layout = Zolt::Denken::GetTypeLayout(typeName);
+        if (!layout.fields.empty()) {
+            Solitaer::Info("WALK", "ReadCSharpManagedFields: Denken resolved '%s' — %zu fields",
+                typeName.c_str(), layout.fields.size());
+
+            // Read managed object body for value extraction
+            constexpr int MAX_READ = 0x400;
+            int readSize = (layout.instanceSize > 0 && layout.instanceSize <= MAX_READ)
+                           ? layout.instanceSize : MAX_READ;
+            std::vector<uint8_t> buf(readSize);
+            if (!Zoltraak::ReadSafe(managedObj, buf.data(), readSize)) {
+                Solitaer::Debug("WALK", "ReadCSharpManagedFields: failed to read managed body at %p",
+                    reinterpret_cast<void*>(managedObj));
+                return;
+            }
+
+            int fieldCount = 0;
+            for (auto& fi : layout.fields) {
+                if (fi.isStatic) continue;  // Skip static fields
+                if (fi.offset < 0) continue; // No offset resolved
+
+                FieldEntry entry;
+                entry.className = typeName;
+                entry.offset = fi.offset;
+                entry.nativeSize = fi.size > 0 ? fi.size : 4;
+                entry.name = fi.name;
+                entry.value.rawAddr = managedObj + fi.offset;
+
+                // Read value based on size and type
+                if (fi.offset + fi.size > readSize) {
+                    entry.value.type = 0;
+                    entry.value.typeName = fi.typeName;
+                    entry.value.value = "(out of range)";
+                } else if (!fi.isValueType && fi.size == 8) {
+                    // Reference type field — pointer to another .NET object
+                    uint64_t refVal;
+                    memcpy(&refVal, buf.data() + fi.offset, sizeof(refVal));
+                    entry.value.type = 24; // Object
+                    entry.nativeSize = 8;
+                    entry.value.typeName = fi.typeName;
+                    if (refVal != 0 && Zoltraak::IsReadable(refVal)) {
+                        char valBuf[80];
+                        snprintf(valBuf, sizeof(valBuf), "%s@%llX",
+                            fi.typeName.c_str(), static_cast<unsigned long long>(refVal));
+                        entry.value.value = valBuf;
+                        entry.value.ptrTarget = refVal;
+                    } else {
+                        entry.value.value = refVal == 0 ? "null" : "(invalid)";
+                    }
+                } else if (fi.size == 1) {
+                    uint8_t val1 = buf[fi.offset];
+                    if (fi.typeName == "System.Boolean") {
+                        entry.value.type = 1; // BOOL
+                        entry.value.typeName = "bool";
+                        entry.value.value = val1 ? "true" : "false";
+                    } else {
+                        entry.value.type = 2;
+                        entry.value.typeName = fi.typeName;
+                        entry.value.value = std::to_string(val1);
+                    }
+                } else if (fi.size == 2) {
+                    uint16_t val2;
+                    memcpy(&val2, buf.data() + fi.offset, sizeof(val2));
+                    entry.value.type = 2;
+                    entry.value.typeName = fi.typeName;
+                    entry.value.value = std::to_string(static_cast<int16_t>(val2));
+                } else if (fi.size == 4) {
+                    uint32_t val4;
+                    memcpy(&val4, buf.data() + fi.offset, sizeof(val4));
+
+                    if (fi.typeName == "System.Single") {
+                        float fval;
+                        memcpy(&fval, &val4, sizeof(fval));
+                        entry.value.type = 3;
+                        entry.value.typeName = "float";
+                        char fmtBuf[32];
+                        snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", fval);
+                        entry.value.value = fmtBuf;
+                    } else if (fi.typeName == "System.Boolean") {
+                        entry.value.type = 1;
+                        entry.value.typeName = "bool";
+                        entry.value.value = val4 ? "true" : "false";
+                    } else {
+                        int vt = CSharpTypeToVariantType(fi.typeName);
+                        entry.value.type = vt ? vt : 2;
+                        entry.value.typeName = fi.typeName;
+                        entry.value.value = std::to_string(static_cast<int32_t>(val4));
+                    }
+                } else if (fi.size == 8 && fi.isValueType) {
+                    uint64_t val8;
+                    memcpy(&val8, buf.data() + fi.offset, sizeof(val8));
+
+                    if (fi.typeName == "System.Double") {
+                        double dval;
+                        memcpy(&dval, &val8, sizeof(dval));
+                        entry.value.type = 3;
+                        entry.value.typeName = "double";
+                        char fmtBuf[32];
+                        snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", dval);
+                        entry.value.value = fmtBuf;
+                    } else if (fi.typeName == "System.Int64") {
+                        entry.value.type = 2;
+                        entry.value.typeName = "long";
+                        entry.value.value = std::to_string(static_cast<int64_t>(val8));
+                    } else {
+                        entry.value.type = 2;
+                        entry.value.typeName = fi.typeName;
+                        entry.value.value = std::to_string(val8);
+                    }
+                } else {
+                    // Struct or unknown size — show as hex
+                    entry.value.type = 0;
+                    entry.value.typeName = fi.typeName;
+                    char hexBuf[128];
+                    int hexLen = 0;
+                    int showBytes = (fi.size < 32) ? fi.size : 32;
+                    for (int b = 0; b < showBytes && fi.offset + b < readSize; b++)
+                        hexLen += snprintf(hexBuf + hexLen, sizeof(hexBuf) - hexLen,
+                            "%02X", buf[fi.offset + b]);
+                    if (fi.size > 32) hexLen += snprintf(hexBuf + hexLen,
+                        sizeof(hexBuf) - hexLen, "...");
+                    entry.value.value = hexBuf;
+                }
+
+                callback(entry);
+                fieldCount++;
+            }
+
+            Solitaer::Info("WALK",
+                "ReadCSharpManagedFields: Denken emitted %d fields for '%s' (obj %p)",
+                fieldCount, typeName.c_str(), reinterpret_cast<void*>(objAddr));
+            return; // Done — Denken provided field info
+        }
+    }
+
+    // ============================================================
+    // Strategy 2: Heuristic scan (fallback when Denken unavailable)
+    // ============================================================
     constexpr int MANAGED_SCAN_SIZE = 0x200; // Scan first 512 bytes
     constexpr int FIELD_START = 0x08;        // Fields start after MethodTable pointer
 
@@ -2082,11 +2260,6 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
             reinterpret_cast<void*>(managedObj));
         return;
     }
-
-    Solitaer::Info("WALK", "ReadCSharpManagedFields: obj=%p SI=%p GCHandle=%p managed=%p MT=%p",
-        reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(scriptInst),
-        reinterpret_cast<void*>(gcHandle), reinterpret_cast<void*>(managedObj),
-        reinterpret_cast<void*>(methodTable));
 
     // Try to read BaseSize from MethodTable for precise scan range.
     // CoreCLR layout: MethodTable+0x04 = m_BaseSize (uint32_t)
@@ -2100,9 +2273,6 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
     }
 
     // Heuristic field emission: scan with 4-byte steps from +0x08 onward.
-    // .NET CLR aligns fields: references at 8-byte boundaries, int/float at 4-byte.
-    // At each 4-byte offset, determine if it's a pointer (8 bytes) or value (4 bytes).
-    // When a pointer is detected, emit it and skip the next 4 bytes.
     int fieldCount = 0;
     for (int off = FIELD_START; off + 4 <= scanEnd; ) {
         FieldEntry entry;
@@ -2383,13 +2553,108 @@ void WalkInstance(uint64_t objAddr,
             if (mt && (mt & 0x7) == 0 && (mt >> 40) >= 0x7F && Zoltraak::IsReadable(mt)) {
                 Solitaer::Info("WALK", "WalkInstance: %p is not a Godot Object but has MethodTable %p — reading as .NET managed object",
                     reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(mt));
-                // Emit raw managed fields directly (reuse the same logic as ReadCSharpManagedFields
-                // but without the CSharpInstance chain — we already have the managed object address)
+
+                // Try Denken reflection first for real field names
+                const std::string& mtTypeName = ResolveManagedTypeName(mt);
+                if (!mtTypeName.empty()) {
+                    auto layout = Zolt::Denken::GetTypeLayout(mtTypeName);
+                    if (!layout.fields.empty()) {
+                        Solitaer::Info("WALK", "WalkInstance: Denken resolved '%s' — %zu fields",
+                            mtTypeName.c_str(), layout.fields.size());
+                        constexpr int MAX_READ = 0x400;
+                        int readSize = (layout.instanceSize > 0 && layout.instanceSize <= MAX_READ)
+                                       ? layout.instanceSize : MAX_READ;
+                        std::vector<uint8_t> dbuf(readSize);
+                        if (Zoltraak::ReadSafe(objAddr, dbuf.data(), readSize)) {
+                            for (auto& fi : layout.fields) {
+                                if (fi.isStatic || fi.offset < 0) continue;
+                                FieldEntry entry;
+                                entry.className = mtTypeName;
+                                entry.offset = fi.offset;
+                                entry.nativeSize = fi.size > 0 ? fi.size : 4;
+                                entry.name = fi.name;
+                                entry.value.rawAddr = objAddr + fi.offset;
+                                // Value reading — same logic as ReadCSharpManagedFields Denken path
+                                if (fi.offset + fi.size > readSize) {
+                                    entry.value.type = 0;
+                                    entry.value.typeName = fi.typeName;
+                                    entry.value.value = "(out of range)";
+                                } else if (!fi.isValueType && fi.size == 8) {
+                                    uint64_t refVal;
+                                    memcpy(&refVal, dbuf.data() + fi.offset, sizeof(refVal));
+                                    entry.value.type = 24;
+                                    entry.nativeSize = 8;
+                                    entry.value.typeName = fi.typeName;
+                                    if (refVal != 0 && Zoltraak::IsReadable(refVal)) {
+                                        char valBuf[80];
+                                        snprintf(valBuf, sizeof(valBuf), "%s@%llX",
+                                            fi.typeName.c_str(), static_cast<unsigned long long>(refVal));
+                                        entry.value.value = valBuf;
+                                        entry.value.ptrTarget = refVal;
+                                    } else {
+                                        entry.value.value = refVal == 0 ? "null" : "(invalid)";
+                                    }
+                                } else if (fi.size == 4) {
+                                    uint32_t val4;
+                                    memcpy(&val4, dbuf.data() + fi.offset, sizeof(val4));
+                                    if (fi.typeName == "System.Single") {
+                                        float fval; memcpy(&fval, &val4, sizeof(fval));
+                                        entry.value.type = 3;
+                                        entry.value.typeName = "float";
+                                        char fmtBuf[32];
+                                        snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", fval);
+                                        entry.value.value = fmtBuf;
+                                    } else if (fi.typeName == "System.Boolean") {
+                                        entry.value.type = 1;
+                                        entry.value.typeName = "bool";
+                                        entry.value.value = val4 ? "true" : "false";
+                                    } else {
+                                        entry.value.type = 2;
+                                        entry.value.typeName = fi.typeName;
+                                        entry.value.value = std::to_string(static_cast<int32_t>(val4));
+                                    }
+                                } else if (fi.size == 1) {
+                                    uint8_t val1 = dbuf[fi.offset];
+                                    if (fi.typeName == "System.Boolean") {
+                                        entry.value.type = 1; entry.value.typeName = "bool";
+                                        entry.value.value = val1 ? "true" : "false";
+                                    } else {
+                                        entry.value.type = 2; entry.value.typeName = fi.typeName;
+                                        entry.value.value = std::to_string(val1);
+                                    }
+                                } else if (fi.size == 8 && fi.isValueType) {
+                                    uint64_t val8;
+                                    memcpy(&val8, dbuf.data() + fi.offset, sizeof(val8));
+                                    if (fi.typeName == "System.Double") {
+                                        double dval; memcpy(&dval, &val8, sizeof(dval));
+                                        entry.value.type = 3; entry.value.typeName = "double";
+                                        char fmtBuf[32]; snprintf(fmtBuf, sizeof(fmtBuf), "%.4f", dval);
+                                        entry.value.value = fmtBuf;
+                                    } else {
+                                        entry.value.type = 2; entry.value.typeName = fi.typeName;
+                                        entry.value.value = std::to_string(static_cast<int64_t>(val8));
+                                    }
+                                } else {
+                                    entry.value.type = 0; entry.value.typeName = fi.typeName;
+                                    char hexBuf[128]; int hexLen = 0;
+                                    int showBytes = (fi.size < 32) ? fi.size : 32;
+                                    for (int b = 0; b < showBytes && fi.offset + b < readSize; b++)
+                                        hexLen += snprintf(hexBuf + hexLen, sizeof(hexBuf) - hexLen,
+                                            "%02X", dbuf[fi.offset + b]);
+                                    entry.value.value = hexBuf;
+                                }
+                                callback(entry);
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                // Fallback: heuristic scan (no Denken or type not found)
                 constexpr int MANAGED_SCAN_SIZE = 0x200;
                 constexpr int FIELD_START = 0x08;
                 uint8_t buf[MANAGED_SCAN_SIZE];
                 if (Zoltraak::ReadSafe(objAddr, buf, MANAGED_SCAN_SIZE)) {
-                    // Try to read BaseSize from MethodTable
                     uint32_t baseSize = Zoltraak::ReadSafe<uint32_t>(mt + 0x04, 0);
                     int scanEnd = MANAGED_SCAN_SIZE;
                     if (baseSize >= 0x10 && baseSize <= 0x2000) {
@@ -2397,7 +2662,6 @@ void WalkInstance(uint64_t objAddr,
                         if (scanEnd > MANAGED_SCAN_SIZE) scanEnd = MANAGED_SCAN_SIZE;
                     }
 
-                    // 4-byte stride scan: pointers at 8-byte boundaries, values at 4-byte
                     for (int off = FIELD_START; off + 4 <= scanEnd; ) {
                         FieldEntry entry;
                         entry.className = "(managed)";
@@ -2408,7 +2672,6 @@ void WalkInstance(uint64_t objAddr,
                         snprintf(nameBuf, sizeof(nameBuf), "+0x%02X", off);
                         entry.name = nameBuf;
 
-                        // At 8-byte-aligned offsets, check if pointer
                         bool emittedPtr = false;
                         if ((off & 0x7) == 0 && off + 8 <= scanEnd) {
                             uint64_t val8;

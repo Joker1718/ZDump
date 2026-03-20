@@ -466,6 +466,7 @@ public sealed class DumpService : IDumpService
             Hex = obj["hex"]?.GetValue<string>() ?? "",
             Address = obj["address"]?.GetValue<string>() ?? "",
             Offset = obj["offset"]?.GetValue<int>() ?? 0,
+            ClassName = obj["class_name"]?.GetValue<string>() ?? "",
             Size = obj["size"]?.GetValue<int>() ?? 0,
             BitShift = obj["bit_shift"]?.GetValue<int>() ?? 0,
             BitMask = obj["bit_mask"]?.GetValue<int>() ?? 0,

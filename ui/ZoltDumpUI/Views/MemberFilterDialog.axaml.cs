@@ -76,7 +76,11 @@ public partial class MemberFilterDialog : Window
         _targetFieldOffset = targetFieldOffset;
         _managedSiblings = managedSiblings;
 
-        TargetLabel.Text = $"Target: +0x{targetFieldOffset:X}";
+        // Show field name if Denken-resolved, otherwise raw offset
+        bool hasFieldName = !targetMember.StartsWith("+0x", StringComparison.OrdinalIgnoreCase);
+        TargetLabel.Text = hasFieldName
+            ? $"Target: {targetMember} (+0x{targetFieldOffset:X})"
+            : $"Target: +0x{targetFieldOffset:X}";
 
         // Show "Find all" checkbox in managed mode
         FindAllCheck.IsVisible = true;
@@ -87,7 +91,11 @@ public partial class MemberFilterDialog : Window
         FilterMemberCombo.Items.Add(new ComboBoxItem { Content = "(no filter)", Tag = "" });
         foreach (var f in managedSiblings)
         {
-            string label = $"+0x{f.Offset:X} ({f.Type}, current={f.CurrentValue})";
+            // Show field name if Denken-resolved, otherwise raw offset
+            bool namedField = !f.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase);
+            string label = namedField
+                ? $"{f.Name} +0x{f.Offset:X} ({f.Type}, current={f.CurrentValue})"
+                : $"+0x{f.Offset:X} ({f.Type}, current={f.CurrentValue})";
             FilterMemberCombo.Items.Add(new ComboBoxItem
             {
                 Content = label,
@@ -114,15 +122,22 @@ public partial class MemberFilterDialog : Window
             // Managed mode: filter by offset
             int filterOffset = -1;
             int filterSize = 4;
+            string filterFieldName = "";
             if (FilterMemberCombo.SelectedItem is ComboBoxItem filterItem)
             {
                 string? tag = filterItem.Tag?.ToString();
                 if (!string.IsNullOrEmpty(tag) && int.TryParse(tag, out int off))
                 {
                     filterOffset = off;
-                    // Find size from managed siblings
+                    // Find size and field name from managed siblings
                     var match = _managedSiblings.Find(f => f.Offset == off);
-                    if (match is not null) filterSize = match.Size;
+                    if (match is not null)
+                    {
+                        filterSize = match.Size;
+                        // Use field name if it's a Denken-resolved name (not raw offset)
+                        if (!match.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+                            filterFieldName = match.Name;
+                    }
                 }
             }
 
@@ -138,6 +153,7 @@ public partial class MemberFilterDialog : Window
                 TargetFieldOffset = _targetFieldOffset,
                 FilterFieldOffset = filterOffset,
                 FilterFieldSize = filterSize,
+                FilterFieldName = filterFieldName,
             };
         }
         else

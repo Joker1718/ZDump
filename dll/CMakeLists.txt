@@ -116,6 +116,7 @@ add_library(ZoltDumper SHARED
     src/Himmel.cpp
     src/Heiter.cpp
     src/Qual.cpp
+    src/Denken.cpp
     src/version.rc
 )
 
@@ -199,6 +200,7 @@ if(BUILD_PROXY_DLL)
         src/Heiter.cpp
         src/Qual.cpp
         src/Macht.cpp
+        src/Denken.cpp
         src/version.rc
     )
 
