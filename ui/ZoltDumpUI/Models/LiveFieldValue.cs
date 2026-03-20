@@ -23,6 +23,9 @@ public sealed class LiveFieldValue
     public int BitShift { get; init; }
     public int BitMask { get; init; }
 
+    /// <summary>Owning class name. For managed fields, this is the .NET type name (e.g. "MegaCrit...Creature").</summary>
+    public string ClassName { get; init; } = "";
+
     // Navigation hints
     public string PtrValue { get; init; } = "";
     public string PtrClass { get; init; } = "";

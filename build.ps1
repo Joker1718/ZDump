@@ -376,6 +376,40 @@ if ($Target -in "All", "ProxyDLL") {
             }
         }
     }
+
+    # Build ZoltReflector.dll (.NET reflection bridge) and copy to dist/proxy/
+    $reflectorProj = Join-Path $ROOT_DIR "managed\ZoltReflector\ZoltReflector.csproj"
+    if (Test-Path $reflectorProj) {
+        Write-Step "Building ZoltReflector.dll..."
+        & dotnet build $reflectorProj -c Release --no-incremental --nologo -v minimal
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "ZoltReflector build failed"
+            $exitCode = 1
+        }
+        else {
+            $proxyOutDir = Join-Path $DIST_DIR "proxy"
+            if (-not (Test-Path $proxyOutDir)) { New-Item -Path $proxyOutDir -ItemType Directory | Out-Null }
+
+            $reflectorOutDir = Join-Path $ROOT_DIR "managed\ZoltReflector\bin\Release\net8.0"
+            $reflectorDll = Join-Path $reflectorOutDir "ZoltReflector.dll"
+            if (Test-Path $reflectorDll) {
+                Copy-Item $reflectorDll -Destination $proxyOutDir -Force
+                $dllSize = Get-FileSize (Join-Path $proxyOutDir "ZoltReflector.dll")
+                Write-Ok "ZoltReflector.dll ($dllSize) -> dist\proxy\"
+
+                # Copy deps.json (assembly metadata for CLR loading)
+                $depsJson = Join-Path $reflectorOutDir "ZoltReflector.deps.json"
+                if (Test-Path $depsJson) {
+                    Copy-Item $depsJson -Destination $proxyOutDir -Force
+                    Write-Ok "ZoltReflector.deps.json -> dist\proxy\"
+                }
+            }
+            else {
+                Write-Fail "ZoltReflector.dll not found in build output"
+                $exitCode = 1
+            }
+        }
+    }
 }
 
 # ============================================================
@@ -566,6 +600,14 @@ if (Test-Path $DIST_DIR) {
     Get-ChildItem $DIST_DIR -File -ErrorAction SilentlyContinue | ForEach-Object {
         $sz = Get-FileSize $_.FullName
         Write-Host "    $($_.Name)  ($sz)" -ForegroundColor Gray
+    }
+    # List proxy subfolder contents
+    $proxyDir = Join-Path $DIST_DIR "proxy"
+    if (Test-Path $proxyDir) {
+        Get-ChildItem $proxyDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $sz = Get-FileSize $_.FullName
+            Write-Host "    proxy\$($_.Name)  ($sz)" -ForegroundColor Gray
+        }
     }
 }
 

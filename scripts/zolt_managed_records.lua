@@ -24,27 +24,39 @@ local CONFIG = {
     -- Use "" to search ALL objects with managed objects (slower).
     GODOT_CLASS = "Control",
 
+    -- Fully qualified .NET type name for reflection-based offset resolution.
+    -- When set, field names (fieldName) are resolved to offsets at runtime via
+    -- the Denken CLR bridge. This makes scripts survive game updates that change
+    -- field layouts but keep the same field names.
+    -- Set to nil or "" to use hardcoded offsets only.
+    DOTNET_TYPE = "MegaCrit.Sts2.Core.Entities.Creatures.Creature",
+
     -- .NET managed object field definitions
-    -- name:   Display name in CE address list
-    -- offset: Byte offset within the .NET managed object (after MethodTable ptr)
-    -- ceType: CE type enum (vtByte=0, vtWord=1, vtDword=2, vtQword=3, vtSingle=4, vtDouble=5)
+    -- name:      Display name in CE address list
+    -- fieldName: .NET field name for reflection-based offset resolution (optional)
+    --            Supports C# names including backing fields: "<Prop>k__BackingField"
+    --            When DOTNET_TYPE is set, fieldName is resolved to offset automatically.
+    -- offset:    Byte offset within the .NET managed object (fallback if reflection fails)
+    -- ceType:    CE type enum (vtByte=0, vtWord=1, vtDword=2, vtQword=3, vtSingle=4, vtDouble=5)
     FIELDS = {
-        { name = "HP",    offset = 0x84, ceType = 2 },  -- int32 _currentHp
-        { name = "MaxHP", offset = 0x88, ceType = 2 },  -- int32 _maxHp
-        { name = "Side",  offset = 0x8C, ceType = 2 },  -- int32 <Side>k__BackingField
+        { name = "HP",    fieldName = "_currentHp",              offset = 0x84, ceType = 2 },
+        { name = "MaxHP", fieldName = "_maxHp",                  offset = 0x88, ceType = 2 },
+        { name = "Side",  fieldName = "<Side>k__BackingField",   offset = 0x8C, ceType = 2 },
     },
 
     -- Filter: only include objects where a managed field matches a condition.
     -- The filter is applied DLL-side (fast, no per-object roundtrip).
     -- Set to nil to include ALL managed objects of GODOT_CLASS.
     --
-    -- offset: byte offset of the filter field within managed object
+    -- fieldName: .NET field name for reflection resolution (optional, preferred)
+    -- offset: byte offset of the filter field within managed object (fallback)
     -- op:     comparison operator ("==", "!=", ">", "<", ">=", "<=")
     -- value:  comparison value (integer)
     -- size:   read size in bytes (1, 2, 4, or 8). Default: 4
     FILTER = {
-        offset = 0x8C,  -- <Side>k__BackingField
-        op     = "!=",  -- exclude enemies (Side=1) => keep player (Side=0)
+        fieldName = "<Side>k__BackingField",
+        offset = 0x8C,  -- fallback if reflection fails
+        op     = "!=",
         value  = 1,
         size   = 4,
     },
@@ -92,6 +104,7 @@ local MB = {
     -- Commands
     CMD_IDLE                   = 0,
     CMD_FIND_MANAGED_INSTANCES = 6,
+    CMD_RESOLVE_FIELD_OFFSET   = 7,
 
     -- Status
     STATUS_IDLE = 0,
@@ -188,10 +201,118 @@ local function readStringFromAddr(addr, maxLen)
 end
 
 -- ============================================================
+-- Reflection: Resolve .NET field names → offsets via DLL
+-- ============================================================
+
+--- Resolve a single .NET field name to its offset via CMD_RESOLVE_FIELD_OFFSET.
+--- Returns offset (int) and size (int), or nil on failure.
+local function resolveOneField(mb, typeName, fieldName)
+    -- Wait for mailbox idle
+    local waitStart = os.clock()
+    while readInteger(mb + MB.STATUS) ~= MB.STATUS_IDLE do
+        sleep(10)
+        if (os.clock() - waitStart) * 1000 > 5000 then
+            logErr("Timeout waiting for mailbox idle before resolve")
+            return nil, nil
+        end
+    end
+
+    -- Write typeName to className slot
+    writeStringToAddr(mb + MB.CLASS_NAME, typeName, 256)
+
+    -- Write fieldName to memberName slot
+    -- .NET backing field names like "<Side>k__BackingField" contain angle brackets.
+    -- These are safe in CE Lua strings and writeBytes — no special escaping needed.
+    writeStringToAddr(mb + MB.MEMBER_NAME, fieldName, 256)
+
+    -- Trigger command
+    writeInteger(mb + MB.CMD, MB.CMD_RESOLVE_FIELD_OFFSET)
+
+    -- Poll for completion
+    local pollStart = os.clock()
+    while true do
+        local st = readInteger(mb + MB.STATUS)
+        if st == MB.STATUS_DONE then break end
+
+        sleep(CONFIG.POLL_INTERVAL_MS)
+        if (os.clock() - pollStart) * 1000 > 5000 then
+            logErr("Timeout resolving field '%s'", fieldName)
+            return nil, nil
+        end
+    end
+
+    local result = readInteger(mb + MB.RESULT)
+    if result < 0 then
+        local errMsg = readStringFromAddr(mb + MB.ERROR_MSG, 256)
+        logErr("Failed to resolve '%s.%s': %s (code=%d)",
+            typeName, fieldName, errMsg, result)
+        return nil, nil
+    end
+
+    local fieldSize = readInteger(mb + MB.MEMBER_INDEX)
+    return result, fieldSize
+end
+
+--- Resolve all field offsets in CONFIG.FIELDS and CONFIG.FILTER via reflection.
+--- Falls back to hardcoded offsets if resolution fails for a given field.
+local function resolveFieldOffsets()
+    if not CONFIG.DOTNET_TYPE or CONFIG.DOTNET_TYPE == "" then
+        log("No DOTNET_TYPE configured, using hardcoded offsets")
+        return
+    end
+
+    local mb = getAddress("g_zoltMailbox")
+    if not mb or mb == 0 then
+        logErr("g_zoltMailbox not found, cannot resolve field offsets")
+        return
+    end
+
+    log("Resolving .NET field offsets for type '%s'...", CONFIG.DOTNET_TYPE)
+
+    -- Resolve FIELDS entries
+    local resolved = 0
+    for _, field in ipairs(CONFIG.FIELDS) do
+        if field.fieldName and field.fieldName ~= "" then
+            local offset, size = resolveOneField(mb, CONFIG.DOTNET_TYPE, field.fieldName)
+            if offset then
+                log("  Resolved '%s' → offset=0x%X (was 0x%X), size=%d",
+                    field.fieldName, offset, field.offset, size or 0)
+                field.offset = offset
+                resolved = resolved + 1
+            else
+                log("  WARN: '%s' not resolved, keeping hardcoded offset 0x%X",
+                    field.fieldName, field.offset)
+            end
+        end
+    end
+
+    -- Resolve FILTER field
+    if CONFIG.FILTER and CONFIG.FILTER.fieldName and CONFIG.FILTER.fieldName ~= "" then
+        local offset, size = resolveOneField(
+            mb, CONFIG.DOTNET_TYPE, CONFIG.FILTER.fieldName)
+        if offset then
+            log("  Resolved filter '%s' → offset=0x%X (was 0x%X)",
+                CONFIG.FILTER.fieldName, offset, CONFIG.FILTER.offset)
+            CONFIG.FILTER.offset = offset
+            if size then CONFIG.FILTER.size = size end
+            resolved = resolved + 1
+        else
+            log("  WARN: filter '%s' not resolved, keeping hardcoded offset 0x%X",
+                CONFIG.FILTER.fieldName, CONFIG.FILTER.offset)
+        end
+    end
+
+    log("Reflection resolved %d field(s)", resolved)
+end
+
+-- ============================================================
 -- Core: Bulk Scan via Mailbox
 -- ============================================================
 
 local function scanAndGenerate(parentRecord)
+    -- Resolve .NET field names to offsets (updates CONFIG.FIELDS/FILTER in-place)
+    resolveFieldOffsets()
+
     -- Resolve mailbox and results buffer addresses
     local mb = getAddress("g_zoltMailbox")
     if not mb or mb == 0 then

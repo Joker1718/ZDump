@@ -448,6 +448,16 @@ public partial class LiveWalkerViewModel : ViewModelBase
                         return;
                     }
 
+                    // Enrich criteria with .NET reflection info for update-resilient scripts.
+                    // field.ClassName is the .NET type (e.g. "MegaCrit...Creature") from Denken.
+                    // memberName is the field name (e.g. "_currentHp") if Denken-resolved.
+                    if (!string.IsNullOrEmpty(field.ClassName) && field.ClassName != "(managed)")
+                    {
+                        criteria.DotNetTypeName = field.ClassName;
+                        if (!memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+                            criteria.TargetFieldName = memberName;
+                    }
+
                     // Use the Godot class from breadcrumbs (the parent object's class)
                     string godotClass = GetParentGodotClass() ?? className;
                     // Get node name for narrowing the scan (e.g. "Creature")
@@ -715,11 +725,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
         foreach (var f in Fields)
         {
             if (f.Offset < 0) hasScriptMembers = true;
-            if (f.Offset >= 0 && f.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
-                hasManagedFields = true;
+            // Managed fields have non-negative offsets — either raw "+0x84" names
+            // (heuristic scan) or Denken-resolved names like "_currentHp".
+            if (f.Offset >= 0) hasManagedFields = true;
         }
 
-        // Managed mode: has managed-style fields and no GDScript members
+        // Managed mode: has positive-offset fields and no GDScript members
         return hasManagedFields && !hasScriptMembers;
     }
 
@@ -734,15 +745,71 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             if (f == excludeField) continue;
             if (f.Offset < 0) continue; // skip script members
-            // Only include int/float types that can be compared
+            // Include fields with known primitive types, OR fields whose
+            // current value is a parseable integer (covers C# enums like
+            // CombatSide which are stored as int32 but have custom type names).
             string t = f.Type.ToUpperInvariant();
-            if (t is not ("INT" or "FLOAT" or "REAL" or "BOOL")) continue;
-            // Determine size from type
-            int size = t is "FLOAT" or "REAL" ? 4 : 4; // int32 / float = 4 bytes
+            int size = GetManagedFieldSize(t);
+            if (size <= 0)
+            {
+                // Unknown type — check if value or hex looks numeric (covers
+                // C# enums like CombatSide whose Value shows the type reference
+                // but Hex shows the underlying integer, e.g. "1")
+                if (IsNumericValue(f.Value) || IsNumericValue(f.Hex))
+                    size = 4; // assume int32 for enums and unknown small types
+                else
+                    continue;
+            }
+            // For enum/unknown types, Value may show a type reference (e.g.
+            // "MegaCrit...CombatSide@1F86..."). Use Hex value instead for display.
+            string displayValue = IsNumericValue(f.Value) || string.IsNullOrEmpty(f.Value)
+                ? f.Value
+                : f.Hex;
             result.Add(new MemberFilterDialog.ManagedFieldInfo(
-                f.Name, f.Offset, f.Type, f.Value, size));
+                f.Name, f.Offset, f.Type, displayValue, size));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Get the byte size of a managed field type for CE filter comparison.
+    /// Returns 0 if the type is not a recognized numeric/bool type.
+    /// </summary>
+    private static int GetManagedFieldSize(string typeUpperInvariant)
+    {
+        return typeUpperInvariant switch
+        {
+            // Godot-style names
+            "INT" or "FLOAT" or "REAL" or "BOOL" => 4,
+            // C# type names from Denken reflection
+            "SYSTEM.INT32" or "SYSTEM.UINT32" or "SYSTEM.SINGLE" => 4,
+            "SYSTEM.INT64" or "SYSTEM.UINT64" or "SYSTEM.DOUBLE" => 8,
+            "SYSTEM.INT16" or "SYSTEM.UINT16" => 2,
+            "SYSTEM.BYTE" or "SYSTEM.SBYTE" or "SYSTEM.BOOLEAN" => 1,
+            // Short C# names (used by some DLL paths)
+            "INT32" or "UINT32" or "SINGLE" => 4,
+            "INT64" or "UINT64" or "DOUBLE" or "LONG" => 8,
+            "INT16" or "UINT16" or "SHORT" => 2,
+            "BYTE" or "SBYTE" or "BOOLEAN" => 1,
+            _ => 0,
+        };
+    }
+
+    /// <summary>
+    /// Check if a value string represents a numeric value (integer or "true"/"false").
+    /// Used to detect C# enums and other value types with integer storage.
+    /// </summary>
+    private static bool IsNumericValue(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        // Boolean values stored as 0/1
+        if (value is "true" or "false") return true;
+        // Integer value (decimal or hex)
+        if (long.TryParse(value, out _)) return true;
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            long.TryParse(value.AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                null, out _)) return true;
+        return false;
     }
 
     /// <summary>

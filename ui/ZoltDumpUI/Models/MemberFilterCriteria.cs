@@ -41,4 +41,15 @@ public sealed class MemberFilterCriteria
 
     /// <summary>Managed: read size for filter field (1, 2, 4, or 8 bytes).</summary>
     public int FilterFieldSize { get; init; } = 4;
+
+    // ── .NET reflection info (for update-resilient scripts) ──
+
+    /// <summary>Fully qualified .NET type name (e.g. "MegaCrit.Sts2.Core.Entities.Creatures.Creature").</summary>
+    public string DotNetTypeName { get; set; } = "";
+
+    /// <summary>.NET field name for the target field (e.g. "_currentHp", "&lt;Side&gt;k__BackingField").</summary>
+    public string TargetFieldName { get; set; } = "";
+
+    /// <summary>.NET field name for the filter field (e.g. "&lt;Side&gt;k__BackingField").</summary>
+    public string FilterFieldName { get; set; } = "";
 }

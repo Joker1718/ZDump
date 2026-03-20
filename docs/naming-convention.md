@@ -28,6 +28,7 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 | **Fern.cpp** | 費倫 | Frieren's apprentice | Named Pipe server: JSON IPC dispatch | Communicator, messenger — bridges worlds |
 | **Himmel.cpp** | 欣梅爾 | Hero, remembered | Hint cache: per-game AOB results | Remembered wisdom — the hero's lasting legacy |
 | **Heiter.cpp** | 海塔 | Priest, healer | GameThread dispatch: MinHook queuing | Healing/restoring context — thread-safe dispatch |
+| **Denken.cpp** | 頓肯 | Analytical mage | CLR hosting bridge: .NET reflection via ZoltReflector | Analytical magic — dissects managed type layouts |
 | **Qual.cpp** | 庫瓦爾 | Seven Sages demon | Mailbox: CE Lua shared memory | Dark communication channel — demon's whisper |
 | **Eisen.cpp** | 艾冉 | Iron warrior, defender | Proxy DLL: version.dll forwarding | Armored defense — iron shield proxy |
 | **Macht.cpp** | 馬赫特 | Seven Sages (power) | CE Plugin: Type 5 interface | Raw power interface — direct force |
@@ -101,6 +102,7 @@ Zolt::                      // Root namespace
   Himmel::                  // Hint cache
   Heiter::                  // Game thread
   Qual::                    // Mailbox
+  Denken::                  // CLR hosting bridge
   Mimic::                   // Error handling (reserved)
   DynOff::                  // Dynamic offsets (in Grimoire.h)
 ```
@@ -127,7 +129,7 @@ These can be used for future features or internal naming:
 | **Draht** (ドラート) | Demon, binding | Memory watch bindings |
 | **Lugner** (リュグナー) | Demon, deception | Anti-detection, stealth |
 | **Aura** (アウラ) | Demon, domination | Process control, injection |
-| **Denken** (デンケン) | Mage, analytical | Analysis/diagnostic tools |
+| ~~**Denken**~~ | ~~Mage, analytical~~ | ~~Now in use — see DLL Module Naming~~ |
 | **Wirbel** (ヴィアベル) | Mage, tactical | Strategy/optimization |
 | **Richter** (リヒター) | Mage, earthquake | Memory region scanning |
 | **Lawine** (ラヴィーネ) | Mage, ice | Memory freeze/snapshot |
