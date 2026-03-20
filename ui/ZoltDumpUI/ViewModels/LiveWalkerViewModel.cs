@@ -856,16 +856,15 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
     /// <summary>
     /// Get the L2 child reference offset within the wrapper managed object.
-    /// When the user navigated: Godot node → wrapper (MT:...) → +0x58 (ref) → child (MT:...),
-    /// this returns 0x58 — the wrapper field offset that references the child managed object.
+    /// Two navigation patterns reach a child managed object:
+    ///   1. Godot node (shows wrapper inline) → click +0x58 (ref) → child ManagedObject
+    ///   2. Godot node → wrapper ManagedObject → click +0x58 (ref) → child ManagedObject
+    /// In both cases, the current breadcrumb has ClassName="ManagedObject" and
+    /// MemberName="+0x58 (ref)" — the wrapper field offset to the child.
     /// Returns -1 if no L2 navigation detected (data is directly in the wrapper).
     /// </summary>
     private int GetL2ChildRefOffset()
     {
-        // Walk breadcrumbs backwards looking for the pattern:
-        //   [wrapper: ClassName="ManagedObject", Name="MT:..."] → current managed child
-        // The current object's breadcrumb entry has MemberName like "+0x58 (ref)"
-        // which was the field clicked to drill down from wrapper to child.
         if (Breadcrumbs.Count < 2) return -1;
 
         // Current breadcrumb (the managed child we're viewing)
@@ -884,12 +883,11 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (end > 3 && int.TryParse(memberName[3..end], System.Globalization.NumberStyles.HexNumber,
                 null, out int offset))
             {
-                // Verify the previous breadcrumb is also a ManagedObject (the wrapper)
-                var prev = Breadcrumbs[^2];
-                if (prev.ClassName == "ManagedObject" || prev.Name.Contains("MT:", StringComparison.OrdinalIgnoreCase))
-                {
-                    return offset;
-                }
+                // Previous breadcrumb can be either:
+                //   - A Godot node (wrapper data shown inline) — most common
+                //   - A ManagedObject (explicit wrapper navigation)
+                // Both are valid L2 sources. The offset is always within the wrapper.
+                return offset;
             }
         }
         return -1;
