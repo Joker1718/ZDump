@@ -86,7 +86,7 @@ All DLL-side functionality is implemented and tested. UI is ~95% complete.
 - [x] **.NET game detection** — GodotSharp/coreclr module check at AutoStart time
 - [x] **CSharpInstance layout probe** — Runtime discovery of owner (+0x08/+0x10) and GCHandle (+0x20/+0x28) offsets
 - [x] **CMD_FIND_MANAGED_INSTANCES** — Mailbox bulk scan with class, node name, field value, and MT filters
-- [x] **Node name filtering** — Substring match on Godot node name to prevent unrelated objects from polluting auto-discover MT
+- [x] **Node name filtering** — Substring match on Godot node name to prevent unrelated objects from polluting auto-discover MT. Auto-generated names (`@Control@1978`) are normalized to `@Control@` for stable cross-session matching
 - [x] **Auto-discover MethodTable** — Empty MT auto-locks to first match; node name filter ensures correct type. Scripts survive game restarts
 - [x] **L1/L2 matching** — L1 checks wrapper directly; L2 scans wrapper references for nested .NET children with valid MethodTable
 - [x] **Smart dedup** — Deduplication by managedAddr with wrapper offset tiebreaking (smaller = more direct owner)

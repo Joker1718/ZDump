@@ -764,6 +764,10 @@ public partial class LiveWalkerViewModel : ViewModelBase
     /// Get the Godot node name from the parent breadcrumb (e.g. "Creature").
     /// Used as a node name filter for CMD_FIND_MANAGED_INSTANCES to prevent
     /// unrelated objects (Game, HealthBar) from polluting auto-discover MT.
+    ///
+    /// For auto-generated node names like "@Control@1978", strips the trailing
+    /// instance number to produce "@Control@" — this matches any instance of
+    /// that pattern since the number changes per session/battle.
     /// </summary>
     private string? GetParentNodeName()
     {
@@ -774,10 +778,43 @@ public partial class LiveWalkerViewModel : ViewModelBase
                 crumb.ClassName != "ManagedObject" &&
                 !string.IsNullOrEmpty(crumb.Name))
             {
-                return crumb.Name;
+                return NormalizeNodeNameForFilter(crumb.Name);
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Normalize a Godot node name for use as a CMD_FIND_MANAGED_INSTANCES filter.
+    /// Godot auto-generated names follow pattern "@ClassName@NNN" where NNN is a
+    /// session-specific instance ID that changes every battle/scene load.
+    /// Strip the trailing digits to produce "@ClassName@" for stable matching.
+    /// Regular names (e.g. "Creature") are returned as-is.
+    /// </summary>
+    private static string NormalizeNodeNameForFilter(string name)
+    {
+        // Pattern: "@Something@1234" → "@Something@"
+        // Must start with '@' and have a second '@' followed by only digits
+        if (name.Length > 2 && name[0] == '@')
+        {
+            int secondAt = name.IndexOf('@', 1);
+            if (secondAt > 1 && secondAt < name.Length - 1)
+            {
+                // Check if everything after second '@' is digits
+                bool allDigits = true;
+                for (int j = secondAt + 1; j < name.Length; j++)
+                {
+                    if (!char.IsDigit(name[j]))
+                    {
+                        allDigits = false;
+                        break;
+                    }
+                }
+                if (allDigits)
+                    return name[..(secondAt + 1)]; // "@Control@"
+            }
+        }
+        return name;
     }
 
     /// <summary>

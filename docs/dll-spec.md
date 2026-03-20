@@ -113,7 +113,7 @@ Bulk scan for .NET managed objects matching class, node name, field value, and M
 | Offset | Field | Usage |
 |---|---|---|
 | 0x028 | `className[256]` | Godot class filter (e.g. "Control") |
-| 0x128 | `memberName[256]` | Node name filter — substring match (e.g. "Creature") |
+| 0x128 | `memberName[256]` | Node name filter — case-insensitive substring match (e.g. "Creature", "@Control@") |
 | 0x228 | `nodeName[256]` | MethodTable hex string (e.g. "7FF7D90BE0F8"), or empty for auto-discover |
 | 0x428 | `targetOp` | FilterOp for secondary field filter |
 | 0x430 | `targetValue` | Comparison value for secondary field |
@@ -132,6 +132,8 @@ Bulk scan for .NET managed objects matching class, node name, field value, and M
 Each entry is 16 bytes. Total buffer: 8 + 256×16 = 4104 bytes.
 
 **Auto-discover MethodTable**: When `nodeName` (MT field) is empty, the first matching object's MethodTable is auto-locked and used to filter subsequent matches. The node name filter ensures only the correct object type is considered, making auto-discover reliable across game restarts.
+
+**Node name normalization**: The UI normalizes auto-generated Godot node names like `@Control@1978` to `@Control@` (stripping the session-specific instance number). This makes the filter stable across battles/scene reloads. Regular names like `Creature` are passed as-is.
 
 ---
 
