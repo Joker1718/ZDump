@@ -1162,6 +1162,13 @@ static void HandleFindManagedInstances() {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     }
 
+    // Pre-compute lowercase node name filter (avoid repeated tolower in loop)
+    std::string nodeNameFilterLower(nodeNameFilter);
+    if (hasNodeNameFilter) {
+        std::transform(nodeNameFilterLower.begin(), nodeNameFilterLower.end(), nodeNameFilterLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
     // Clear results buffer
     g_zoltManagedResults.count = 0;
 
@@ -1197,22 +1204,6 @@ static void HandleFindManagedInstances() {
             if (cls != targetClass && clsLower != targetClassLower) return true;
         }
 
-        // Node name filter — skip objects whose Godot node name doesn't contain
-        // the filter substring (case-insensitive). This narrows the search so
-        // auto-discover MT only locks to the correct .NET type.
-        if (hasNodeNameFilter) {
-            std::string nodeName = Serie::GetNodeName(objAddr);
-            if (nodeName.empty()) return true;
-            // Case-insensitive substring match
-            std::string nodeNameLower = nodeName;
-            std::string filterLower(nodeNameFilter);
-            std::transform(nodeNameLower.begin(), nodeNameLower.end(), nodeNameLower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (nodeNameLower.find(filterLower) == std::string::npos) return true;
-        }
-
         // Read ScriptInstance
         uint64_t scriptInst = Zoltraak::ReadSafe<uint64_t>(objAddr + siOff, 0);
         if (!scriptInst || !Zoltraak::IsReadable(scriptInst)) return true;
@@ -1221,6 +1212,19 @@ static void HandleFindManagedInstances() {
         uint64_t owner = Zoltraak::ReadSafe<uint64_t>(
             scriptInst + DynOff::CSHARP_OWNER_OFF, 0);
         if (owner != objAddr) return true;
+
+        // Node name filter — applied AFTER ScriptInstance validation to avoid
+        // expensive GetNodeName() calls on non-.NET objects. Only confirmed
+        // .NET objects (with valid CSharpInstance) reach this point.
+        if (hasNodeNameFilter) {
+            std::string nodeName = Serie::GetNodeName(objAddr);
+            if (nodeName.empty()) return true;
+            // Case-insensitive substring match (filter already lowercased above)
+            std::string nodeNameLower = nodeName;
+            std::transform(nodeNameLower.begin(), nodeNameLower.end(), nodeNameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (nodeNameLower.find(nodeNameFilterLower) == std::string::npos) return true;
+        }
 
         // Read GCHandle
         uint64_t gcHandle = Zoltraak::ReadSafe<uint64_t>(

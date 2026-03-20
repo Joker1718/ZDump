@@ -452,8 +452,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
                     string godotClass = GetParentGodotClass() ?? className;
                     // Get node name for narrowing the scan (e.g. "Creature")
                     string? nodeName = GetParentNodeName();
-                    // Get MethodTable hex from breadcrumbs for precise type matching
-                    string? mtHex = GetCurrentMethodTableHex();
+                    // When node name filter is available, skip MT — auto-discover
+                    // is reliable with the narrowed object set. MT changes every
+                    // restart so hardcoding it makes scripts single-use.
+                    string? mtHex = nodeName is null
+                        ? GetCurrentMethodTableHex()
+                        : null;
                     symbolName = CeLuaScriptService.MakeSymbolName(godotClass, $"managed_0x{field.Offset:X}");
                     script = _ceLua.GenerateManagedInstanceScript(
                         godotClass, criteria, symbolName, memberName, mtHex, nodeName);
