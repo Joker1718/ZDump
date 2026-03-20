@@ -450,11 +450,21 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
                     // Use the Godot class from breadcrumbs (the parent object's class)
                     string godotClass = GetParentGodotClass() ?? className;
-                    // Get MethodTable hex from breadcrumbs for precise type matching
-                    string? mtHex = GetCurrentMethodTableHex();
+                    // Get node name for narrowing the scan (e.g. "Creature")
+                    string? nodeName = GetParentNodeName();
+                    // When node name filter is available, skip MT — auto-discover
+                    // is reliable with the narrowed object set. MT changes every
+                    // restart so hardcoding it makes scripts single-use.
+                    string? mtHex = nodeName is null
+                        ? GetCurrentMethodTableHex()
+                        : null;
+                    // L2 child ref offset: wrapper field that references the child
+                    // (e.g. 0x58 when navigated wrapper → +0x58 → child)
+                    int l2ChildRefOffset = GetL2ChildRefOffset();
                     symbolName = CeLuaScriptService.MakeSymbolName(godotClass, $"managed_0x{field.Offset:X}");
                     script = _ceLua.GenerateManagedInstanceScript(
-                        godotClass, criteria, symbolName, memberName, mtHex);
+                        godotClass, criteria, symbolName, memberName, mtHex, nodeName,
+                        l2ChildRefOffset);
                     label = criteria.FindAll
                         ? $"{godotClass} .NET managed +0x{field.Offset:X} (all)"
                         : $"{godotClass} .NET managed +0x{field.Offset:X}";
@@ -755,6 +765,63 @@ public partial class LiveWalkerViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// Get the Godot node name from the parent breadcrumb (e.g. "Creature").
+    /// Used as a node name filter for CMD_FIND_MANAGED_INSTANCES to prevent
+    /// unrelated objects (Game, HealthBar) from polluting auto-discover MT.
+    ///
+    /// For auto-generated node names like "@Control@1978", strips the trailing
+    /// instance number to produce "@Control@" — this matches any instance of
+    /// that pattern since the number changes per session/battle.
+    /// </summary>
+    private string? GetParentNodeName()
+    {
+        for (int i = Breadcrumbs.Count - 1; i >= 0; i--)
+        {
+            var crumb = Breadcrumbs[i];
+            if (!string.IsNullOrEmpty(crumb.ClassName) &&
+                crumb.ClassName != "ManagedObject" &&
+                !string.IsNullOrEmpty(crumb.Name))
+            {
+                return NormalizeNodeNameForFilter(crumb.Name);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Normalize a Godot node name for use as a CMD_FIND_MANAGED_INSTANCES filter.
+    /// Godot auto-generated names follow pattern "@ClassName@NNN" where NNN is a
+    /// session-specific instance ID that changes every battle/scene load.
+    /// Strip the trailing digits to produce "@ClassName@" for stable matching.
+    /// Regular names (e.g. "Creature") are returned as-is.
+    /// </summary>
+    private static string NormalizeNodeNameForFilter(string name)
+    {
+        // Pattern: "@Something@1234" → "@Something@"
+        // Must start with '@' and have a second '@' followed by only digits
+        if (name.Length > 2 && name[0] == '@')
+        {
+            int secondAt = name.IndexOf('@', 1);
+            if (secondAt > 1 && secondAt < name.Length - 1)
+            {
+                // Check if everything after second '@' is digits
+                bool allDigits = true;
+                for (int j = secondAt + 1; j < name.Length; j++)
+                {
+                    if (!char.IsDigit(name[j]))
+                    {
+                        allDigits = false;
+                        break;
+                    }
+                }
+                if (allDigits)
+                    return name[..(secondAt + 1)]; // "@Control@"
+            }
+        }
+        return name;
+    }
+
+    /// <summary>
     /// Extract the .NET MethodTable hex value from the current breadcrumb context.
     /// Breadcrumb names for managed objects follow the pattern: "MT:7FF7D90BE0F8 (size=0xB0)"
     /// Returns the hex string (e.g. "7FF7D90BE0F8") or null if not found.
@@ -785,6 +852,45 @@ public partial class LiveWalkerViewModel : ViewModelBase
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Get the L2 child reference offset within the wrapper managed object.
+    /// Two navigation patterns reach a child managed object:
+    ///   1. Godot node (shows wrapper inline) → click +0x58 (ref) → child ManagedObject
+    ///   2. Godot node → wrapper ManagedObject → click +0x58 (ref) → child ManagedObject
+    /// In both cases, the current breadcrumb has ClassName="ManagedObject" and
+    /// MemberName="+0x58 (ref)" — the wrapper field offset to the child.
+    /// Returns -1 if no L2 navigation detected (data is directly in the wrapper).
+    /// </summary>
+    private int GetL2ChildRefOffset()
+    {
+        if (Breadcrumbs.Count < 2) return -1;
+
+        // Current breadcrumb (the managed child we're viewing)
+        var current = Breadcrumbs[^1];
+        if (current.ClassName != "ManagedObject") return -1;
+
+        // The field used to navigate here should be like "+0x58 (ref)"
+        string? memberName = current.MemberName;
+        if (string.IsNullOrEmpty(memberName)) return -1;
+
+        // Parse "+0xNN" or "+0xNN (ref)" pattern
+        if (memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+        {
+            int end = 3;
+            while (end < memberName.Length && Uri.IsHexDigit(memberName[end])) end++;
+            if (end > 3 && int.TryParse(memberName[3..end], System.Globalization.NumberStyles.HexNumber,
+                null, out int offset))
+            {
+                // Previous breadcrumb can be either:
+                //   - A Godot node (wrapper data shown inline) — most common
+                //   - A ManagedObject (explicit wrapper navigation)
+                // Both are valid L2 sources. The offset is always within the wrapper.
+                return offset;
+            }
+        }
+        return -1;
     }
 
     /// <summary>

@@ -70,6 +70,15 @@ All prefixed `Zolt_`, usable from CE Lua via `callFunction()`.
 | `Zolt_WalkClassGetField` | `int Zolt_WalkClassGetField(int idx, ...)` | Get field details |
 | `Zolt_WalkClassEnd` | `void Zolt_WalkClassEnd()` | Cleanup |
 
+### .NET / Managed Object Support
+
+| Export | Signature | Description |
+|---|---|---|
+| `Zolt_IsDotNetGame` | `int Zolt_IsDotNetGame()` | Returns 1 if GodotSharp/coreclr detected |
+| `Zolt_GetManagedObject` | `int Zolt_GetManagedObject(uint64_t objAddr, ...)` | Read managed object via GCHandle chain |
+
+`Zolt_AutoStart` also performs .NET detection and CSharpInstance layout probing at DLL injection time, so CE Lua mailbox scripts can use `CMD_FIND_MANAGED_INSTANCES` without requiring the UI to connect first.
+
 ### Pipe Control
 
 | Export | Signature | Description |
@@ -77,6 +86,54 @@ All prefixed `Zolt_`, usable from CE Lua via `callFunction()`.
 | `Zolt_StartPipeServer` | `int Zolt_StartPipeServer()` | Start named pipe |
 | `Zolt_StopPipeServer` | `void Zolt_StopPipeServer()` | Stop named pipe |
 | `Zolt_IsPipeConnected` | `int Zolt_IsPipeConnected()` | Check connection |
+
+---
+
+## Mailbox IPC (Qual)
+
+The mailbox (`g_zoltMailbox`) is a shared memory struct exported by the DLL for CE Lua scripts to issue commands without needing the pipe server. CE Lua writes command fields and sets `cmd`; the DLL polling thread processes it and writes `status` + `result`.
+
+### Mailbox Commands
+
+| Cmd | Value | Description |
+|---|---|---|
+| `CMD_FIND_NODE` | 1 | Find node by name in SceneTree |
+| `CMD_GET_MEMBER_ADDR` | 2 | Resolve GDScript member address |
+| `CMD_FIND_INSTANCE_WITH_MEMBER` | 3 | Find instance by class + member value |
+| `CMD_FIND_INSTANCE_BY_PATH` | 4 | Find instance by node path + member match |
+| `CMD_FIND_MANAGED_INSTANCES` | 6 | Bulk scan .NET managed objects (see below) |
+| `CMD_PING` | 99 | Connectivity check |
+
+### CMD_FIND_MANAGED_INSTANCES
+
+Bulk scan for .NET managed objects matching class, node name, field value, and MethodTable criteria. Results are written to a separate buffer (`g_zoltManagedResults`, 256 entries max).
+
+**Mailbox fields used:**
+
+| Offset | Field | Usage |
+|---|---|---|
+| 0x028 | `className[256]` | Godot class filter (e.g. "Control") |
+| 0x128 | `memberName[256]` | Node name filter — case-insensitive substring match (e.g. "Creature", "@Control@") |
+| 0x228 | `nodeName[256]` | MethodTable hex string (e.g. "7FF7D90BE0F8"), or empty for auto-discover |
+| 0x428 | `targetOp` | FilterOp for secondary field filter |
+| 0x430 | `targetValue` | Comparison value for secondary field |
+| 0x438 | `filterOp` | (repurposed) Managed field offset for target value |
+| 0x440 | `filterValue` | (repurposed) Read size in bytes (4 or 8) |
+
+**Results buffer layout** (`g_zoltManagedResults`):
+
+| Offset | Type | Description |
+|---|---|---|
+| +0x000 | int32 | Count of valid entries |
+| +0x004 | int32 | Capacity (256) |
+| +0x008 | entry[0].objectAddr (uint64) | Godot Object* address |
+| +0x010 | entry[0].managedAddr (uint64) | .NET managed object address |
+
+Each entry is 16 bytes. Total buffer: 8 + 256×16 = 4104 bytes.
+
+**Auto-discover MethodTable**: When `nodeName` (MT field) is empty, the first matching object's MethodTable is auto-locked and used to filter subsequent matches. The node name filter ensures only the correct object type is considered, making auto-discover reliable across game restarts.
+
+**Node name normalization**: The UI normalizes auto-generated Godot node names like `@Control@1978` to `@Control@` (stripping the session-specific instance number). This makes the filter stable across battles/scene reloads. Regular names like `Creature` are passed as-is.
 
 ---
 
@@ -195,9 +252,9 @@ Key: PE image hash (base address + size + timestamp).
 
 ## Proxy DLL (Eisen)
 
-**Output**: `version.dll` (placed in game folder)
+**Output**: `winmm.dll` (placed in game folder)
 
-Forwards all 17 version.dll API exports to `System32\version.dll`:
+Forwards all 180 winmm.dll API exports to `System32\winmm.dll` via MASM trampolines:
 - GetFileVersionInfoA/W
 - GetFileVersionInfoSizeA/W
 - GetFileVersionInfoExA/W

@@ -48,6 +48,8 @@ Direction: bidirectional — Request/Response + async push Events
 { "id": 7, "cmd": "find_object", "path": "/root/World3D/Player" }
 
 // Reverse address lookup: given any address, find the containing Object
+// For .NET managed addresses, L2 scan returns all Godot objects that reference
+// the same managed child (alternatives array in response)
 { "id": 8, "cmd": "find_by_address", "addr": "7FF123456789" }
 ```
 
@@ -94,6 +96,16 @@ Direction: bidirectional — Request/Response + async push Events
 ```jsonc
 // Get CE pointer chain info for XML export
 { "id": 17, "cmd": "get_ce_pointer_info", "addr": "7FF123456789", "breadcrumbs": [...] }
+```
+
+### .NET / Managed Object Support
+
+```jsonc
+// Trigger full scan (re-runs .NET detection + CSharpInstance layout probe)
+{ "id": 18, "cmd": "trigger_scan" }
+
+// Get managed object info via GCHandle chain
+{ "id": 19, "cmd": "get_managed_object", "addr": "7FF123456789" }
 ```
 
 -----

@@ -661,7 +661,8 @@ public sealed class CeLuaScriptService
     /// <returns>Complete AA script with [ENABLE]/[DISABLE] sections</returns>
     public string GenerateManagedInstanceScript(string className,
         Models.MemberFilterCriteria criteria, string symbolName, string fieldDisplayName,
-        string? methodTableHex = null)
+        string? methodTableHex = null, string? nodeName = null,
+        int l2ChildRefOffset = -1)
     {
         int targetOffset = criteria.TargetFieldOffset;
         int filterOffset = criteria.FilterFieldOffset;
@@ -696,6 +697,12 @@ public sealed class CeLuaScriptService
         sb.AppendLine("-- ═══ Configuration (edit these for your game) ═══");
         sb.AppendLine($"local godot_class     = '{EscapeLua(className)}'   -- Godot base class to search");
         sb.AppendLine($"local target_offset   = 0x{targetOffset:X}         -- managed field offset for target");
+        // Node name filter — narrows scan to Godot nodes whose name contains this substring.
+        // Prevents unrelated nodes (Game, HealthBar) from polluting auto-discover MT.
+        if (!string.IsNullOrEmpty(nodeName))
+            sb.AppendLine($"local node_name       = '{EscapeLua(nodeName)}'    -- Godot node name filter (substring match)");
+        else
+            sb.AppendLine($"local node_name       = ''                         -- no node name filter");
         sb.AppendLine("-- MethodTable: filters to exact .NET type. Changes every game restart.");
         sb.AppendLine("-- Clear to auto-discover from first match, or set manually if wrong type.");
         if (hasMT)
@@ -716,6 +723,13 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"local filter_value    = 0");
             sb.AppendLine($"local filter_size     = 4");
         }
+        // L2 child reference offset: when data lives in a nested child managed object
+        // (not directly in the wrapper), this tells the DLL which wrapper field offset
+        // to follow. -1 = auto-scan all offsets (default for L1/simple L2).
+        if (l2ChildRefOffset >= 8)
+            sb.AppendLine($"local l2_child_ref    = 0x{l2ChildRefOffset:X}       -- wrapper field offset to child managed object");
+        else
+            sb.AppendLine($"local l2_child_ref    = 0             -- 0 = auto-scan wrapper refs (no specific hint)");
         sb.AppendLine();
 
         // ── Mailbox + results buffer init ──
@@ -730,6 +744,16 @@ public sealed class CeLuaScriptService
         sb.AppendLine("-- ═══ Send bulk scan command ═══");
         sb.AppendLine($"writeString(mb + 0x{OFF_CLASS_NAME:X}, godot_class)");
         sb.AppendLine($"writeByte(mb + 0x{OFF_CLASS_NAME:X} + #godot_class, 0)");
+        sb.AppendLine();
+
+        // Node name filter via memberName field
+        sb.AppendLine("-- Node name filter: narrows to Godot nodes matching this name (substring)");
+        sb.AppendLine("if #node_name > 0 then");
+        sb.AppendLine($"  writeString(mb + 0x{OFF_MEMBER_NAME:X}, node_name)");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_MEMBER_NAME:X} + #node_name, 0)");
+        sb.AppendLine("else");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_MEMBER_NAME:X}, 0)  -- no node name filter");
+        sb.AppendLine("end");
         sb.AppendLine();
 
         // MethodTable type filter via nodeName field
@@ -754,6 +778,10 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_FILTER_OP:X}, 0)");
         sb.AppendLine($"  writeQword(mb + 0x{OFF_FILTER_VALUE:X}, 4)");
         sb.AppendLine("end");
+        sb.AppendLine();
+        // L2 child ref offset hint (memberIndex field, 0x00C)
+        sb.AppendLine("-- L2 child ref: tells DLL which wrapper offset to follow for nested child");
+        sb.AppendLine($"writeInteger(mb + 0x{OFF_MEMBER_INDEX:X}, l2_child_ref)");
         sb.AppendLine();
         EmitTriggerAndPoll(sb, CMD_FIND_MANAGED_INSTANCES, "FIND_MANAGED_INSTANCES", resultIsCount: true);
         sb.AppendLine();
@@ -844,7 +872,7 @@ public sealed class CeLuaScriptService
         }
         else
         {
-            // ── Single-result: register symbol for first match ──
+            // ── Single-result: register symbol + create memory record ──
             sb.AppendLine("-- ═══ Register symbol for first match ═══");
             sb.AppendLine($"local entryBase = resBuf + 0x{RES_ENTRIES:X}");
             sb.AppendLine("local managedAddr = readQword(entryBase + 8)");
@@ -852,6 +880,16 @@ public sealed class CeLuaScriptService
             sb.AppendLine($"unregisterSymbol('{symbolName}')");
             sb.AppendLine($"registerSymbol('{symbolName}', addr)");
             sb.AppendLine($"print(string.format('[ZoltDump] {symbolName} = %X (managed @ %X)', addr, managedAddr))");
+            sb.AppendLine();
+            sb.AppendLine($"local recDesc = '{EscapeLua(className)} .NET managed +0x{targetOffset:X}'");
+            sb.AppendLine("synchronize(function()");
+            sb.AppendLine("  local al = getAddressList()");
+            sb.AppendLine("  local rec = al.createMemoryRecord()");
+            sb.AppendLine("  rec.Description = recDesc");
+            sb.AppendLine("  rec.Address = string.format('%X', addr)");
+            sb.AppendLine("  rec.Vartype = vtDword  -- C# int = 32-bit");
+            sb.AppendLine("  rec.Color = 0xFF8000");
+            sb.AppendLine("end)");
             sb.AppendLine("closeLuaEngine()");
             sb.AppendLine();
             sb.AppendLine("[DISABLE]");
