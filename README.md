@@ -17,6 +17,7 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 - **Live property values** — Read object properties at runtime via direct memory access with auto-refresh
 - **Container drilldown** — Navigate into Array, Dictionary, and PackedArray elements with pagination
 - **GDScript member support** — Enumerate and read GDScript/C# script instance members alongside native properties
+- **.NET/C# managed object support** — Detect .NET Godot games, probe CSharpInstance layout, bulk-scan managed instances with node name + field value filtering, auto-discover MethodTable across game restarts
 - **Node tree hierarchy** — Navigate the complete scene tree with breadcrumb navigation and parent traversal
 - **Property search** — Cross-class keyword search with live value preview enrichment
 - **Class browser** — Filter and inspect ClassDB entries with inline property detail panel
@@ -55,6 +56,7 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 |   Flamme   (StringName)       |    |   Live value enrichment   |
 |   Heiter   (GameThread)       |    | NodeFilterPanel           |
 |   Qual     (Mailbox IPC)      |    |   Class property detail   |
+|     +-- .NET managed scan    |    |     +-- Node name filter  |
 |   Eisen    (Proxy DLL)        |    | NodeTreePanel             |
 +-------------------------------+    | ClassStructPanel          |
                                      | PointerPanel              |
@@ -68,8 +70,8 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 
 | Panel | Description |
 |-------|-------------|
-| **Live Walker** | Real-time property drilldown with breadcrumb navigation, container element browsing, CE Lua script generation (native offsets + GDScript members), auto-refresh |
-| **Instance Finder** | Search for all live instances of a class, address lookup, navigate to Live Walker |
+| **Live Walker** | Real-time property drilldown with breadcrumb navigation, container element browsing, CE Lua script generation (native offsets + GDScript members + .NET managed), auto-refresh |
+| **Instance Finder** | Search for all live instances of a class, address lookup with L2 alternatives for shared .NET objects, navigate to Live Walker |
 | **Property Search** | Cross-class keyword search for properties by name, async live value preview, double-click to open in Live Walker |
 | **Node Filter** | ClassDB browser with super-class filtering, inline property detail panel, context menu navigation |
 | **Node Tree** | Full scene tree object listing with filtering and pagination |
@@ -81,7 +83,7 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 
 Zolt-Dump provides multiple Cheat Engine workflows:
 
-- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC.
+- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC. .NET managed objects use `FIND_MANAGED_INSTANCES` with node name filtering and auto-discover MethodTable (scripts survive game restarts).
 - **CE XML Export** — Pointer chain XML for importing into Cheat Engine tables
 - **CSX Structure Dissect** — Structure definition export for CE's dissect view
 - **AOBMaker Bridge** — Direct integration with AOBMaker for memory record creation

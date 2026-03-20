@@ -661,7 +661,7 @@ public sealed class CeLuaScriptService
     /// <returns>Complete AA script with [ENABLE]/[DISABLE] sections</returns>
     public string GenerateManagedInstanceScript(string className,
         Models.MemberFilterCriteria criteria, string symbolName, string fieldDisplayName,
-        string? methodTableHex = null)
+        string? methodTableHex = null, string? nodeName = null)
     {
         int targetOffset = criteria.TargetFieldOffset;
         int filterOffset = criteria.FilterFieldOffset;
@@ -696,6 +696,12 @@ public sealed class CeLuaScriptService
         sb.AppendLine("-- ═══ Configuration (edit these for your game) ═══");
         sb.AppendLine($"local godot_class     = '{EscapeLua(className)}'   -- Godot base class to search");
         sb.AppendLine($"local target_offset   = 0x{targetOffset:X}         -- managed field offset for target");
+        // Node name filter — narrows scan to Godot nodes whose name contains this substring.
+        // Prevents unrelated nodes (Game, HealthBar) from polluting auto-discover MT.
+        if (!string.IsNullOrEmpty(nodeName))
+            sb.AppendLine($"local node_name       = '{EscapeLua(nodeName)}'    -- Godot node name filter (substring match)");
+        else
+            sb.AppendLine($"local node_name       = ''                         -- no node name filter");
         sb.AppendLine("-- MethodTable: filters to exact .NET type. Changes every game restart.");
         sb.AppendLine("-- Clear to auto-discover from first match, or set manually if wrong type.");
         if (hasMT)
@@ -730,6 +736,16 @@ public sealed class CeLuaScriptService
         sb.AppendLine("-- ═══ Send bulk scan command ═══");
         sb.AppendLine($"writeString(mb + 0x{OFF_CLASS_NAME:X}, godot_class)");
         sb.AppendLine($"writeByte(mb + 0x{OFF_CLASS_NAME:X} + #godot_class, 0)");
+        sb.AppendLine();
+
+        // Node name filter via memberName field
+        sb.AppendLine("-- Node name filter: narrows to Godot nodes matching this name (substring)");
+        sb.AppendLine("if #node_name > 0 then");
+        sb.AppendLine($"  writeString(mb + 0x{OFF_MEMBER_NAME:X}, node_name)");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_MEMBER_NAME:X} + #node_name, 0)");
+        sb.AppendLine("else");
+        sb.AppendLine($"  writeByte(mb + 0x{OFF_MEMBER_NAME:X}, 0)  -- no node name filter");
+        sb.AppendLine("end");
         sb.AppendLine();
 
         // MethodTable type filter via nodeName field

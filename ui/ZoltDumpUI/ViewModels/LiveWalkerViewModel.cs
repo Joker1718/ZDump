@@ -450,11 +450,17 @@ public partial class LiveWalkerViewModel : ViewModelBase
 
                     // Use the Godot class from breadcrumbs (the parent object's class)
                     string godotClass = GetParentGodotClass() ?? className;
-                    // Get MethodTable hex from breadcrumbs for precise type matching
-                    string? mtHex = GetCurrentMethodTableHex();
+                    // Get node name for narrowing the scan (e.g. "Creature")
+                    string? nodeName = GetParentNodeName();
+                    // When node name filter is available, skip MT — auto-discover
+                    // is reliable with the narrowed object set. MT changes every
+                    // restart so hardcoding it makes scripts single-use.
+                    string? mtHex = nodeName is null
+                        ? GetCurrentMethodTableHex()
+                        : null;
                     symbolName = CeLuaScriptService.MakeSymbolName(godotClass, $"managed_0x{field.Offset:X}");
                     script = _ceLua.GenerateManagedInstanceScript(
-                        godotClass, criteria, symbolName, memberName, mtHex);
+                        godotClass, criteria, symbolName, memberName, mtHex, nodeName);
                     label = criteria.FindAll
                         ? $"{godotClass} .NET managed +0x{field.Offset:X} (all)"
                         : $"{godotClass} .NET managed +0x{field.Offset:X}";
@@ -749,6 +755,26 @@ public partial class LiveWalkerViewModel : ViewModelBase
                 crumb.ClassName != "ManagedObject")
             {
                 return crumb.ClassName;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Get the Godot node name from the parent breadcrumb (e.g. "Creature").
+    /// Used as a node name filter for CMD_FIND_MANAGED_INSTANCES to prevent
+    /// unrelated objects (Game, HealthBar) from polluting auto-discover MT.
+    /// </summary>
+    private string? GetParentNodeName()
+    {
+        for (int i = Breadcrumbs.Count - 1; i >= 0; i--)
+        {
+            var crumb = Breadcrumbs[i];
+            if (!string.IsNullOrEmpty(crumb.ClassName) &&
+                crumb.ClassName != "ManagedObject" &&
+                !string.IsNullOrEmpty(crumb.Name))
+            {
+                return crumb.Name;
             }
         }
         return null;

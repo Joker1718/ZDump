@@ -1116,6 +1116,13 @@ static void HandleFindManagedInstances() {
         if (endp == mtHexStr) requiredMT = 0; // parse failed
     }
 
+    // memberName field: optional Godot node name filter (e.g. "Creature")
+    // Narrows scan to only objects whose node name contains this substring.
+    // This prevents Game/HealthBar/etc. from polluting auto-discover MT.
+    char nodeNameFilter[256];
+    memcpy(nodeNameFilter, g_zoltMailbox.memberName, sizeof(nodeNameFilter));
+    nodeNameFilter[255] = '\0';
+
     int32_t filterFieldOp = g_zoltMailbox.targetOp;
     int64_t filterFieldValue = g_zoltMailbox.targetValue;
     int32_t managedFieldOffset = g_zoltMailbox.filterOp;       // repurposed
@@ -1123,11 +1130,13 @@ static void HandleFindManagedInstances() {
     if (managedFieldSize <= 0 || managedFieldSize > 8) managedFieldSize = 4;
 
     bool hasClassFilter = (className[0] != '\0');
+    bool hasNodeNameFilter = (nodeNameFilter[0] != '\0');
     bool hasFieldFilter = (filterFieldOp != Zolt::Qual::FILTER_NONE && managedFieldOffset >= 0);
     bool hasMTFilter = (requiredMT != 0);
 
-    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES class='%s' MT=%s fieldOff=0x%X fieldOp=%d fieldVal=%lld fieldSize=%lld",
+    Solitaer::Info("PIPE", "Qual: FIND_MANAGED_INSTANCES class='%s' node='%s' MT=%s fieldOff=0x%X fieldOp=%d fieldVal=%lld fieldSize=%lld",
                    hasClassFilter ? className : "*",
+                   hasNodeNameFilter ? nodeNameFilter : "*",
                    hasMTFilter ? mtHexStr : "(any)",
                    managedFieldOffset, filterFieldOp,
                    static_cast<long long>(filterFieldValue),
@@ -1153,12 +1162,22 @@ static void HandleFindManagedInstances() {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     }
 
+    // Pre-compute lowercase node name filter (avoid repeated tolower in loop)
+    std::string nodeNameFilterLower(nodeNameFilter);
+    if (hasNodeNameFilter) {
+        std::transform(nodeNameFilterLower.begin(), nodeNameFilterLower.end(), nodeNameFilterLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
     // Clear results buffer
     g_zoltManagedResults.count = 0;
 
     int scannedCount = 0;
     int managedCount = 0;
     int matchedCount = 0;
+    // Track L2 wrapper offset per result for smart dedup — smaller offset = more direct owner.
+    // L1 (direct wrapper match) uses 0; L2 uses the wrapper field offset where child ref was found.
+    int entryWrapOff[MANAGED_RESULTS_MAX] = {};
 
     // Timeout: 10 seconds max
     DWORD startTick = GetTickCount();
@@ -1194,6 +1213,19 @@ static void HandleFindManagedInstances() {
             scriptInst + DynOff::CSHARP_OWNER_OFF, 0);
         if (owner != objAddr) return true;
 
+        // Node name filter — applied AFTER ScriptInstance validation to avoid
+        // expensive GetNodeName() calls on non-.NET objects. Only confirmed
+        // .NET objects (with valid CSharpInstance) reach this point.
+        if (hasNodeNameFilter) {
+            std::string nodeName = Serie::GetNodeName(objAddr);
+            if (nodeName.empty()) return true;
+            // Case-insensitive substring match (filter already lowercased above)
+            std::string nodeNameLower = nodeName;
+            std::transform(nodeNameLower.begin(), nodeNameLower.end(), nodeNameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (nodeNameLower.find(nodeNameFilterLower) == std::string::npos) return true;
+        }
+
         // Read GCHandle
         uint64_t gcHandle = Zoltraak::ReadSafe<uint64_t>(
             scriptInst + DynOff::CSHARP_GCHANDLE_OFF, 0);
@@ -1214,6 +1246,9 @@ static void HandleFindManagedInstances() {
         // not the wrapper's MT.
 
         managedCount++;
+
+        // Track wrapper offset for smart dedup (0 = L1 direct or no-filter; >0 = L2 offset)
+        int matchWrapOff = 0;
 
         // Apply managed field filter — with Level 2 nested object scanning.
         // The GCHandle chain gives a .NET WRAPPER object, but the actual game data
@@ -1282,6 +1317,7 @@ static void HandleFindManagedInstances() {
                             matched = true;
                             finalManagedObj = childPtr;
                             matchedChildMt = childMt;
+                            matchWrapOff = w; // track which wrapper field led to this child
                             if (managedCount <= 5) {
                                 Solitaer::Info("PIPE", "Qual: [diag] managed#%d L2 HIT wrapper=%llX +0x%X→child=%llX "
                                                "childMT=%llX field@0x%X=%lld",
@@ -1328,24 +1364,37 @@ static void HandleFindManagedInstances() {
             if (hasMTFilter && mt != requiredMT) return true;
         }
 
-        // Deduplicate by managedAddr — multiple Godot Controls can reference the
-        // same nested .NET object (e.g., Creature node + HP bar + name label all
-        // share the same .NET data object). Only store unique managedAddr values.
+        // Deduplicate by managedAddr — multiple Godot objects can reference the
+        // same nested .NET object (e.g., Game + Creature + HealthBar all share
+        // the same .NET data child). When a duplicate is found, prefer the owner
+        // with the smaller wrapper offset (L1=0 beats any L2; smaller L2 offset
+        // means more direct ownership — e.g. Creature at +0x08 beats Game at +0x70).
         {
             int idx = g_zoltManagedResults.count;
-            bool duplicate = false;
+            int dupIdx = -1;
             for (int d = 0; d < idx; d++) {
                 if (g_zoltManagedResults.entries[d].managedAddr == managedObj) {
-                    duplicate = true;
+                    dupIdx = d;
                     break;
                 }
             }
-            if (duplicate) return true; // skip — already recorded this managed object
+            if (dupIdx >= 0) {
+                // Duplicate — replace if this match has a more direct owner (smaller wrapOff)
+                if (matchWrapOff < entryWrapOff[dupIdx]) {
+                    int oldOff = entryWrapOff[dupIdx];
+                    g_zoltManagedResults.entries[dupIdx].objectAddr = objAddr;
+                    entryWrapOff[dupIdx] = matchWrapOff;
+                    Solitaer::Info("PIPE", "Qual: dedup replaced obj=%llX (wrapOff 0x%X→0x%X, better owner)",
+                                   static_cast<unsigned long long>(objAddr), oldOff, matchWrapOff);
+                }
+                return true;
+            }
 
             matchedCount++;
             if (idx < MANAGED_RESULTS_MAX) {
                 g_zoltManagedResults.entries[idx].objectAddr = objAddr;
                 g_zoltManagedResults.entries[idx].managedAddr = managedObj;
+                entryWrapOff[idx] = matchWrapOff;
                 g_zoltManagedResults.count = idx + 1;
             }
         }

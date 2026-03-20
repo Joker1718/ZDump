@@ -1,9 +1,10 @@
 # Development Log — Zolt-Dump
 
-## Current Status: Phase 3 Complete — PR #8 Open
+## Current Status: Phase 10 — .NET Managed Object Support
 
-All DLL-side functionality is implemented and tested. UI is ~85% complete.
+All DLL-side functionality is implemented and tested. UI is ~95% complete.
 13/13 test targets pass (5 editors + 8 games, Godot 3.5 → 4.5).
+215 unit tests passing.
 
 ---
 
@@ -81,6 +82,18 @@ All DLL-side functionality is implemented and tested. UI is ~85% complete.
 - [x] **test_phase3b.ps1** — Phase 3b assertion tests
 - [x] **xUnit UI tests** — 215 tests across 11 test classes (AddressHelper, CeLuaScriptService, CeXmlExportService, CsxExportService, DumpServiceParse, FieldValueConverter, KnownStructLayout, NodeFilterViewModel, PropertySearchViewModel, SdkExportService, VdfParser)
 
+### Phase 10: .NET Managed Object Support ✅
+- [x] **.NET game detection** — GodotSharp/coreclr module check at AutoStart time
+- [x] **CSharpInstance layout probe** — Runtime discovery of owner (+0x08/+0x10) and GCHandle (+0x20/+0x28) offsets
+- [x] **CMD_FIND_MANAGED_INSTANCES** — Mailbox bulk scan with class, node name, field value, and MT filters
+- [x] **Node name filtering** — Substring match on Godot node name to prevent unrelated objects from polluting auto-discover MT
+- [x] **Auto-discover MethodTable** — Empty MT auto-locks to first match; node name filter ensures correct type. Scripts survive game restarts
+- [x] **L1/L2 matching** — L1 checks wrapper directly; L2 scans wrapper references for nested .NET children with valid MethodTable
+- [x] **Smart dedup** — Deduplication by managedAddr with wrapper offset tiebreaking (smaller = more direct owner)
+- [x] **L2 alternatives** — `find_by_address` returns all Godot objects referencing same managed child
+- [x] **CE Lua multi-result scripts** — Creates CE memory records under group headers with filter criteria tags
+- [x] **Managed filter dialog** — UI dialog for selecting target/filter fields from managed sibling list
+
 ---
 
 ## Test Matrix (Build #77)
@@ -118,7 +131,7 @@ All DLL-side functionality is implemented and tested. UI is ~85% complete.
 ### Open
 
 8. **Property offsets**: Godot uses getter/setter pattern, not direct memory offsets. Current approach uses RTTI + Ubel variant walker (works but no byte-level offset like UE).
-9. **Script instance properties**: GDScript/C# script properties stored in ScriptInstance — not yet enumerated.
+9. ~~**Script instance properties**: GDScript/C# script properties stored in ScriptInstance — not yet enumerated.~~ **Resolved** — GDScript members enumerated via Ubel, .NET managed objects via GCHandle chain + CSharpInstance probe.
 10. **Virtual Cottage ClassDB FAIL**: Unknown Godot version, ClassDB scan fails (pre-existing, low priority).
 
 ---
