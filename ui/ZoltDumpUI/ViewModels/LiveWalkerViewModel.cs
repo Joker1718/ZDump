@@ -81,13 +81,13 @@ public partial class LiveWalkerViewModel : ViewModelBase
         _sdk = sdk;
     }
 
-    public async Task NavigateToAddressAsync(string address, string? sourceFieldName = null)
+    public async Task NavigateToAddressAsync(string address, string? sourceFieldName = null, int sourceFieldOffset = -1)
     {
         await FetchAndShowAsync(address);
         // Add breadcrumb only on navigation (not refresh)
         if (!string.IsNullOrEmpty(CurrentAddress))
             Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName,
-                isNodeObject: IsNode, memberName: sourceFieldName));
+                isNodeObject: IsNode, memberName: sourceFieldName, memberOffset: sourceFieldOffset));
     }
 
     /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
@@ -217,7 +217,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task NavigatePointerAsync(LiveFieldValue field)
     {
         if (!field.IsPointer || string.IsNullOrEmpty(field.PtrValue)) return;
-        await NavigateToAddressAsync(field.PtrValue, sourceFieldName: field.Name);
+        await NavigateToAddressAsync(field.PtrValue, sourceFieldName: field.Name, sourceFieldOffset: field.Offset);
     }
 
     [RelayCommand]
@@ -446,6 +446,16 @@ public partial class LiveWalkerViewModel : ViewModelBase
                     {
                         SetStatus("CE script generation cancelled");
                         return;
+                    }
+
+                    // Enrich criteria with .NET reflection info for update-resilient scripts.
+                    // field.ClassName is the .NET type (e.g. "MegaCrit...Creature") from Denken.
+                    // memberName is the field name (e.g. "_currentHp") if Denken-resolved.
+                    if (!string.IsNullOrEmpty(field.ClassName) && field.ClassName != "(managed)")
+                    {
+                        criteria.DotNetTypeName = field.ClassName;
+                        if (!memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
+                            criteria.TargetFieldName = memberName;
                     }
 
                     // Use the Godot class from breadcrumbs (the parent object's class)
@@ -715,11 +725,12 @@ public partial class LiveWalkerViewModel : ViewModelBase
         foreach (var f in Fields)
         {
             if (f.Offset < 0) hasScriptMembers = true;
-            if (f.Offset >= 0 && f.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
-                hasManagedFields = true;
+            // Managed fields have non-negative offsets — either raw "+0x84" names
+            // (heuristic scan) or Denken-resolved names like "_currentHp".
+            if (f.Offset >= 0) hasManagedFields = true;
         }
 
-        // Managed mode: has managed-style fields and no GDScript members
+        // Managed mode: has positive-offset fields and no GDScript members
         return hasManagedFields && !hasScriptMembers;
     }
 
@@ -734,15 +745,71 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             if (f == excludeField) continue;
             if (f.Offset < 0) continue; // skip script members
-            // Only include int/float types that can be compared
+            // Include fields with known primitive types, OR fields whose
+            // current value is a parseable integer (covers C# enums like
+            // CombatSide which are stored as int32 but have custom type names).
             string t = f.Type.ToUpperInvariant();
-            if (t is not ("INT" or "FLOAT" or "REAL" or "BOOL")) continue;
-            // Determine size from type
-            int size = t is "FLOAT" or "REAL" ? 4 : 4; // int32 / float = 4 bytes
+            int size = GetManagedFieldSize(t);
+            if (size <= 0)
+            {
+                // Unknown type — check if value or hex looks numeric (covers
+                // C# enums like CombatSide whose Value shows the type reference
+                // but Hex shows the underlying integer, e.g. "1")
+                if (IsNumericValue(f.Value) || IsNumericValue(f.Hex))
+                    size = 4; // assume int32 for enums and unknown small types
+                else
+                    continue;
+            }
+            // For enum/unknown types, Value may show a type reference (e.g.
+            // "MegaCrit...CombatSide@1F86..."). Use Hex value instead for display.
+            string displayValue = IsNumericValue(f.Value) || string.IsNullOrEmpty(f.Value)
+                ? f.Value
+                : f.Hex;
             result.Add(new MemberFilterDialog.ManagedFieldInfo(
-                f.Name, f.Offset, f.Type, f.Value, size));
+                f.Name, f.Offset, f.Type, displayValue, size));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Get the byte size of a managed field type for CE filter comparison.
+    /// Returns 0 if the type is not a recognized numeric/bool type.
+    /// </summary>
+    private static int GetManagedFieldSize(string typeUpperInvariant)
+    {
+        return typeUpperInvariant switch
+        {
+            // Godot-style names
+            "INT" or "FLOAT" or "REAL" or "BOOL" => 4,
+            // C# type names from Denken reflection
+            "SYSTEM.INT32" or "SYSTEM.UINT32" or "SYSTEM.SINGLE" => 4,
+            "SYSTEM.INT64" or "SYSTEM.UINT64" or "SYSTEM.DOUBLE" => 8,
+            "SYSTEM.INT16" or "SYSTEM.UINT16" => 2,
+            "SYSTEM.BYTE" or "SYSTEM.SBYTE" or "SYSTEM.BOOLEAN" => 1,
+            // Short C# names (used by some DLL paths)
+            "INT32" or "UINT32" or "SINGLE" => 4,
+            "INT64" or "UINT64" or "DOUBLE" or "LONG" => 8,
+            "INT16" or "UINT16" or "SHORT" => 2,
+            "BYTE" or "SBYTE" or "BOOLEAN" => 1,
+            _ => 0,
+        };
+    }
+
+    /// <summary>
+    /// Check if a value string represents a numeric value (integer or "true"/"false").
+    /// Used to detect C# enums and other value types with integer storage.
+    /// </summary>
+    private static bool IsNumericValue(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        // Boolean values stored as 0/1
+        if (value is "true" or "false") return true;
+        // Integer value (decimal or hex)
+        if (long.TryParse(value, out _)) return true;
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            long.TryParse(value.AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                null, out _)) return true;
+        return false;
     }
 
     /// <summary>
@@ -871,11 +938,14 @@ public partial class LiveWalkerViewModel : ViewModelBase
         var current = Breadcrumbs[^1];
         if (current.ClassName != "ManagedObject") return -1;
 
-        // The field used to navigate here should be like "+0x58 (ref)"
+        // Use stored MemberOffset if available (Denken-resolved field names like "_player")
+        if (current.MemberOffset >= 8)
+            return current.MemberOffset;
+
+        // Fallback: parse "+0xNN" or "+0xNN (ref)" pattern from MemberName
         string? memberName = current.MemberName;
         if (string.IsNullOrEmpty(memberName)) return -1;
 
-        // Parse "+0xNN" or "+0xNN (ref)" pattern
         if (memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
         {
             int end = 3;
@@ -883,10 +953,6 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (end > 3 && int.TryParse(memberName[3..end], System.Globalization.NumberStyles.HexNumber,
                 null, out int offset))
             {
-                // Previous breadcrumb can be either:
-                //   - A Godot node (wrapper data shown inline) — most common
-                //   - A ManagedObject (explicit wrapper navigation)
-                // Both are valid L2 sources. The offset is always within the wrapper.
                 return offset;
             }
         }
@@ -1205,7 +1271,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
 /// <summary>Navigation breadcrumb for LiveWalker.</summary>
 public sealed class BreadcrumbItem(string address, string name, string className,
     bool isContainer = false, int variantType = -1, string? memberName = null,
-    bool isNodeObject = false)
+    bool isNodeObject = false, int memberOffset = -1)
 {
     public string Address { get; } = address;
     public string Name { get; } = name;
@@ -1218,5 +1284,7 @@ public sealed class BreadcrumbItem(string address, string name, string className
     public string? MemberName { get; } = memberName;
     /// <summary>True if this breadcrumb's object is a Node (uses FIND_NODE for CE scripts).</summary>
     public bool IsNodeObject { get; } = isNodeObject;
+    /// <summary>Byte offset of the member field used to navigate here (e.g. 0x58 for _player). -1 if unknown.</summary>
+    public int MemberOffset { get; } = memberOffset;
     public string Display => string.IsNullOrEmpty(Name) ? Address : Name;
 }

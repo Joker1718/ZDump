@@ -329,6 +329,9 @@ public sealed class ProxyDeployService : IProxyDeployService
             game.DeployedVersion = srcVersion ?? "";
             game.Error = "";
 
+            // Deploy ZoltReflector.dll for .NET Godot games
+            DeployReflector(game.GamePath);
+
             // Clean up legacy version.dll if it's ours (prevent mixed proxy state)
             CleanupLegacyProxy(game.GamePath);
         });
@@ -357,6 +360,9 @@ public sealed class ProxyDeployService : IProxyDeployService
 
             File.Delete(targetDll);
 
+            // Remove ZoltReflector.dll if present
+            UndeployReflector(game.GamePath);
+
             // Also clean up legacy version.dll if it's ours
             CleanupLegacyProxy(game.GamePath);
 
@@ -382,6 +388,90 @@ public sealed class ProxyDeployService : IProxyDeployService
         {
             // Best-effort cleanup — file may be locked
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // ZoltReflector — .NET reflection bridge for Godot + .NET games
+    // ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Deploy ZoltReflector.dll to a game directory if the game uses .NET
+    /// (detected by GodotSharp.dll or coreclr.dll presence).
+    /// Always overwrites — the DLL is small and versioning is tied to the proxy.
+    /// </summary>
+    private static void DeployReflector(string gameDir)
+    {
+        if (!IsDotNetGame(gameDir)) return;
+
+        string sourceReflector = Path.Combine(
+            Grimoire.AppDir, Grimoire.ProxyDllSubdir, Grimoire.ReflectorDllFileName);
+        if (!File.Exists(sourceReflector)) return;
+
+        string targetReflector = Path.Combine(gameDir, Grimoire.ReflectorDllFileName);
+        try
+        {
+            File.Copy(sourceReflector, targetReflector, overwrite: true);
+        }
+        catch
+        {
+            // Best-effort — file may be locked by running game
+        }
+    }
+
+    /// <summary>
+    /// Remove ZoltReflector.dll from a game directory during undeploy.
+    /// </summary>
+    private static void UndeployReflector(string gameDir)
+    {
+        string reflector = Path.Combine(gameDir, Grimoire.ReflectorDllFileName);
+        try
+        {
+            if (File.Exists(reflector))
+                File.Delete(reflector);
+        }
+        catch
+        {
+            // Best-effort — file may be locked
+        }
+    }
+
+    /// <summary>
+    /// Detect if a game uses .NET by looking for GodotSharp or coreclr indicators.
+    /// Checks exe directory and data_*/ subdirectories.
+    /// </summary>
+    private static bool IsDotNetGame(string gameDir)
+    {
+        // Check for GodotSharp.dll in game dir or subdirs
+        if (File.Exists(Path.Combine(gameDir, "GodotSharp.dll")))
+            return true;
+
+        // Check data_*/ subdirectories (Godot export layout)
+        try
+        {
+            foreach (string subDir in Directory.EnumerateDirectories(gameDir, "data_*"))
+            {
+                if (File.Exists(Path.Combine(subDir, "GodotSharp.dll")))
+                    return true;
+                // Also check for .NET runtime indicators
+                if (File.Exists(Path.Combine(subDir, "coreclr.dll")))
+                    return true;
+            }
+        }
+        catch { }
+
+        // Check for .runtimeconfig.json with GodotSharp reference
+        try
+        {
+            foreach (string cfg in Directory.EnumerateFiles(gameDir, "*.runtimeconfig.json"))
+            {
+                string content = File.ReadAllText(cfg);
+                if (content.Contains("GodotSharp", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        catch { }
+
+        return false;
     }
 
     // ────────────────────────────────────────────────────────────────

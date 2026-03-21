@@ -12,6 +12,7 @@
 #include "Fern.h"
 #include "Qual.h"
 #include "Heiter.h"
+#include "Denken.h"
 #include "Solitaer.h"
 #include "Zoltraak.h"
 #include "Grimoire.h"
@@ -210,6 +211,14 @@ int Zolt_AutoStart() {
                         DynOff::CSHARP_OWNER_OFF, DynOff::CSHARP_GCHANDLE_OFF);
                 }
             }
+
+            // Denken — 頓肯 — Initialize CLR hosting bridge for managed reflection.
+            // Uses hostfxr already loaded by the game to attach to the running CoreCLR,
+            // then loads ZoltReflector.dll for type/field enumeration.
+            {
+                LOG_TIMED("INIT", "Denken::Init (CLR bridge)");
+                Denken::Init();
+            }
         }
     }
 
@@ -271,6 +280,7 @@ int Zolt_AutoStart() {
         Zolt::DynOff::PROPINFO_USAGE_OFFSET,
         Zolt::DynOff::PROPINFO_TOTAL_SIZE);
     Zolt::Solitaer::Summary("  Heiter:    %s", Zolt::Heiter::IsReady() ? "hook active" : "deferred");
+    Zolt::Solitaer::Summary("  Denken:    %s", Zolt::Denken::IsReady() ? "CLR bridge active" : "inactive");
     Zolt::Solitaer::Summary("  Status:    %s", success ? "OK" : "PARTIAL");
     Zolt::Solitaer::Summary("==========================================================");
 
@@ -283,6 +293,7 @@ int Zolt_AutoStart() {
 
 void Zolt_Shutdown() {
     Zolt::Solitaer::LogInit("Zolt_Shutdown called");
+    Zolt::Denken::Shutdown();   // Denken — 頓肯 — Release CLR bridge
     Zolt::Heiter::Shutdown();   // Before Fern — unblock any sync waiters first
     Zolt::Fern::Stop();
     Zolt::Qual::StopPolling();  // Qual — 全 — Stop mailbox polling

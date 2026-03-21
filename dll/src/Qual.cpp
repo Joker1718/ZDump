@@ -18,6 +18,7 @@
 #include "Zoltraak.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
+#include "Denken.h"
 
 #include <Windows.h>
 #include <atomic>
@@ -47,6 +48,7 @@ static void HandleFindNode();
 static void HandleFindInstanceWithMember();
 static void HandleFindInstanceByPath();
 static void HandleFindManagedInstances();
+static void HandleResolveFieldOffset();
 static void SetError(int32_t code, const char* msg);
 static void SetDone(int32_t resultCode);
 
@@ -92,6 +94,9 @@ static DWORD WINAPI PollingThreadProc(LPVOID /*param*/) {
                 break;
             case CMD_FIND_MANAGED_INSTANCES:
                 HandleFindManagedInstances();
+                break;
+            case CMD_RESOLVE_FIELD_OFFSET:
+                HandleResolveFieldOffset();
                 break;
             case CMD_PING:
                 SetDone(0);
@@ -1481,6 +1486,54 @@ static void SetDone(int32_t resultCode) {
     // Signal completion — MUST write status BEFORE clearing cmd
     g_zoltMailbox.status = STATUS_DONE;
     g_zoltMailbox.cmd = CMD_IDLE;
+}
+
+// CMD_RESOLVE_FIELD_OFFSET — Resolve .NET field name → offset via Denken reflection
+// Input:
+//   className  = fully qualified .NET type name (e.g. "MegaCrit.Sts2.Core.Entities.Creatures.Creature")
+//   memberName = field name (e.g. "_currentHp" or "<Side>k__BackingField")
+// Output:
+//   result      = field offset within managed object (or -1 if not found)
+//   memberIndex = field size in bytes (repurposed as output)
+static void HandleResolveFieldOffset() {
+    char typeName[256];
+    memcpy(typeName, g_zoltMailbox.className, sizeof(typeName));
+    typeName[255] = '\0';
+
+    char fieldName[256];
+    memcpy(fieldName, g_zoltMailbox.memberName, sizeof(fieldName));
+    fieldName[255] = '\0';
+
+    if (typeName[0] == '\0' || fieldName[0] == '\0') {
+        SetError(-1, "typeName and fieldName required");
+        return;
+    }
+
+    if (!Denken::IsReady()) {
+        SetError(-2, "Denken CLR bridge not active");
+        return;
+    }
+
+    Solitaer::Info("PIPE", "Qual: RESOLVE_FIELD_OFFSET type='%s' field='%s'", typeName, fieldName);
+
+    auto layout = Denken::GetTypeLayout(typeName);
+    if (layout.fields.empty()) {
+        SetError(-3, "Type not found or has no fields");
+        return;
+    }
+
+    std::string target(fieldName);
+    for (auto& fi : layout.fields) {
+        if (fi.name == target) {
+            g_zoltMailbox.memberIndex = fi.size;  // output: field size
+            Solitaer::Info("PIPE", "Qual: Resolved '%s.%s' → offset=0x%X size=%d",
+                typeName, fieldName, fi.offset, fi.size);
+            SetDone(fi.offset);
+            return;
+        }
+    }
+
+    SetError(-4, "Field not found in type layout");
 }
 
 } // namespace Zolt::Qual
