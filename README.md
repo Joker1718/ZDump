@@ -6,6 +6,8 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 
 > Zolt-Dump is a **conceptual, experimental tool** built for research and learning purposes. It relies on reverse-engineered memory layouts that **vary across Godot Engine versions and game custom builds**. There is no guarantee it will work correctly — or at all — on any particular game. Use at your own risk.
 
+> ⚠️ **This is NOT a plug-and-play tool for end users.** Every game has its own memory layout, compiler quirks, and engine modifications. Nearly every target game requires manual calibration — adjusting offsets, verifying signatures, and tuning detection heuristics. If you are not comfortable with Cheat Engine, memory analysis, and reverse engineering, this tool is not for you.
+
 <img src="./img/logo.jpg" alt="Zolt-Dump"/>
 
 ---
