@@ -396,13 +396,6 @@ if ($Target -in "All", "ProxyDLL") {
                 Copy-Item $reflectorDll -Destination $proxyOutDir -Force
                 $dllSize = Get-FileSize (Join-Path $proxyOutDir "ZoltReflector.dll")
                 Write-Ok "ZoltReflector.dll ($dllSize) -> dist\proxy\"
-
-                # Copy deps.json (assembly metadata for CLR loading)
-                $depsJson = Join-Path $reflectorOutDir "ZoltReflector.deps.json"
-                if (Test-Path $depsJson) {
-                    Copy-Item $depsJson -Destination $proxyOutDir -Force
-                    Write-Ok "ZoltReflector.deps.json -> dist\proxy\"
-                }
             }
             else {
                 Write-Fail "ZoltReflector.dll not found in build output"
