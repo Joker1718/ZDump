@@ -736,7 +736,9 @@ public sealed class CeLuaScriptService
         // When present, the script survives game updates that change field layouts.
         string dotNetType = criteria.DotNetTypeName;
         string targetFieldName = criteria.TargetFieldName;
-        string filterFieldName = criteria.FilterFieldName;
+        // Only emit filter field name when filter is actually active (not NONE)
+        string filterFieldName = (filterOp != FILTER_NONE && filterOffset >= 0)
+            ? criteria.FilterFieldName : "";
         bool hasReflection = !string.IsNullOrEmpty(dotNetType) &&
                              !string.IsNullOrEmpty(targetFieldName);
         if (hasReflection)
@@ -900,24 +902,14 @@ public sealed class CeLuaScriptService
         }
         else
         {
-            // ── Single-result: register symbol + create memory record ──
+            // ── Single-result: register symbol only (memory record created by AOBMaker) ──
             sb.AppendLine("-- ═══ Register symbol for first match ═══");
             sb.AppendLine($"local entryBase = resBuf + 0x{RES_ENTRIES:X}");
             sb.AppendLine("local managedAddr = readQword(entryBase + 8)");
             sb.AppendLine("local addr = managedAddr + target_offset");
             sb.AppendLine($"unregisterSymbol('{symbolName}')");
             sb.AppendLine($"registerSymbol('{symbolName}', addr)");
-            sb.AppendLine($"print(string.format('[ZoltDump] {symbolName} = %X (managed @ %X)', addr, managedAddr))");
-            sb.AppendLine();
-            sb.AppendLine($"local recDesc = '{EscapeLua(className)} .NET managed +0x{targetOffset:X}'");
-            sb.AppendLine("synchronize(function()");
-            sb.AppendLine("  local al = getAddressList()");
-            sb.AppendLine("  local rec = al.createMemoryRecord()");
-            sb.AppendLine("  rec.Description = recDesc");
-            sb.AppendLine("  rec.Address = string.format('%X', addr)");
-            sb.AppendLine("  rec.Vartype = vtDword  -- C# int = 32-bit");
-            sb.AppendLine("  rec.Color = 0xFF8000");
-            sb.AppendLine("end)");
+            sb.AppendLine($"print(string.format('[ZoltDump] [%s] {symbolName} = %X (managed @ %X)', os.date('%H:%M:%S'), addr, managedAddr))");
             sb.AppendLine("closeLuaEngine()");
             sb.AppendLine();
             sb.AppendLine("[DISABLE]");
@@ -1076,10 +1068,10 @@ public sealed class CeLuaScriptService
         sb.AppendLine("    print(string.format('[ZoltDump] [%s] WARN: %s not resolved, using fallback 0x%X', os.date('%H:%M:%S'), target_field, target_offset))");
         sb.AppendLine("  end");
 
-        // Resolve filter field
+        // Resolve filter field (only when filter is active, not NONE)
         if (hasFilterField)
         {
-            sb.AppendLine("  if #filter_field > 0 and filter_offset >= 0 then");
+            sb.AppendLine("  if #filter_field > 0 and filter_op > 0 and filter_offset >= 0 then");
             sb.AppendLine("    resolved = resolveField(dotnet_type, filter_field)");
             sb.AppendLine("    if resolved then");
             sb.AppendLine("      print(string.format('[ZoltDump] [%s] Resolved filter %s → 0x%X (was 0x%X)', os.date('%H:%M:%S'), filter_field, resolved, filter_offset))");
