@@ -410,12 +410,17 @@ public static class Reflector
         //   +0x00: MethodTable* (QWORD)
         //   +0x08: DWORD m_dword1 (token bits)
         //   +0x0C: DWORD m_dword2 (offset in low 27 bits)
-        uint dword2 = *(uint*)(fdPtr + 0x0C);
-        int offset = (int)(dword2 & 0x07FFFFFF); // low 27 bits = offset
+        try
+        {
+            uint dword2 = *(uint*)(fdPtr + 0x0C);
+            int offset = (int)(dword2 & 0x07FFFFFF); // low 27 bits = offset
 
-        // Sanity check: offset should be reasonable (< 64KB for most objects)
-        if (offset is > 0 and < 0x10000)
-            return offset;
+            // Sanity check: offset should be reasonable (< 64KB for most objects)
+            if (offset is > 0 and < 0x10000)
+                return offset;
+        }
+        catch (AccessViolationException) { }
+        catch (NullReferenceException) { }
 
         return -1;
     }

@@ -57,6 +57,7 @@ typedef int32_t(*ping_fn)();
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -64,8 +65,9 @@ using json = nlohmann::json;
 namespace Zolt::Denken {
 
 // ============================================================
-// Module state
+// Module state (guarded by s_mutex)
 // ============================================================
+static std::mutex   s_mutex;
 static bool         s_ready = false;
 static reflect_fn   s_reflectFn = nullptr;
 static ping_fn      s_pingFn = nullptr;
@@ -201,6 +203,8 @@ static fs::path FindReflectorAssembly()
 
 static std::string SendCommand(const json& request)
 {
+    std::lock_guard<std::mutex> lock(s_mutex);
+
     if (!s_reflectFn) return R"({"error":"bridge not initialized"})";
 
     std::string reqStr = request.dump();
@@ -213,6 +217,10 @@ static std::string SendCommand(const json& request)
     if (result < 0)
         return R"({"error":"managed call failed","code":)" + std::to_string(result) + "}";
 
+    // Upper-bound check: result must not exceed buffer size
+    if (result > BUFFER_SIZE)
+        return R"({"error":"response exceeds buffer size"})";
+
     return std::string(s_buffer, result);
 }
 
@@ -222,6 +230,7 @@ static std::string SendCommand(const json& request)
 
 bool Init()
 {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (s_ready) return true;
 
     // Only attempt on .NET games
@@ -295,7 +304,7 @@ bool Init()
 
     if (rc < 0 || !pfnLoadAssembly) {
         Solitaer::Warn("DENKEN", "Failed to get load_assembly delegate: 0x%08X", rc);
-        if (needClose && hostCtx) pfnClose(hostCtx);
+        if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
 
@@ -303,7 +312,7 @@ bool Init()
     fs::path reflectorPath = FindReflectorAssembly();
     if (reflectorPath.empty()) {
         Solitaer::Warn("DENKEN", "ZoltReflector.dll not found");
-        if (needClose && hostCtx) pfnClose(hostCtx);
+        if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
     Solitaer::Info("DENKEN", "Loading reflector: %ls", reflectorPath.c_str());
@@ -320,7 +329,7 @@ bool Init()
 
     if (rc < 0 || !s_reflectFn) {
         Solitaer::Warn("DENKEN", "Failed to load Reflect entry point: 0x%08X", rc);
-        if (needClose && hostCtx) pfnClose(hostCtx);
+        if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
 
@@ -338,7 +347,7 @@ bool Init()
         // Non-fatal: Reflect is the main entry point
     }
 
-    if (needClose && hostCtx) pfnClose(hostCtx);
+    if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
 
     // Step 6: Verify bridge is working
     if (s_pingFn) {
@@ -362,6 +371,7 @@ bool IsReady()
 
 void Shutdown()
 {
+    std::lock_guard<std::mutex> lock(s_mutex);
     s_reflectFn = nullptr;
     s_pingFn = nullptr;
     s_ready = false;
@@ -370,6 +380,7 @@ void Shutdown()
 
 bool Ping()
 {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (!s_pingFn) return false;
     return s_pingFn() == 0x44454E4B;
 }

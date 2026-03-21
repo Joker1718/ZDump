@@ -19,6 +19,7 @@ public static class NativeEntry
     // Shared response buffer (4 MB — large games may have thousands of types)
     private const int MaxResponseSize = 4 * 1024 * 1024;
     private static readonly byte[] s_responseBuffer = new byte[MaxResponseSize];
+    private static readonly object s_lock = new();
 
     /// <summary>
     /// Main entry point: receives a JSON command, returns JSON response.
@@ -33,43 +34,49 @@ public static class NativeEntry
     [UnmanagedCallersOnly(EntryPoint = "Reflect")]
     public static unsafe int Reflect(byte* requestBuf, int requestLen)
     {
-        try
+        // Validate requestLen bounds
+        if (requestLen <= 0 || requestLen > MaxResponseSize) return -3;
+
+        lock (s_lock)
         {
-            var requestSpan = new ReadOnlySpan<byte>(requestBuf, requestLen);
-            var request = JsonSerializer.Deserialize(requestSpan, ReflectJsonCtx.Default.ReflectRequest);
-            if (request is null) return -1;
-
-            string responseJson = HandleCommand(request);
-            int byteCount = Encoding.UTF8.GetByteCount(responseJson);
-
-            if (byteCount > MaxResponseSize) return -2; // response too large
-
-            Encoding.UTF8.GetBytes(responseJson, s_responseBuffer);
-
-            // Copy response to the request buffer (caller allocated, must be large enough)
-            fixed (byte* src = s_responseBuffer)
+            try
             {
-                Buffer.MemoryCopy(src, requestBuf, byteCount, byteCount);
+                var requestSpan = new ReadOnlySpan<byte>(requestBuf, requestLen);
+                var request = JsonSerializer.Deserialize(requestSpan, ReflectJsonCtx.Default.ReflectRequest);
+                if (request is null) return -1;
+
+                string responseJson = HandleCommand(request);
+                int byteCount = Encoding.UTF8.GetByteCount(responseJson);
+
+                if (byteCount > MaxResponseSize) return -2; // response too large
+
+                Encoding.UTF8.GetBytes(responseJson, s_responseBuffer);
+
+                // Copy response to the request buffer (caller allocated, must be large enough)
+                fixed (byte* src = s_responseBuffer)
+                {
+                    Buffer.MemoryCopy(src, requestBuf, byteCount, byteCount);
+                }
+
+                return byteCount;
             }
-
-            return byteCount;
-        }
-        catch (Exception ex)
-        {
-            // Write error JSON with exception details (truncated to fit buffer)
-            string msg = ex.ToString();
-            if (msg.Length > 4000) msg = msg[..4000];
-            string error = $"{{\"error\":\"{EscapeJson(msg)}\"}}";
-            int len = Encoding.UTF8.GetByteCount(error);
-            if (len > MaxResponseSize) len = MaxResponseSize;
-
-            var bytes = Encoding.UTF8.GetBytes(error);
-            int copyLen = Math.Min(bytes.Length, MaxResponseSize);
-            fixed (byte* src = bytes)
+            catch (Exception ex)
             {
-                Buffer.MemoryCopy(src, requestBuf, copyLen, copyLen);
+                // Write error JSON with exception details (truncated to fit buffer)
+                string msg = ex.ToString();
+                if (msg.Length > 4000) msg = msg[..4000];
+                string error = $"{{\"error\":\"{EscapeJson(msg)}\"}}";
+                int len = Encoding.UTF8.GetByteCount(error);
+                if (len > MaxResponseSize) len = MaxResponseSize;
+
+                var bytes = Encoding.UTF8.GetBytes(error);
+                int copyLen = Math.Min(bytes.Length, MaxResponseSize);
+                fixed (byte* src = bytes)
+                {
+                    Buffer.MemoryCopy(src, requestBuf, copyLen, copyLen);
+                }
+                return copyLen;
             }
-            return copyLen;
         }
     }
 
@@ -147,7 +154,25 @@ public static class NativeEntry
 
     private static string EscapeJson(string s)
     {
-        return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var sb = new System.Text.StringBuilder(s.Length + 16);
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < ' ')
+                        sb.Append($"\\u{(int)c:X4}");
+                    else
+                        sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
     }
 }
 

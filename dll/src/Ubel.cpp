@@ -21,6 +21,7 @@
 #include <cmath>
 #include <chrono>
 #include <iterator>
+#include <mutex>
 #include <unordered_map>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -2022,9 +2023,10 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force =
 // MethodTable → TypeName cache (populated lazily from Denken::EnumerateTypes)
 static std::unordered_map<uint64_t, std::string> s_mtToTypeName;
 static bool s_mtCacheBuilt = false;
+static std::mutex s_mtCacheMutex;
 
-static const std::string& ResolveManagedTypeName(uint64_t methodTable) {
-    static const std::string empty;
+static std::string ResolveManagedTypeName(uint64_t methodTable) {
+    std::lock_guard<std::mutex> lock(s_mtCacheMutex);
     if (!s_mtCacheBuilt && Zolt::Denken::IsReady()) {
         auto types = Zolt::Denken::EnumerateTypes();
         for (auto& ts : types) {
@@ -2035,7 +2037,7 @@ static const std::string& ResolveManagedTypeName(uint64_t methodTable) {
         Solitaer::Info("WALK", "Denken MT cache built: %zu types", s_mtToTypeName.size());
     }
     auto it = s_mtToTypeName.find(methodTable);
-    return (it != s_mtToTypeName.end()) ? it->second : empty;
+    return (it != s_mtToTypeName.end()) ? it->second : std::string();
 }
 
 // Map C# type name to Variant::Type for display
@@ -2154,7 +2156,7 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
                     entry.nativeSize = 8;
                     entry.value.typeName = fi.typeName;
                     if (refVal != 0 && Zoltraak::IsReadable(refVal)) {
-                        char valBuf[80];
+                        char valBuf[256];
                         snprintf(valBuf, sizeof(valBuf), "%s@%llX",
                             fi.typeName.c_str(), static_cast<unsigned long long>(refVal));
                         entry.value.value = valBuf;
@@ -2178,7 +2180,10 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
                     memcpy(&val2, buf.data() + fi.offset, sizeof(val2));
                     entry.value.type = 2;
                     entry.value.typeName = fi.typeName;
-                    entry.value.value = std::to_string(static_cast<int16_t>(val2));
+                    if (fi.typeName == "System.UInt16" || fi.typeName == "System.Char")
+                        entry.value.value = std::to_string(val2);
+                    else
+                        entry.value.value = std::to_string(static_cast<int16_t>(val2));
                 } else if (fi.size == 4) {
                     uint32_t val4;
                     memcpy(&val4, buf.data() + fi.offset, sizeof(val4));
@@ -2227,6 +2232,7 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
                     entry.value.type = 0;
                     entry.value.typeName = fi.typeName;
                     char hexBuf[128];
+                    hexBuf[0] = '\0'; // ensure null-terminated even when fi.size == 0
                     int hexLen = 0;
                     int showBytes = (fi.size < 32) ? fi.size : 32;
                     for (int b = 0; b < showBytes && fi.offset + b < readSize; b++)
@@ -2586,7 +2592,7 @@ void WalkInstance(uint64_t objAddr,
                                     entry.nativeSize = 8;
                                     entry.value.typeName = fi.typeName;
                                     if (refVal != 0 && Zoltraak::IsReadable(refVal)) {
-                                        char valBuf[80];
+                                        char valBuf[256];
                                         snprintf(valBuf, sizeof(valBuf), "%s@%llX",
                                             fi.typeName.c_str(), static_cast<unsigned long long>(refVal));
                                         entry.value.value = valBuf;
@@ -2594,6 +2600,15 @@ void WalkInstance(uint64_t objAddr,
                                     } else {
                                         entry.value.value = refVal == 0 ? "null" : "(invalid)";
                                     }
+                                } else if (fi.size == 2) {
+                                    uint16_t val2;
+                                    memcpy(&val2, dbuf.data() + fi.offset, sizeof(val2));
+                                    entry.value.type = 2;
+                                    entry.value.typeName = fi.typeName;
+                                    if (fi.typeName == "System.UInt16" || fi.typeName == "System.Char")
+                                        entry.value.value = std::to_string(val2);
+                                    else
+                                        entry.value.value = std::to_string(static_cast<int16_t>(val2));
                                 } else if (fi.size == 4) {
                                     uint32_t val4;
                                     memcpy(&val4, dbuf.data() + fi.offset, sizeof(val4));
@@ -2636,7 +2651,7 @@ void WalkInstance(uint64_t objAddr,
                                     }
                                 } else {
                                     entry.value.type = 0; entry.value.typeName = fi.typeName;
-                                    char hexBuf[128]; int hexLen = 0;
+                                    char hexBuf[128]; hexBuf[0] = '\0'; int hexLen = 0;
                                     int showBytes = (fi.size < 32) ? fi.size : 32;
                                     for (int b = 0; b < showBytes && fi.offset + b < readSize; b++)
                                         hexLen += snprintf(hexBuf + hexLen, sizeof(hexBuf) - hexLen,
