@@ -81,13 +81,13 @@ public partial class LiveWalkerViewModel : ViewModelBase
         _sdk = sdk;
     }
 
-    public async Task NavigateToAddressAsync(string address, string? sourceFieldName = null)
+    public async Task NavigateToAddressAsync(string address, string? sourceFieldName = null, int sourceFieldOffset = -1)
     {
         await FetchAndShowAsync(address);
         // Add breadcrumb only on navigation (not refresh)
         if (!string.IsNullOrEmpty(CurrentAddress))
             Breadcrumbs.Add(new BreadcrumbItem(CurrentAddress, CurrentName, CurrentClassName,
-                isNodeObject: IsNode, memberName: sourceFieldName));
+                isNodeObject: IsNode, memberName: sourceFieldName, memberOffset: sourceFieldOffset));
     }
 
     /// <summary>Fetch instance data and update fields without adding a breadcrumb.</summary>
@@ -217,7 +217,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
     private async Task NavigatePointerAsync(LiveFieldValue field)
     {
         if (!field.IsPointer || string.IsNullOrEmpty(field.PtrValue)) return;
-        await NavigateToAddressAsync(field.PtrValue, sourceFieldName: field.Name);
+        await NavigateToAddressAsync(field.PtrValue, sourceFieldName: field.Name, sourceFieldOffset: field.Offset);
     }
 
     [RelayCommand]
@@ -938,11 +938,14 @@ public partial class LiveWalkerViewModel : ViewModelBase
         var current = Breadcrumbs[^1];
         if (current.ClassName != "ManagedObject") return -1;
 
-        // The field used to navigate here should be like "+0x58 (ref)"
+        // Use stored MemberOffset if available (Denken-resolved field names like "_player")
+        if (current.MemberOffset >= 8)
+            return current.MemberOffset;
+
+        // Fallback: parse "+0xNN" or "+0xNN (ref)" pattern from MemberName
         string? memberName = current.MemberName;
         if (string.IsNullOrEmpty(memberName)) return -1;
 
-        // Parse "+0xNN" or "+0xNN (ref)" pattern
         if (memberName.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
         {
             int end = 3;
@@ -950,10 +953,6 @@ public partial class LiveWalkerViewModel : ViewModelBase
             if (end > 3 && int.TryParse(memberName[3..end], System.Globalization.NumberStyles.HexNumber,
                 null, out int offset))
             {
-                // Previous breadcrumb can be either:
-                //   - A Godot node (wrapper data shown inline) — most common
-                //   - A ManagedObject (explicit wrapper navigation)
-                // Both are valid L2 sources. The offset is always within the wrapper.
                 return offset;
             }
         }
@@ -1272,7 +1271,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
 /// <summary>Navigation breadcrumb for LiveWalker.</summary>
 public sealed class BreadcrumbItem(string address, string name, string className,
     bool isContainer = false, int variantType = -1, string? memberName = null,
-    bool isNodeObject = false)
+    bool isNodeObject = false, int memberOffset = -1)
 {
     public string Address { get; } = address;
     public string Name { get; } = name;
@@ -1285,5 +1284,7 @@ public sealed class BreadcrumbItem(string address, string name, string className
     public string? MemberName { get; } = memberName;
     /// <summary>True if this breadcrumb's object is a Node (uses FIND_NODE for CE scripts).</summary>
     public bool IsNodeObject { get; } = isNodeObject;
+    /// <summary>Byte offset of the member field used to navigate here (e.g. 0x58 for _player). -1 if unknown.</summary>
+    public int MemberOffset { get; } = memberOffset;
     public string Display => string.IsNullOrEmpty(Name) ? Address : Name;
 }

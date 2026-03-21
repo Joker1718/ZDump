@@ -736,7 +736,9 @@ public sealed class CeLuaScriptService
         // When present, the script survives game updates that change field layouts.
         string dotNetType = criteria.DotNetTypeName;
         string targetFieldName = criteria.TargetFieldName;
-        string filterFieldName = criteria.FilterFieldName;
+        // Only emit filter field name when filter is actually active (not NONE)
+        string filterFieldName = (filterOp != FILTER_NONE && filterOffset >= 0)
+            ? criteria.FilterFieldName : "";
         bool hasReflection = !string.IsNullOrEmpty(dotNetType) &&
                              !string.IsNullOrEmpty(targetFieldName);
         if (hasReflection)
@@ -820,7 +822,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine("  print('[ZoltDump] No matching .NET managed objects found')");
         sb.AppendLine("  error('No matching .NET managed objects found')");
         sb.AppendLine("end");
-        sb.AppendLine($"print(string.format('[ZoltDump] Found %d matching .NET managed objects', count))");
+        sb.AppendLine($"print(string.format('[ZoltDump] [%s] Found %d matching .NET managed objects', os.date('%H:%M:%S'), count))");
         sb.AppendLine();
 
         if (findAll)
@@ -862,7 +864,7 @@ public sealed class CeLuaScriptService
             sb.AppendLine("      rec.Parent = parentRecord");
             sb.AppendLine("      rec.Color = (i % 2 == 0) and 0xFF8000 or 0x7F7F7F");
             sb.AppendLine();
-            sb.AppendLine($"      print(string.format('[ZoltDump] %s = %X (value=%d, managed=%X)', sym, addr, val, managedAddr))");
+            sb.AppendLine($"      print(string.format('[ZoltDump] [%s] %s = %X (value=%d, managed=%X)', os.date('%H:%M:%S'), sym, addr, val, managedAddr))");
             sb.AppendLine("    end");
             sb.AppendLine("  end");
             sb.AppendLine("end)");
@@ -900,24 +902,14 @@ public sealed class CeLuaScriptService
         }
         else
         {
-            // ── Single-result: register symbol + create memory record ──
+            // ── Single-result: register symbol only (memory record created by AOBMaker) ──
             sb.AppendLine("-- ═══ Register symbol for first match ═══");
             sb.AppendLine($"local entryBase = resBuf + 0x{RES_ENTRIES:X}");
             sb.AppendLine("local managedAddr = readQword(entryBase + 8)");
             sb.AppendLine("local addr = managedAddr + target_offset");
             sb.AppendLine($"unregisterSymbol('{symbolName}')");
             sb.AppendLine($"registerSymbol('{symbolName}', addr)");
-            sb.AppendLine($"print(string.format('[ZoltDump] {symbolName} = %X (managed @ %X)', addr, managedAddr))");
-            sb.AppendLine();
-            sb.AppendLine($"local recDesc = '{EscapeLua(className)} .NET managed +0x{targetOffset:X}'");
-            sb.AppendLine("synchronize(function()");
-            sb.AppendLine("  local al = getAddressList()");
-            sb.AppendLine("  local rec = al.createMemoryRecord()");
-            sb.AppendLine("  rec.Description = recDesc");
-            sb.AppendLine("  rec.Address = string.format('%X', addr)");
-            sb.AppendLine("  rec.Vartype = vtDword  -- C# int = 32-bit");
-            sb.AppendLine("  rec.Color = 0xFF8000");
-            sb.AppendLine("end)");
+            sb.AppendLine($"print(string.format('[ZoltDump] [%s] {symbolName} = %X (managed @ %X)', os.date('%H:%M:%S'), addr, managedAddr))");
             sb.AppendLine("closeLuaEngine()");
             sb.AppendLine();
             sb.AppendLine("[DISABLE]");
@@ -997,15 +989,18 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"writeInteger(mb + 0x{OFF_RESULT:X}, 0)  -- clear previous error");
         sb.AppendLine($"writeInteger(mb + 0x{OFF_CMD:X}, {cmd})  -- trigger {cmdLabel}");
         sb.AppendLine();
-        sb.AppendLine($"-- Poll for {cmdLabel} completion (5 second timeout)");
-        sb.AppendLine("for i = 1, 500 do");
+        sb.AppendLine($"-- Poll for {cmdLabel} completion (15 second timeout)");
+        sb.AppendLine("local _pollStart = os.clock()");
+        sb.AppendLine("for i = 1, 1500 do");
         sb.AppendLine($"  if readInteger(mb + 0x{OFF_STATUS:X}) == {STATUS_DONE} then break end");
         sb.AppendLine("  sleep(10)");
         sb.AppendLine("end");
+        sb.AppendLine($"local _elapsed = os.clock() - _pollStart");
         sb.AppendLine();
         sb.AppendLine($"if readInteger(mb + 0x{OFF_STATUS:X}) ~= {STATUS_DONE} then");
-        sb.AppendLine($"  error('[ZoltDump] {cmdLabel} timeout')");
+        sb.AppendLine($"  error(string.format('[ZoltDump] {cmdLabel} timeout after %.1fs', _elapsed))");
         sb.AppendLine("end");
+        sb.AppendLine($"print(string.format('[ZoltDump] [%s] {cmdLabel} completed in %.2fs', os.date('%H:%M:%S'), _elapsed))");
         sb.AppendLine();
         if (resultIsCount)
         {
@@ -1049,7 +1044,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_RESULT:X}, 0)");
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_CMD:X}, {CMD_RESOLVE_FIELD_OFFSET})");
         sb.AppendLine();
-        sb.AppendLine("  for i = 1, 200 do");
+        sb.AppendLine("  for i = 1, 500 do  -- 5s timeout (first call may init Denken ~2s)");
         sb.AppendLine($"    if readInteger(mb + 0x{OFF_STATUS:X}) == 1 then break end");
         sb.AppendLine("    sleep(10)");
         sb.AppendLine("  end");
@@ -1063,28 +1058,31 @@ public sealed class CeLuaScriptService
 
         // Resolve target field
         sb.AppendLine("if #dotnet_type > 0 and #target_field > 0 then");
+        sb.AppendLine("  local _resolveStart = os.clock()");
+        sb.AppendLine("  print(string.format('[ZoltDump] [%s] Resolving .NET field offsets for %s...', os.date('%H:%M:%S'), dotnet_type))");
         sb.AppendLine("  local resolved = resolveField(dotnet_type, target_field)");
         sb.AppendLine("  if resolved then");
-        sb.AppendLine("    print(string.format('[ZoltDump] Resolved %s → 0x%X (was 0x%X)', target_field, resolved, target_offset))");
+        sb.AppendLine("    print(string.format('[ZoltDump] [%s] Resolved %s → 0x%X (was 0x%X)', os.date('%H:%M:%S'), target_field, resolved, target_offset))");
         sb.AppendLine("    target_offset = resolved");
         sb.AppendLine("  else");
-        sb.AppendLine("    print(string.format('[ZoltDump] WARN: %s not resolved, using fallback 0x%X', target_field, target_offset))");
+        sb.AppendLine("    print(string.format('[ZoltDump] [%s] WARN: %s not resolved, using fallback 0x%X', os.date('%H:%M:%S'), target_field, target_offset))");
         sb.AppendLine("  end");
 
-        // Resolve filter field
+        // Resolve filter field (only when filter is active, not NONE)
         if (hasFilterField)
         {
-            sb.AppendLine("  if #filter_field > 0 and filter_offset >= 0 then");
+            sb.AppendLine("  if #filter_field > 0 and filter_op > 0 and filter_offset >= 0 then");
             sb.AppendLine("    resolved = resolveField(dotnet_type, filter_field)");
             sb.AppendLine("    if resolved then");
-            sb.AppendLine("      print(string.format('[ZoltDump] Resolved filter %s → 0x%X (was 0x%X)', filter_field, resolved, filter_offset))");
+            sb.AppendLine("      print(string.format('[ZoltDump] [%s] Resolved filter %s → 0x%X (was 0x%X)', os.date('%H:%M:%S'), filter_field, resolved, filter_offset))");
             sb.AppendLine("      filter_offset = resolved");
             sb.AppendLine("    else");
-            sb.AppendLine("      print(string.format('[ZoltDump] WARN: filter %s not resolved, using fallback 0x%X', filter_field, filter_offset))");
+            sb.AppendLine("      print(string.format('[ZoltDump] [%s] WARN: filter %s not resolved, using fallback 0x%X', os.date('%H:%M:%S'), filter_field, filter_offset))");
             sb.AppendLine("    end");
             sb.AppendLine("  end");
         }
 
+        sb.AppendLine("  print(string.format('[ZoltDump] [%s] Field resolution completed in %.2fs', os.date('%H:%M:%S'), os.clock() - _resolveStart))");
         sb.AppendLine("end");
         sb.AppendLine();
     }
