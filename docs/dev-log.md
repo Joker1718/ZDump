@@ -1,10 +1,10 @@
 # Development Log — Zolt-Dump
 
-## Current Status: Phase 10 — .NET Managed Object Support
+## Current Status: Phase 11 — Denken CLR Bridge (.NET Reflection)
 
-All DLL-side functionality is implemented and tested. UI is ~95% complete.
+All DLL-side functionality is implemented and tested. UI is ~97% complete.
 13/13 test targets pass (5 editors + 8 games, Godot 3.5 → 4.5).
-215 unit tests passing.
+215 unit tests passing. .NET field name resolution working on Slay the Spire 2.
 
 ---
 
@@ -67,10 +67,11 @@ All DLL-side functionality is implemented and tested. UI is ~95% complete.
 - [ ] **CeXmlExportService** — CE pointer chain XML (stub, type mapping done)
 - [ ] **CsxExportService** — CE Structure Dissect XML (partial, needs struct flattening)
 
-### Phase 7: Proxy & Deploy — Partial
+### Phase 7: Proxy & Deploy ✅
 - [x] **Eisen** (DLL side) — Proxy forwarding complete
-- [ ] **ProxyDeployService** (UI side) — Steam library scanning, game detection, deploy/undeploy (stubs)
-- [x] **VdfParser** — Steam libraryfolders.vdf parsing (implemented, not yet wired)
+- [x] **ProxyDeployService** (UI side) — Steam library scanning, Godot game detection, deploy/undeploy with version tracking
+- [x] **ZoltReflector deploy** — Auto-detects .NET games and deploys/undeploys ZoltReflector.dll alongside winmm.dll
+- [x] **VdfParser** — Steam libraryfolders.vdf parsing
 
 ### Phase 8: CE Scripts ✅
 - [x] **ZoltDump.CT** — Cheat Table with Lua injection
@@ -93,6 +94,18 @@ All DLL-side functionality is implemented and tested. UI is ~95% complete.
 - [x] **L2 alternatives** — `find_by_address` returns all Godot objects referencing same managed child
 - [x] **CE Lua multi-result scripts** — Creates CE memory records under group headers with filter criteria tags
 - [x] **Managed filter dialog** — UI dialog for selecting target/filter fields from managed sibling list
+
+### Phase 11: Denken CLR Bridge ✅
+- [x] **Denken** (頓肯) — CLR hosting bridge via hostfxr NULL handle strategy for self-contained .NET games
+- [x] **ZoltReflector.dll** — .NET class library loaded into game's CoreCLR, enumerates types and field layouts via reflection
+- [x] **Field name resolution** — Ubel uses Denken to resolve real .NET field names (`_currentHp`, `<Side>k__BackingField`) instead of raw offsets (`+0x84`)
+- [x] **FieldDesc offset extraction** — CoreCLR FieldDesc low-27-bit offset + IntPtr.Size correction for reference types
+- [x] **CMD_RESOLVE_FIELD_OFFSET** — Mailbox command for CE Lua runtime field offset resolution by name
+- [x] **Update-resilient CE scripts** — Generated Lua resolves field offsets by name at runtime; scripts survive game updates that change field layouts
+- [x] **ProxyDeployService** — Auto-deploys/undeploys ZoltReflector.dll for .NET Godot games
+- [x] **Managed filter dialog** — Shows Denken-resolved field names with C# type support (enums, System.Int32, etc.)
+- [x] **L2 child ref offset** — BreadcrumbItem stores MemberOffset for Denken-resolved navigation (e.g. `_player` at 0x58)
+- [x] Tested on Slay the Spire 2 (Godot 4.5.1, .NET 9 self-contained)
 
 ---
 
@@ -157,10 +170,9 @@ All DLL-side functionality is implemented and tested. UI is ~95% complete.
 
 1. **CE XML Export** — Hierarchical pointer chain XML for Cheat Engine
 2. **CSX Export** — Structure Dissect XML with struct flattening + pointer drilldown
-3. **Proxy Deploy Service** — Steam library scanning, Godot game detection, auto-deploy
-4. **CE Pointer Info** — Breadcrumb-based pointer chain discovery (DLL + UI)
-5. **Live Memory Editing** — Write values from LiveWalker panel
-6. **xUnit UI Tests** — Automated testing for ViewModels + Services
+3. **CE Pointer Info** — Breadcrumb-based pointer chain discovery (DLL + UI)
+4. **Live Memory Editing** — Write values from LiveWalker panel
+5. **Godot version display fix** — Shows "8.J" instead of "4.5.1" for some games
 
 ---
 

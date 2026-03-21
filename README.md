@@ -22,13 +22,14 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 - **Container drilldown** — Navigate into Array, Dictionary, and PackedArray elements with pagination
 - **GDScript member support** — Enumerate and read GDScript/C# script instance members alongside native properties
 - **.NET/C# managed object support** — Detect .NET Godot games, probe CSharpInstance layout, bulk-scan managed instances with node name + field value filtering, auto-discover MethodTable across game restarts
+- **.NET field name resolution** — Denken CLR bridge loads ZoltReflector.dll into the game's .NET runtime, resolving field names (`_currentHp`) instead of raw offsets (`+0x84`). CE scripts resolve offsets by name at runtime, surviving game updates
 - **Node tree hierarchy** — Navigate the complete scene tree with breadcrumb navigation and parent traversal
 - **Property search** — Cross-class keyword search with live value preview enrichment
 - **Class browser** — Filter and inspect ClassDB entries with inline property detail panel
 - **Instance finder** — Locate all live instances of any class with address lookup
 - **Cheat Engine integration** — CE Lua AA scripts for both native offsets and GDScript members, CE XML export, CSX Structure Dissect
 - **AOBMaker integration** — Generate AA code, create memory records, goto dump address
-- **Proxy DLL injection** — winmm.dll proxy with 180 MASM trampolines for seamless loading
+- **Proxy DLL injection** — winmm.dll proxy with 180 MASM trampolines for seamless loading, auto-deploys ZoltReflector.dll for .NET games
 - **Multi-version support** — Godot 3.x (3.5+) and Godot 4.x (4.0 ~ 4.6+)
 
 ## Compatibility
@@ -44,7 +45,7 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 | 4.6.x         | ✅       | ✅ (AHashMap) | ✅   | ✅            |
 | 3.5+ (GCC)    | ✅       | ✅      | ✅        | 41/52 values  |
 
-Tested with official editors (4.0–4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1rc2), Holo X Break (4.2), Dome Keeper (4.2.2).
+Tested with official editors (4.0–4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1rc2), Holo X Break (4.2), Dome Keeper (4.2.2), Slay the Spire 2 (4.5.1, .NET/C#).
 
 ## Architecture
 
@@ -61,7 +62,9 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 |   Heiter   (GameThread)       |    | NodeFilterPanel           |
 |   Qual     (Mailbox IPC)      |    |   Class property detail   |
 |     +-- .NET managed scan    |    |     +-- Node name filter  |
-|   Eisen    (Proxy DLL)        |    | NodeTreePanel             |
+|   Denken   (CLR Bridge)      |    | NodeTreePanel             |
+|     +-- ZoltReflector.dll    |    |                           |
+|   Eisen    (Proxy DLL)        |    |                           |
 +-------------------------------+    | ClassStructPanel          |
                                      | PointerPanel              |
                                      | ProxyDeployPanel          |
@@ -87,7 +90,7 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 
 Zolt-Dump provides multiple Cheat Engine workflows:
 
-- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC. .NET managed objects use `FIND_MANAGED_INSTANCES` with node name filtering and auto-discover MethodTable (scripts survive game restarts).
+- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC. .NET managed objects use `FIND_MANAGED_INSTANCES` with node name filtering, auto-discover MethodTable, and runtime field offset resolution via Denken (scripts survive both game restarts and game updates).
 - **CE XML Export** — Pointer chain XML for importing into Cheat Engine tables
 - **CSX Structure Dissect** — Structure definition export for CE's dissect view
 - **AOBMaker Bridge** — Direct integration with AOBMaker for memory record creation
