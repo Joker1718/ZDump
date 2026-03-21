@@ -257,6 +257,33 @@ $buildNum++
 [System.IO.File]::WriteAllText($buildNumFile, "$buildNum`n")
 Write-Info "Build#: $buildNum"
 
+# ============================================================
+# Git commit hash (passed to .NET builds as SourceRevisionId)
+# ============================================================
+$gitHash = ""
+$gitShort = ""
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCmd) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $gitHash = (& git rev-parse HEAD 2>&1) | Where-Object { $_ -is [string] } | Select-Object -First 1
+    $gitShort = (& git rev-parse --short HEAD 2>&1) | Where-Object { $_ -is [string] } | Select-Object -First 1
+    if ($gitHash -and $gitShort) {
+        & git diff --quiet HEAD 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { $gitShort = "$gitShort-dirty" }
+    }
+    $ErrorActionPreference = $prevEAP
+    if ($gitShort) {
+        Write-Info "Git: $gitShort"
+    }
+    else {
+        Write-Info "Git: (not a git repo)"
+    }
+}
+else {
+    Write-Info "Git: (git not found)"
+}
+
 $exitCode = 0
 
 # ============================================================
@@ -381,7 +408,9 @@ if ($Target -in "All", "ProxyDLL") {
     $reflectorProj = Join-Path $ROOT_DIR "managed\ZoltReflector\ZoltReflector.csproj"
     if (Test-Path $reflectorProj) {
         Write-Step "Building ZoltReflector.dll..."
-        & dotnet build $reflectorProj -c Release --no-incremental --nologo -v minimal
+        $reflectorProps = @("-c", "Release", "--no-incremental", "--nologo", "-v", "minimal")
+        if ($gitShort) { $reflectorProps += "-p:SourceRevisionId=$gitShort" }
+        & dotnet build $reflectorProj @reflectorProps
         if ($LASTEXITCODE -ne 0) {
             Write-Fail "ZoltReflector build failed"
             $exitCode = 1
@@ -439,12 +468,16 @@ if ($Target -in "All", "UI") {
         if ($Mode -eq "Publish") {
             Write-Step "Publishing ZoltDumpUI (Native AOT, Release)..."
 
-            & dotnet publish $UI_PROJ `
-                -c Release `
-                -r win-x64 `
-                -p:PublishAot=true `
-                -o $publishDir `
-                --nologo
+            $uiAotArgs = @(
+                "publish", $UI_PROJ,
+                "-c", "Release",
+                "-r", "win-x64",
+                "-p:PublishAot=true",
+                "-o", $publishDir,
+                "--nologo"
+            )
+            if ($gitShort) { $uiAotArgs += "-p:SourceRevisionId=$gitShort" }
+            & dotnet @uiAotArgs
 
             if ($LASTEXITCODE -ne 0) {
                 Write-Fail "UI AOT publish failed"
@@ -474,16 +507,20 @@ if ($Target -in "All", "UI") {
             $publishConfig = if ($Mode -eq "Debug") { "Debug" } else { "Release" }
             Write-Step "Publishing ZoltDumpUI ($publishConfig, self-contained single-file)..."
 
-            & dotnet publish $UI_PROJ `
-                -c $publishConfig `
-                -r win-x64 `
-                --self-contained `
-                -p:PublishSingleFile=true `
-                -p:PublishAot=false `
-                -p:IncludeNativeLibrariesForSelfExtract=true `
-                -p:IncludeAllContentForSelfExtract=true `
-                -o $publishDir `
-                --nologo
+            $uiPubArgs = @(
+                "publish", $UI_PROJ,
+                "-c", $publishConfig,
+                "-r", "win-x64",
+                "--self-contained",
+                "-p:PublishSingleFile=true",
+                "-p:PublishAot=false",
+                "-p:IncludeNativeLibrariesForSelfExtract=true",
+                "-p:IncludeAllContentForSelfExtract=true",
+                "-o", $publishDir,
+                "--nologo"
+            )
+            if ($gitShort) { $uiPubArgs += "-p:SourceRevisionId=$gitShort" }
+            & dotnet @uiPubArgs
 
             if ($LASTEXITCODE -ne 0) {
                 Write-Fail "UI publish failed"

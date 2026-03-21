@@ -46,6 +46,7 @@ BEGIN
             VALUE "OriginalFilename", "ZoltDumper.dll"
             VALUE "ProductName",      "Zolt-Dump"
             VALUE "ProductVersion",   ZOLT_VERSION_STRING
+            VALUE "Comments",         "git:" ZOLT_GIT_SHORT " built:" ZOLT_BUILD_TIME
         END
     END
     BLOCK "VarFileInfo"
