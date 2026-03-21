@@ -28,7 +28,7 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 | **Fern.cpp** | 費倫 | Frieren's apprentice | Named Pipe server: JSON IPC dispatch | Communicator, messenger — bridges worlds |
 | **Himmel.cpp** | 欣梅爾 | Hero, remembered | Hint cache: per-game AOB results | Remembered wisdom — the hero's lasting legacy |
 | **Heiter.cpp** | 海塔 | Priest, healer | GameThread dispatch: MinHook queuing | Healing/restoring context — thread-safe dispatch |
-| **Denken.cpp** | 頓肯 | Analytical mage | CLR hosting bridge: .NET reflection via ZoltReflector | Analytical magic — dissects managed type layouts |
+| **Denken.cpp** | 鄧肯 | Analytical mage | CLR hosting bridge: .NET reflection via ZoltReflector | Analytical magic — dissects managed type layouts |
 | **Qual.cpp** | 庫瓦爾 | Seven Sages demon | Mailbox: CE Lua shared memory | Dark communication channel — demon's whisper |
 | **Eisen.cpp** | 艾冉 | Iron warrior, defender | Proxy DLL: version.dll forwarding | Armored defense — iron shield proxy |
 | **Macht.cpp** | 馬赫特 | Seven Sages (power) | CE Plugin: Type 5 interface | Raw power interface — direct force |
