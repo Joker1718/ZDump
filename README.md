@@ -4,6 +4,8 @@ Real-time Godot Engine memory dumper and analyzer with Cheat Engine integration.
 
 Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack magic that deconstructs its target.
 
+> Zolt-Dump is a **conceptual, experimental tool** built for research and learning purposes. It relies on reverse-engineered memory layouts that **vary across Godot Engine versions and game custom builds**. There is no guarantee it will work correctly — or at all — on any particular game. Use at your own risk.
+
 <img src="./img/logo.jpg" alt="Zolt-Dump"/>
 
 ---
@@ -27,7 +29,7 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 - **Cheat Engine integration** — CE Lua AA scripts for both native offsets and GDScript members, CE XML export, CSX Structure Dissect
 - **AOBMaker integration** — Generate AA code, create memory records, goto dump address
 - **Proxy DLL injection** — winmm.dll proxy with 180 MASM trampolines for seamless loading
-- **Multi-version support** — Godot 3.x (3.5+) and Godot 4.x (4.0 ~ 4.7+)
+- **Multi-version support** — Godot 3.x (3.5+) and Godot 4.x (4.0 ~ 4.6+)
 
 ## Compatibility
 
@@ -157,6 +159,7 @@ All modules use names from the anime *Frieren: Beyond Journey's End*:
 | **Eisen** | 艾冉 (Iron Warrior) | Proxy DLL forwarding |
 | **Himmel** | 欣梅爾 (Hero) | Hint cache persistence |
 | **Solitaer** | 索莉塔 (Concealment) | Logging system |
+| **Denken** | 鄧肯 (Analytical mage) | CLR hosting bridge |
 
 See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
 
