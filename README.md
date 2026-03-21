@@ -4,6 +4,8 @@ Real-time Godot Engine memory dumper and analyzer with Cheat Engine integration.
 
 Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack magic that deconstructs its target.
 
+<img src="./img/logo.jpg" alt="Zolt-Dump"/>
+
 ---
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)](https://dotnet.microsoft.com/)
