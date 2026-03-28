@@ -287,6 +287,41 @@ else {
 $exitCode = 0
 
 # ============================================================
+# Vendor dependency check
+# ============================================================
+
+if ($Target -in "All", "DLL", "ProxyDLL") {
+    $missingVendor = @()
+    $vendorDir = Join-Path $ROOT_DIR "vendor"
+
+    # minhook — required by CMake (MinHook static lib)
+    $minhookDir = Join-Path $vendorDir "minhook"
+    if (-not (Test-Path (Join-Path $minhookDir "include\MinHook.h"))) {
+        $missingVendor += "minhook"
+    }
+
+    # nlohmann/json — header-only JSON library
+    $nlohmannDir = Join-Path $vendorDir "nlohmann"
+    if (-not (Test-Path (Join-Path $nlohmannDir "include\nlohmann\json.hpp"))) {
+        $missingVendor += "nlohmann"
+    }
+
+    if ($missingVendor.Count -gt 0) {
+        Write-Fail "Missing vendor dependencies: $($missingVendor -join ', ')"
+        Write-Host ""
+        Write-Host "   Run the following command to clone them:" -ForegroundColor Yellow
+        Write-Host "     powershell -NoProfile -ExecutionPolicy Bypass -File `"$ROOT_DIR\tools\vendor-update.ps1`"" -ForegroundColor White
+        Write-Host "   Or simply:" -ForegroundColor Yellow
+        Write-Host "     .\tools\vendor-update.ps1" -ForegroundColor White
+        Write-Host ""
+        if ($script:transcriptActive) {
+            try { Stop-Transcript | Out-Null } catch { }
+        }
+        exit 1
+    }
+}
+
+# ============================================================
 # Build C++ DLL
 # ============================================================
 
@@ -419,9 +454,15 @@ if ($Target -in "All", "ProxyDLL") {
             $proxyOutDir = Join-Path $DIST_DIR "proxy"
             if (-not (Test-Path $proxyOutDir)) { New-Item -Path $proxyOutDir -ItemType Directory | Out-Null }
 
-            $reflectorOutDir = Join-Path $ROOT_DIR "managed\ZoltReflector\bin\Release\net8.0"
-            $reflectorDll = Join-Path $reflectorOutDir "ZoltReflector.dll"
-            if (Test-Path $reflectorDll) {
+            $reflectorBinDir = Join-Path $ROOT_DIR "managed\ZoltReflector\bin"
+            $reflectorDll = Get-ChildItem -Path $reflectorBinDir -Filter "ZoltReflector.dll" -Recurse |
+                            Select-Object -First 1
+            if ($reflectorDll) {
+                # Extract target framework from output path (e.g. bin\Release\net8.0\)
+                $reflectorDll = $reflectorDll.FullName
+                if ($reflectorDll -match '\\(net[^\\]+)\\') {
+                    $script:reflectorTFM = $Matches[1]
+                }
                 Copy-Item $reflectorDll -Destination $proxyOutDir -Force
                 $dllSize = Get-FileSize (Join-Path $proxyOutDir "ZoltReflector.dll")
                 Write-Ok "ZoltReflector.dll ($dllSize) -> dist\proxy\"
@@ -618,6 +659,20 @@ Write-Host ""
 Write-Host "  Mode:     $Mode" -ForegroundColor White
 Write-Host "  Target:   $Target" -ForegroundColor White
 Write-Host "  Time:     $($sw.Elapsed.ToString('mm\:ss\.ff'))" -ForegroundColor White
+
+# .NET runtime requirements — important for distribution
+$runtimeInfo = @()
+if ($Target -in "All", "UI") {
+    $uiTFM = ([xml](Get-Content $UI_PROJ)).Project.PropertyGroup.TargetFramework |
+              Where-Object { $_ } | Select-Object -First 1
+    if ($uiTFM) { $runtimeInfo += "UI=$uiTFM" }
+}
+if ($script:reflectorTFM) {
+    $runtimeInfo += "ZoltReflector=$($script:reflectorTFM)"
+}
+if ($runtimeInfo.Count -gt 0) {
+    Write-Host "  .NET:     $($runtimeInfo -join ', ')" -ForegroundColor White
+}
 
 $statusColor = if ($exitCode -eq 0) { "Green" } else { "Red" }
 $statusText  = if ($exitCode -eq 0) { "SUCCESS" } else { "FAILED" }
