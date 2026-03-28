@@ -287,6 +287,41 @@ else {
 $exitCode = 0
 
 # ============================================================
+# Vendor dependency check
+# ============================================================
+
+if ($Target -in "All", "DLL", "ProxyDLL") {
+    $missingVendor = @()
+    $vendorDir = Join-Path $ROOT_DIR "vendor"
+
+    # minhook — required by CMake (MinHook static lib)
+    $minhookDir = Join-Path $vendorDir "minhook"
+    if (-not (Test-Path (Join-Path $minhookDir "include\MinHook.h"))) {
+        $missingVendor += "minhook"
+    }
+
+    # nlohmann/json — header-only JSON library
+    $nlohmannDir = Join-Path $vendorDir "nlohmann"
+    if (-not (Test-Path (Join-Path $nlohmannDir "include\nlohmann\json.hpp"))) {
+        $missingVendor += "nlohmann"
+    }
+
+    if ($missingVendor.Count -gt 0) {
+        Write-Fail "Missing vendor dependencies: $($missingVendor -join ', ')"
+        Write-Host ""
+        Write-Host "   Run the following command to clone them:" -ForegroundColor Yellow
+        Write-Host "     powershell -NoProfile -ExecutionPolicy Bypass -File `"$ROOT_DIR\tools\vendor-update.ps1`"" -ForegroundColor White
+        Write-Host "   Or simply:" -ForegroundColor Yellow
+        Write-Host "     .\tools\vendor-update.ps1" -ForegroundColor White
+        Write-Host ""
+        if ($script:transcriptActive) {
+            try { Stop-Transcript | Out-Null } catch { }
+        }
+        exit 1
+    }
+}
+
+# ============================================================
 # Build C++ DLL
 # ============================================================
 
