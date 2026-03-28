@@ -454,9 +454,11 @@ if ($Target -in "All", "ProxyDLL") {
             $proxyOutDir = Join-Path $DIST_DIR "proxy"
             if (-not (Test-Path $proxyOutDir)) { New-Item -Path $proxyOutDir -ItemType Directory | Out-Null }
 
-            $reflectorOutDir = Join-Path $ROOT_DIR "managed\ZoltReflector\bin\Release\net8.0"
-            $reflectorDll = Join-Path $reflectorOutDir "ZoltReflector.dll"
-            if (Test-Path $reflectorDll) {
+            $reflectorBinDir = Join-Path $ROOT_DIR "managed\ZoltReflector\bin"
+            $reflectorDll = Get-ChildItem -Path $reflectorBinDir -Filter "ZoltReflector.dll" -Recurse |
+                            Select-Object -First 1
+            if ($reflectorDll) {
+                $reflectorDll = $reflectorDll.FullName
                 Copy-Item $reflectorDll -Destination $proxyOutDir -Force
                 $dllSize = Get-FileSize (Join-Path $proxyOutDir "ZoltReflector.dll")
                 Write-Ok "ZoltReflector.dll ($dllSize) -> dist\proxy\"
