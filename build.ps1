@@ -458,7 +458,11 @@ if ($Target -in "All", "ProxyDLL") {
             $reflectorDll = Get-ChildItem -Path $reflectorBinDir -Filter "ZoltReflector.dll" -Recurse |
                             Select-Object -First 1
             if ($reflectorDll) {
+                # Extract target framework from output path (e.g. bin\Release\net8.0\)
                 $reflectorDll = $reflectorDll.FullName
+                if ($reflectorDll -match '\\(net[^\\]+)\\') {
+                    $script:reflectorTFM = $Matches[1]
+                }
                 Copy-Item $reflectorDll -Destination $proxyOutDir -Force
                 $dllSize = Get-FileSize (Join-Path $proxyOutDir "ZoltReflector.dll")
                 Write-Ok "ZoltReflector.dll ($dllSize) -> dist\proxy\"
@@ -655,6 +659,20 @@ Write-Host ""
 Write-Host "  Mode:     $Mode" -ForegroundColor White
 Write-Host "  Target:   $Target" -ForegroundColor White
 Write-Host "  Time:     $($sw.Elapsed.ToString('mm\:ss\.ff'))" -ForegroundColor White
+
+# .NET runtime requirements — important for distribution
+$runtimeInfo = @()
+if ($Target -in "All", "UI") {
+    $uiTFM = ([xml](Get-Content $UI_PROJ)).Project.PropertyGroup.TargetFramework |
+              Where-Object { $_ } | Select-Object -First 1
+    if ($uiTFM) { $runtimeInfo += "UI=$uiTFM" }
+}
+if ($script:reflectorTFM) {
+    $runtimeInfo += "ZoltReflector=$($script:reflectorTFM)"
+}
+if ($runtimeInfo.Count -gt 0) {
+    Write-Host "  .NET:     $($runtimeInfo -join ', ')" -ForegroundColor White
+}
 
 $statusColor = if ($exitCode -eq 0) { "Green" } else { "Red" }
 $statusText  = if ($exitCode -eq 0) { "SUCCESS" } else { "FAILED" }
