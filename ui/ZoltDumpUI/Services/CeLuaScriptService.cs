@@ -1020,7 +1020,7 @@ public sealed class CeLuaScriptService
     /// <summary>
     /// Emit Lua code that resolves .NET field names to offsets via CMD_RESOLVE_FIELD_OFFSET.
     /// Updates target_offset (and optionally filter_offset) in-place before the scan.
-    /// Falls back to hardcoded offsets if resolution fails (e.g. DLL too old, Denken not loaded).
+    /// Falls back to hardcoded offsets if resolution fails (e.g. DLL too old, Metode not loaded).
     /// </summary>
     private void EmitResolveFieldOffset(StringBuilder sb, string filterFieldName)
     {
@@ -1044,7 +1044,7 @@ public sealed class CeLuaScriptService
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_RESULT:X}, 0)");
         sb.AppendLine($"  writeInteger(mb + 0x{OFF_CMD:X}, {CMD_RESOLVE_FIELD_OFFSET})");
         sb.AppendLine();
-        sb.AppendLine("  for i = 1, 500 do  -- 5s timeout (first call may init Denken ~2s)");
+        sb.AppendLine("  for i = 1, 500 do  -- 5s timeout (first call may init Metode ~2s)");
         sb.AppendLine($"    if readInteger(mb + 0x{OFF_STATUS:X}) == 1 then break end");
         sb.AppendLine("    sleep(10)");
         sb.AppendLine("  end");

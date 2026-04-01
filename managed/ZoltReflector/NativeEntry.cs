@@ -1,4 +1,4 @@
-// Denken — 頓肯 (Analytical Magic — .NET Reflection Bridge)
+// Metode — 梅特黛 (All-capable Analyst — .NET Reflection Bridge)
 // Native entry points called from C++ DLL via hostfxr.
 // All functions use [UnmanagedCallersOnly] for zero-overhead interop.
 
@@ -82,12 +82,12 @@ public static class NativeEntry
 
     /// <summary>
     /// Simple ping to verify the managed bridge is alive.
-    /// Returns 0x44454E4B ("DENK" in ASCII) on success.
+    /// Returns 0x4D45544F ("METO" in ASCII) on success.
     /// </summary>
-    [UnmanagedCallersOnly(EntryPoint = "DenkenPing")]
-    public static int DenkenPing()
+    [UnmanagedCallersOnly(EntryPoint = "MetodePing")]
+    public static int MetodePing()
     {
-        return 0x44454E4B; // "DENK"
+        return 0x4D45544F; // "METO"
     }
 
     // ================================================================

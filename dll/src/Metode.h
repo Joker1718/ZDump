@@ -1,6 +1,6 @@
 #pragma once
 
-// Denken — 頓肯 (Analytical Magic — CLR Hosting Bridge)
+// Metode — 梅特黛 (All-capable Analyst — CLR Hosting Bridge)
 // Loads a .NET assembly into the game's already-running CoreCLR runtime
 // via hostfxr, enabling managed reflection for type/field enumeration.
 // This solves the name resolution problem for Godot + .NET games.
@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace Zolt::Denken {
+namespace Zolt::Metode {
 
 // ============================================================
 // Field layout information (mirrors ZoltReflector.FieldLayoutInfo)
@@ -62,7 +62,7 @@ bool IsReady();
 void Shutdown();
 
 // Ping the managed side to verify it's alive.
-// Returns true if DenkenPing() returned the expected magic value.
+// Returns true if MetodePing() returned the expected magic value.
 bool Ping();
 
 // ============================================================
@@ -82,4 +82,4 @@ TypeLayout GetTypeLayout(const std::string& typeName);
 // Get the MethodTable pointer for a type by name.
 uint64_t GetMethodTable(const std::string& typeName);
 
-} // namespace Zolt::Denken
+} // namespace Zolt::Metode

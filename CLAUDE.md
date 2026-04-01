@@ -99,7 +99,7 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 |      +-- Serie (SceneTree)    <- Node hierarchy      |
 |      +-- Ubel (PropertyWalker)<- Variant values      |
 |      +-- Zoltraak (Memory)    <- AOBScan + SEH R/W   |
-|      +-- Denken (CLR Bridge)  <- .NET reflection     |
+|      +-- Metode (CLR Bridge)  <- .NET reflection     |
 |      +-- Solitaer (Logger)    <- 5-category logging  |
 +----------------------+-------------------------------+
                        | Named Pipe: \\.\pipe\ZoltDumpBfx
@@ -129,7 +129,7 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 | Constants & statics | **Diagoldze** (黃金化) | Mahat's gold | ClassDB, immutable registry |
 | Obfuscation & security | **Solitaer** (索莉緹爾) | Mana concealment | Logging, trace hiding |
 | Documentation & libs | **Grimoire** (魔導書) | Grimoire | Constants, magic strings |
-| Error handling | **Mimic** (寶箱怪) | Chest mimic | Error types, trap results |
+| Diagnostics | **Genau** (葛納烏) | Combat examiner | Runtime assertions, diagnostic guards |
 | String resolution | **Flamme** (芙拉梅) | Great mage master | StringName resolver |
 | Scene tree | **Serie** (賽莉耶) | Living history mage | Node hierarchy walker |
 | Property reader | **Ubel** (優貝爾) | Assassin specialist | Variant/property extraction |
@@ -139,7 +139,7 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 | Hint cache | **Himmel** (欣梅爾) | Hero | Remembered patterns |
 | Game thread | **Heiter** (海塔) | Priest | Thread dispatch, context |
 | Proxy DLL | **Eisen** (艾乍) | Iron warrior | Armored forwarding |
-| CLR bridge | **Denken** (頓肯) | Analytical mage | .NET reflection via ZoltReflector |
+| CLR bridge | **Metode** (梅特黛) | All-capable analyst | .NET reflection via ZoltReflector |
 
 -----
 

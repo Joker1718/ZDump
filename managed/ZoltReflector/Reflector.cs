@@ -1,4 +1,4 @@
-// Denken — 頓肯 (Analytical Magic — .NET Reflection Bridge)
+// Metode — 梅特黛 (All-capable Analyst — .NET Reflection Bridge)
 // Core reflection engine: enumerate assemblies, types, fields with offsets.
 // Designed to run inside a Godot .NET game process where CoreCLR is already loaded.
 

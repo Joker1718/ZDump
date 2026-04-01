@@ -29,7 +29,7 @@ enum Cmd : int32_t {
                                       //   Input:  className, targetOp+targetValue (managed field filter),
                                       //           filterOp = managed field offset (repurposed), filterValue = read size (repurposed)
                                       //   Output: result = count, results in g_zoltManagedResults buffer
-    CMD_RESOLVE_FIELD_OFFSET     = 7, // Resolve .NET field name → offset via Denken reflection
+    CMD_RESOLVE_FIELD_OFFSET     = 7, // Resolve .NET field name → offset via Metode reflection
                                       //   Input:  className = .NET type name (e.g. "MegaCrit.Sts2.Core.Entities.Creatures.Creature")
                                       //           memberName = field name (e.g. "_currentHp")
                                       //   Output: result = field offset (or -1 if not found), memberIndex = field size

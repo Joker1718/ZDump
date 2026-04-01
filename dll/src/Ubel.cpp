@@ -15,7 +15,7 @@
 #include "Heiter.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
-#include "Denken.h"
+#include "Metode.h"
 
 #include <cstdio>
 #include <cmath>
@@ -2017,24 +2017,24 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force =
 // For .NET/C# Godot games, the chain is:
 //   GodotObject[+ScriptInstance] → CSharpInstance → GCHandle → .NET managed object
 // This function resolves the chain and emits fields from the managed object.
-// When Denken (CLR bridge) is active, uses reflection for real field names/types.
+// When Metode (CLR bridge) is active, uses reflection for real field names/types.
 // Otherwise falls back to heuristic offset-based scanning.
 
-// MethodTable → TypeName cache (populated lazily from Denken::EnumerateTypes)
+// MethodTable → TypeName cache (populated lazily from Metode::EnumerateTypes)
 static std::unordered_map<uint64_t, std::string> s_mtToTypeName;
 static bool s_mtCacheBuilt = false;
 static std::mutex s_mtCacheMutex;
 
 static std::string ResolveManagedTypeName(uint64_t methodTable) {
     std::lock_guard<std::mutex> lock(s_mtCacheMutex);
-    if (!s_mtCacheBuilt && Zolt::Denken::IsReady()) {
-        auto types = Zolt::Denken::EnumerateTypes();
+    if (!s_mtCacheBuilt && Zolt::Metode::IsReady()) {
+        auto types = Zolt::Metode::EnumerateTypes();
         for (auto& ts : types) {
             if (ts.methodTablePtr != 0)
                 s_mtToTypeName[ts.methodTablePtr] = ts.fullName;
         }
         s_mtCacheBuilt = true;
-        Solitaer::Info("WALK", "Denken MT cache built: %zu types", s_mtToTypeName.size());
+        Solitaer::Info("WALK", "Metode MT cache built: %zu types", s_mtToTypeName.size());
     }
     auto it = s_mtToTypeName.find(methodTable);
     return (it != s_mtToTypeName.end()) ? it->second : std::string();
@@ -2111,13 +2111,13 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
         reinterpret_cast<void*>(methodTable));
 
     // ============================================================
-    // Strategy 1: Denken reflection (real field names + types)
+    // Strategy 1: Metode reflection (real field names + types)
     // ============================================================
     const std::string& typeName = ResolveManagedTypeName(methodTable);
     if (!typeName.empty()) {
-        auto layout = Zolt::Denken::GetTypeLayout(typeName);
+        auto layout = Zolt::Metode::GetTypeLayout(typeName);
         if (!layout.fields.empty()) {
-            Solitaer::Info("WALK", "ReadCSharpManagedFields: Denken resolved '%s' — %zu fields",
+            Solitaer::Info("WALK", "ReadCSharpManagedFields: Metode resolved '%s' — %zu fields",
                 typeName.c_str(), layout.fields.size());
 
             // Read managed object body for value extraction
@@ -2248,14 +2248,14 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
             }
 
             Solitaer::Info("WALK",
-                "ReadCSharpManagedFields: Denken emitted %d fields for '%s' (obj %p)",
+                "ReadCSharpManagedFields: Metode emitted %d fields for '%s' (obj %p)",
                 fieldCount, typeName.c_str(), reinterpret_cast<void*>(objAddr));
-            return; // Done — Denken provided field info
+            return; // Done — Metode provided field info
         }
     }
 
     // ============================================================
-    // Strategy 2: Heuristic scan (fallback when Denken unavailable)
+    // Strategy 2: Heuristic scan (fallback when Metode unavailable)
     // ============================================================
     constexpr int MANAGED_SCAN_SIZE = 0x200; // Scan first 512 bytes
     constexpr int FIELD_START = 0x08;        // Fields start after MethodTable pointer
@@ -2560,12 +2560,12 @@ void WalkInstance(uint64_t objAddr,
                 Solitaer::Info("WALK", "WalkInstance: %p is not a Godot Object but has MethodTable %p — reading as .NET managed object",
                     reinterpret_cast<void*>(objAddr), reinterpret_cast<void*>(mt));
 
-                // Try Denken reflection first for real field names
+                // Try Metode reflection first for real field names
                 const std::string& mtTypeName = ResolveManagedTypeName(mt);
                 if (!mtTypeName.empty()) {
-                    auto layout = Zolt::Denken::GetTypeLayout(mtTypeName);
+                    auto layout = Zolt::Metode::GetTypeLayout(mtTypeName);
                     if (!layout.fields.empty()) {
-                        Solitaer::Info("WALK", "WalkInstance: Denken resolved '%s' — %zu fields",
+                        Solitaer::Info("WALK", "WalkInstance: Metode resolved '%s' — %zu fields",
                             mtTypeName.c_str(), layout.fields.size());
                         constexpr int MAX_READ = 0x400;
                         int readSize = (layout.instanceSize > 0 && layout.instanceSize <= MAX_READ)
@@ -2580,7 +2580,7 @@ void WalkInstance(uint64_t objAddr,
                                 entry.nativeSize = fi.size > 0 ? fi.size : 4;
                                 entry.name = fi.name;
                                 entry.value.rawAddr = objAddr + fi.offset;
-                                // Value reading — same logic as ReadCSharpManagedFields Denken path
+                                // Value reading — same logic as ReadCSharpManagedFields Metode path
                                 if (fi.offset + fi.size > readSize) {
                                     entry.value.type = 0;
                                     entry.value.typeName = fi.typeName;
@@ -2665,7 +2665,7 @@ void WalkInstance(uint64_t objAddr,
                     }
                 }
 
-                // Fallback: heuristic scan (no Denken or type not found)
+                // Fallback: heuristic scan (no Metode or type not found)
                 constexpr int MANAGED_SCAN_SIZE = 0x200;
                 constexpr int FIELD_START = 0x08;
                 uint8_t buf[MANAGED_SCAN_SIZE];

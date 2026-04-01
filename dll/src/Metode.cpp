@@ -1,8 +1,8 @@
-// Denken — 頓肯 (Analytical Magic — CLR Hosting Bridge)
+// Metode — 梅特黛 (All-capable Analyst — CLR Hosting Bridge)
 // Uses hostfxr to load ZoltReflector.dll into the game's running CoreCLR.
 // Communication: JSON commands via shared buffer.
 
-#include "Denken.h"
+#include "Metode.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
 #include "Zoltraak.h"
@@ -62,7 +62,7 @@ typedef int32_t(*ping_fn)();
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-namespace Zolt::Denken {
+namespace Zolt::Metode {
 
 // ============================================================
 // Module state (guarded by s_mutex)
@@ -85,7 +85,7 @@ static HMODULE FindHostFxr()
     // First: check if hostfxr is already loaded in the process
     HMODULE hmod = GetModuleHandleW(L"hostfxr");
     if (hmod) {
-        Solitaer::Info("DENKEN", "hostfxr already loaded in process");
+        Solitaer::Info("METODE", "hostfxr already loaded in process");
         return hmod;
     }
 
@@ -107,14 +107,14 @@ static HMODULE FindHostFxr()
         if (fs::exists(candidate)) {
             hmod = LoadLibraryW(candidate.c_str());
             if (hmod) {
-                Solitaer::Info("DENKEN", "Loaded hostfxr from: %ls",
+                Solitaer::Info("METODE", "Loaded hostfxr from: %ls",
                     candidate.c_str());
                 return hmod;
             }
         }
     }
 
-    Solitaer::Warn("DENKEN", "hostfxr.dll not found in process or game directory");
+    Solitaer::Warn("METODE", "hostfxr.dll not found in process or game directory");
     return nullptr;
 }
 
@@ -136,7 +136,7 @@ static fs::path FindRuntimeConfig()
         if (!entry.is_regular_file()) continue;
         auto name = entry.path().filename().wstring();
         if (name.ends_with(L".runtimeconfig.json")) {
-            Solitaer::Info("DENKEN", "Found runtime config: %ls", entry.path().c_str());
+            Solitaer::Info("METODE", "Found runtime config: %ls", entry.path().c_str());
             return entry.path();
         }
     }
@@ -155,7 +155,7 @@ static fs::path FindRuntimeConfig()
             if (!entry.is_regular_file()) continue;
             auto name = entry.path().filename().wstring();
             if (name.ends_with(L".runtimeconfig.json")) {
-                Solitaer::Info("DENKEN", "Found runtime config in subdir: %ls", entry.path().c_str());
+                Solitaer::Info("METODE", "Found runtime config in subdir: %ls", entry.path().c_str());
                 return entry.path();
             }
         }
@@ -235,11 +235,11 @@ bool Init()
 
     // Only attempt on .NET games
     if (!DynOff::bIsDotNetGame.load(std::memory_order_relaxed)) {
-        Solitaer::Info("DENKEN", "Not a .NET game, skipping CLR bridge init");
+        Solitaer::Info("METODE", "Not a .NET game, skipping CLR bridge init");
         return false;
     }
 
-    Solitaer::Info("DENKEN", "Initializing CLR hosting bridge...");
+    Solitaer::Info("METODE", "Initializing CLR hosting bridge...");
 
     // Step 1: Find hostfxr
     HMODULE hHostFxr = FindHostFxr();
@@ -253,7 +253,7 @@ bool Init()
         GetProcAddress(hHostFxr, "hostfxr_close"));
 
     if (!pfnGetDelegate) {
-        Solitaer::Warn("DENKEN", "Failed to resolve hostfxr_get_runtime_delegate");
+        Solitaer::Warn("METODE", "Failed to resolve hostfxr_get_runtime_delegate");
         return false;
     }
 
@@ -279,31 +279,31 @@ bool Init()
     load_assembly_fn pfnLoadAssembly = nullptr;
 
     // Strategy 1: NULL handle — use active host context (self-contained games)
-    Solitaer::Info("DENKEN", "Trying NULL handle (active context)...");
+    Solitaer::Info("METODE", "Trying NULL handle (active context)...");
     int32_t rc = pfnGetDelegate(nullptr, hdt_load_assembly_and_get_function_pointer,
                                 reinterpret_cast<void**>(&pfnLoadAssembly));
-    Solitaer::Info("DENKEN", "NULL handle result: 0x%08X, delegate=%p", rc, pfnLoadAssembly);
+    Solitaer::Info("METODE", "NULL handle result: 0x%08X, delegate=%p", rc, pfnLoadAssembly);
 
     // Strategy 2: Initialize with game's runtimeconfig (framework-dependent games)
     if (rc < 0 || !pfnLoadAssembly) {
         pfnLoadAssembly = nullptr;
         fs::path configPath = FindRuntimeConfig();
         if (!configPath.empty() && pfnInit) {
-            Solitaer::Info("DENKEN", "Trying runtime config: %ls", configPath.c_str());
+            Solitaer::Info("METODE", "Trying runtime config: %ls", configPath.c_str());
             rc = pfnInit(configPath.c_str(), nullptr, &hostCtx);
-            Solitaer::Info("DENKEN", "Init result: 0x%08X (ctx=%p)", rc, hostCtx);
+            Solitaer::Info("METODE", "Init result: 0x%08X (ctx=%p)", rc, hostCtx);
 
             if (rc >= 0 && hostCtx) {
                 needClose = true;
                 rc = pfnGetDelegate(hostCtx, hdt_load_assembly_and_get_function_pointer,
                                     reinterpret_cast<void**>(&pfnLoadAssembly));
-                Solitaer::Info("DENKEN", "Config delegate result: 0x%08X", rc);
+                Solitaer::Info("METODE", "Config delegate result: 0x%08X", rc);
             }
         }
     }
 
     if (rc < 0 || !pfnLoadAssembly) {
-        Solitaer::Warn("DENKEN", "Failed to get load_assembly delegate: 0x%08X", rc);
+        Solitaer::Warn("METODE", "Failed to get load_assembly delegate: 0x%08X", rc);
         if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
@@ -311,11 +311,11 @@ bool Init()
     // Step 4: Find and load ZoltReflector.dll
     fs::path reflectorPath = FindReflectorAssembly();
     if (reflectorPath.empty()) {
-        Solitaer::Warn("DENKEN", "ZoltReflector.dll not found");
+        Solitaer::Warn("METODE", "ZoltReflector.dll not found");
         if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
-    Solitaer::Info("DENKEN", "Loading reflector: %ls", reflectorPath.c_str());
+    Solitaer::Info("METODE", "Loading reflector: %ls", reflectorPath.c_str());
 
     // Step 5: Get function pointers from managed assembly
     // Reflect entry point
@@ -328,7 +328,7 @@ bool Init()
         reinterpret_cast<void**>(&s_reflectFn));
 
     if (rc < 0 || !s_reflectFn) {
-        Solitaer::Warn("DENKEN", "Failed to load Reflect entry point: 0x%08X", rc);
+        Solitaer::Warn("METODE", "Failed to load Reflect entry point: 0x%08X", rc);
         if (needClose && hostCtx && pfnClose) pfnClose(hostCtx);
         return false;
     }
@@ -337,13 +337,13 @@ bool Init()
     rc = pfnLoadAssembly(
         reflectorPath.c_str(),
         L"ZoltReflector.NativeEntry, ZoltReflector",
-        L"DenkenPing",
+        L"MetodePing",
         UNMANAGEDCALLERSONLY_METHOD,
         nullptr,
         reinterpret_cast<void**>(&s_pingFn));
 
     if (rc < 0 || !s_pingFn) {
-        Solitaer::Warn("DENKEN", "Failed to load DenkenPing entry point: 0x%08X", rc);
+        Solitaer::Warn("METODE", "Failed to load MetodePing entry point: 0x%08X", rc);
         // Non-fatal: Reflect is the main entry point
     }
 
@@ -352,15 +352,15 @@ bool Init()
     // Step 6: Verify bridge is working
     if (s_pingFn) {
         int32_t pingResult = s_pingFn();
-        if (pingResult == 0x44454E4B) {
-            Solitaer::Info("DENKEN", "Bridge verified (ping=DENK)");
+        if (pingResult == 0x4D45544F) {
+            Solitaer::Info("METODE", "Bridge verified (ping=METO)");
         } else {
-            Solitaer::Warn("DENKEN", "Ping returned unexpected value: 0x%08X", pingResult);
+            Solitaer::Warn("METODE", "Ping returned unexpected value: 0x%08X", pingResult);
         }
     }
 
     s_ready = true;
-    Solitaer::Summary("Denken CLR bridge initialized — managed reflection ready");
+    Solitaer::Summary("Metode CLR bridge initialized — managed reflection ready");
     return true;
 }
 
@@ -375,14 +375,14 @@ void Shutdown()
     s_reflectFn = nullptr;
     s_pingFn = nullptr;
     s_ready = false;
-    Solitaer::Info("DENKEN", "CLR bridge shut down");
+    Solitaer::Info("METODE", "CLR bridge shut down");
 }
 
 bool Ping()
 {
     std::lock_guard<std::mutex> lock(s_mutex);
     if (!s_pingFn) return false;
-    return s_pingFn() == 0x44454E4B;
+    return s_pingFn() == 0x4D45544F;
 }
 
 std::vector<std::string> ListAssemblies()
@@ -399,7 +399,7 @@ std::vector<std::string> ListAssemblies()
             }
         }
     } catch (...) {
-        Solitaer::Warn("DENKEN", "ListAssemblies parse error: %s", resp.c_str());
+        Solitaer::Warn("METODE", "ListAssemblies parse error: %s", resp.c_str());
     }
     return result;
 }
@@ -413,7 +413,7 @@ std::vector<TypeSummary> EnumerateTypes(const std::string& assemblyName)
     if (!assemblyName.empty()) req["assembly"] = assemblyName;
 
     auto resp = SendCommand(req);
-    Solitaer::Info("DENKEN", "EnumerateTypes response (%zu bytes): %.200s",
+    Solitaer::Info("METODE", "EnumerateTypes response (%zu bytes): %.200s",
         resp.size(), resp.c_str());
     try {
         auto arr = json::parse(resp);
@@ -440,7 +440,7 @@ std::vector<TypeSummary> EnumerateTypes(const std::string& assemblyName)
             }
         }
     } catch (...) {
-        Solitaer::Warn("DENKEN", "EnumerateTypes parse error: %s",
+        Solitaer::Warn("METODE", "EnumerateTypes parse error: %s",
             resp.substr(0, 200).c_str());
     }
     return result;
@@ -455,7 +455,7 @@ TypeLayout GetTypeLayout(const std::string& typeName)
     try {
         auto obj = json::parse(resp);
         if (obj.contains("error")) {
-            Solitaer::Warn("DENKEN", "GetTypeLayout(%s): %s",
+            Solitaer::Warn("METODE", "GetTypeLayout(%s): %s",
                 typeName.c_str(), obj["error"].get<std::string>().c_str());
             return result;
         }
@@ -479,7 +479,7 @@ TypeLayout GetTypeLayout(const std::string& typeName)
             }
         }
     } catch (...) {
-        Solitaer::Warn("DENKEN", "GetTypeLayout parse error: %s",
+        Solitaer::Warn("METODE", "GetTypeLayout parse error: %s",
             resp.substr(0, 200).c_str());
     }
     return result;
@@ -500,4 +500,4 @@ uint64_t GetMethodTable(const std::string& typeName)
     return 0;
 }
 
-} // namespace Zolt::Denken
+} // namespace Zolt::Metode

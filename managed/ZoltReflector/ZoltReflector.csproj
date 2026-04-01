@@ -27,7 +27,7 @@
     <InformationalVersion>$(VerMajor).$(VerMinor).$(VerPatch).$(VerBuild)</InformationalVersion>
     <Product>Zolt-Dump</Product>
     <Company>Zolt-Dump</Company>
-    <Description>Denken CLR Bridge — .NET Reflection for ZoltDumper</Description>
+    <Description>Metode CLR Bridge — .NET Reflection for ZoltDumper</Description>
   </PropertyGroup>
 
 </Project>

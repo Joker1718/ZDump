@@ -1,4 +1,4 @@
-// Denken — 頓肯 (Analytical Magic — .NET Reflection Bridge)
+// Metode — 梅特黛 (All-capable Analyst — .NET Reflection Bridge)
 // Auto-tests for the ZoltReflector reflection engine.
 
 using System.Runtime.InteropServices;
