@@ -11,7 +11,7 @@ Zolt-Dump/
 │
 ├── dll/                         # C++ injected DLL (ZoltDumper.dll)
 │   ├── CMakeLists.txt           # C++23, MSVC, Ninja, static CRT
-│   └── src/                     # 17 source modules (Frieren-named)
+│   └── src/                     # 18 source modules (Frieren-named)
 │       ├── Zoltraak.cpp/.h      # Memory: AOBScan, SEH reads
 │       ├── Solitaer.cpp/.h      # Logger: 5-category, rotation
 │       ├── Ausetiese.cpp/.h     # ObjectDB: slot enumeration
@@ -24,6 +24,8 @@ Zolt-Dump/
 │       ├── Fern.cpp/.h          # PipeServer: JSON IPC
 │       ├── Himmel.cpp/.h        # HintCache: per-game patterns
 │       ├── Heiter.cpp/.h        # GameThread: MinHook dispatch
+│       ├── Metode.cpp/.h        # CLR Bridge: .NET reflection
+│       ├── Genau.cpp/.h         # Diagnostics: runtime assertions
 │       ├── Qual.cpp/.h          # Mailbox: CE Lua bridge
 │       ├── Eisen.cpp/.h         # ProxyVersion: version.dll
 │       ├── Macht.cpp/.h         # CEPlugin: Type 5 plugin
