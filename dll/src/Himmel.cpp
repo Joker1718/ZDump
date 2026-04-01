@@ -18,13 +18,21 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <chrono>
 #include <ctime>
+#include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace Zolt::Himmel {
+
+// ============================================================
+// Session-scoped hit/miss counters (reset each DLL load)
+// ============================================================
+static std::atomic<int> s_hintHits{0};
+static std::atomic<int> s_hintMisses{0};
 
 // ============================================================
 // Internal helpers
@@ -256,6 +264,132 @@ void SaveResults(const char* peHash,
     } else {
         LOG_ERROR("Failed to save hint cache for PE hash %s", peHash);
     }
+}
+
+// ============================================================
+// Hit/miss tracking
+// ============================================================
+
+void RecordHintOutcome(bool hit) {
+    if (hit)
+        s_hintHits.fetch_add(1, std::memory_order_relaxed);
+    else
+        s_hintMisses.fetch_add(1, std::memory_order_relaxed);
+}
+
+// ============================================================
+// Cache pruning — remove entries older than ttlDays
+// ============================================================
+
+int PruneStaleEntries(int ttlDays) {
+    fs::path cachePath = GetCacheFilePath();
+    if (cachePath.empty()) return 0;
+
+    json root = ReadCacheFile(cachePath);
+    if (root.is_discarded() || !root.contains("games")) return 0;
+
+    auto& games = root["games"];
+    if (!games.is_object()) return 0;
+
+    // Compute cutoff timestamp
+    auto now = std::chrono::system_clock::now();
+    auto cutoff = now - std::chrono::hours(24 * ttlDays);
+    auto cutoff_t = std::chrono::system_clock::to_time_t(cutoff);
+
+    // Collect stale keys
+    std::vector<std::string> staleKeys;
+    for (auto it = games.begin(); it != games.end(); ++it) {
+        if (!it->contains("lastScanUtc")) {
+            staleKeys.push_back(it.key());
+            continue;
+        }
+
+        auto& ts = (*it)["lastScanUtc"];
+        if (!ts.is_string()) {
+            staleKeys.push_back(it.key());
+            continue;
+        }
+
+        // Parse ISO 8601 timestamp: YYYY-MM-DDTHH:MM:SSZ
+        std::string tsStr = ts.get<std::string>();
+        struct tm tm_entry {};
+        if (sscanf(tsStr.c_str(), "%d-%d-%dT%d:%d:%dZ",
+                   &tm_entry.tm_year, &tm_entry.tm_mon, &tm_entry.tm_mday,
+                   &tm_entry.tm_hour, &tm_entry.tm_min, &tm_entry.tm_sec) == 6) {
+            tm_entry.tm_year -= 1900;
+            tm_entry.tm_mon  -= 1;
+            time_t entry_t = _mkgmtime(&tm_entry);
+            if (entry_t != -1 && entry_t < cutoff_t) {
+                staleKeys.push_back(it.key());
+            }
+        } else {
+            // Unparseable timestamp — consider stale
+            staleKeys.push_back(it.key());
+        }
+    }
+
+    if (staleKeys.empty()) return 0;
+
+    for (const auto& key : staleKeys) {
+        LOG_INFO("Pruning stale cache entry: %s (game=%s)",
+                 key.c_str(),
+                 games[key].value("gameName", "unknown").c_str());
+        games.erase(key);
+    }
+
+    int pruned = static_cast<int>(staleKeys.size());
+
+    if (WriteCacheFile(cachePath, root)) {
+        LOG_INFO("Pruned %d stale hint cache entries (TTL=%d days)", pruned, ttlDays);
+    } else {
+        LOG_ERROR("Failed to write cache after pruning");
+    }
+
+    return pruned;
+}
+
+// ============================================================
+// Clear specific entry
+// ============================================================
+
+bool ClearEntry(const char* peHash) {
+    if (!peHash || !peHash[0]) return false;
+
+    fs::path cachePath = GetCacheFilePath();
+    if (cachePath.empty()) return false;
+
+    json root = ReadCacheFile(cachePath);
+    if (root.is_discarded() || !root.contains("games")) return false;
+
+    auto& games = root["games"];
+    if (!games.contains(peHash)) return false;
+
+    games.erase(peHash);
+    WriteCacheFile(cachePath, root);
+    LOG_INFO("Cleared cache entry for PE hash %s", peHash);
+    return true;
+}
+
+// ============================================================
+// Diagnostics
+// ============================================================
+
+CacheStats GetStats() {
+    CacheStats stats;
+    stats.hintHits   = s_hintHits.load(std::memory_order_relaxed);
+    stats.hintMisses = s_hintMisses.load(std::memory_order_relaxed);
+
+    fs::path cachePath = GetCacheFilePath();
+    if (!cachePath.empty()) {
+        stats.cacheFilePath = cachePath.string();
+
+        json root = ReadCacheFile(cachePath);
+        if (!root.is_discarded() && root.contains("games") && root["games"].is_object()) {
+            stats.totalEntries = static_cast<int>(root["games"].size());
+        }
+    }
+
+    return stats;
 }
 
 } // namespace Zolt::Himmel

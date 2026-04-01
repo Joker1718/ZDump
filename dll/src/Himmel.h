@@ -26,6 +26,18 @@ struct ScanHints {
     bool        hasVersionHint = false;
 };
 
+// Cache statistics for diagnostics
+struct CacheStats {
+    int totalEntries    = 0;  // Total game entries in cache
+    int prunedEntries   = 0;  // Entries removed during last prune
+    int hintHits        = 0;  // Hints that led to successful scan (cumulative, this session)
+    int hintMisses      = 0;  // Hints that failed, required fallback (cumulative, this session)
+    std::string cacheFilePath;  // Resolved cache file path
+};
+
+// Default TTL for cache entries (90 days in seconds)
+constexpr int CACHE_TTL_DAYS = 90;
+
 // Compute PE hash for the main module: TimeDateStamp(8hex) + SizeOfImage(8hex)
 // Output: 16-char hex string + null terminator (bufSize must be >= 17)
 // Returns false if PE headers are unreadable
@@ -40,5 +52,20 @@ ScanHints LoadHints(const char* peHash);
 void SaveResults(const char* peHash,
                  const Zolt::Frieren::EnginePointers& ptrs,
                  const char* processName);
+
+// Record whether a hint led to a successful scan (hit) or required fallback (miss).
+// Called by Frieren after each target scan completes.
+void RecordHintOutcome(bool hit);
+
+// Remove cache entries older than ttlDays.
+// Returns number of pruned entries.
+int PruneStaleEntries(int ttlDays = CACHE_TTL_DAYS);
+
+// Clear a specific entry by PE hash.
+// Returns true if the entry existed and was removed.
+bool ClearEntry(const char* peHash);
+
+// Get current session cache statistics.
+CacheStats GetStats();
 
 } // namespace Zolt::Himmel

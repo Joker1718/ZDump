@@ -24,7 +24,7 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 - **Container drilldown** — Navigate into Array, Dictionary, and PackedArray elements with pagination
 - **GDScript member support** — Enumerate and read GDScript/C# script instance members alongside native properties
 - **.NET/C# managed object support** — Detect .NET Godot games, probe CSharpInstance layout, bulk-scan managed instances with node name + field value filtering, auto-discover MethodTable across game restarts
-- **.NET field name resolution** — Denken CLR bridge loads ZoltReflector.dll into the game's .NET runtime, resolving field names (`_currentHp`) instead of raw offsets (`+0x84`). CE scripts resolve offsets by name at runtime, surviving game updates
+- **.NET field name resolution** — Metode CLR bridge loads ZoltReflector.dll into the game's .NET runtime, resolving field names (`_currentHp`) instead of raw offsets (`+0x84`). CE scripts resolve offsets by name at runtime, surviving game updates
 - **Node tree hierarchy** — Navigate the complete scene tree with breadcrumb navigation and parent traversal
 - **Property search** — Cross-class keyword search with live value preview enrichment
 - **Class browser** — Filter and inspect ClassDB entries with inline property detail panel
@@ -64,7 +64,7 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 |   Heiter   (GameThread)       |    | NodeFilterPanel           |
 |   Qual     (Mailbox IPC)      |    |   Class property detail   |
 |     +-- .NET managed scan    |    |     +-- Node name filter  |
-|   Denken   (CLR Bridge)      |    | NodeTreePanel             |
+|   Metode   (CLR Bridge)      |    | NodeTreePanel             |
 |     +-- ZoltReflector.dll    |    |                           |
 |   Eisen    (Proxy DLL)        |    |                           |
 +-------------------------------+    | ClassStructPanel          |
@@ -92,7 +92,7 @@ Game Process (Godot 3.x / 4.x)      ZoltDumpUI (Avalonia)
 
 Zolt-Dump provides multiple Cheat Engine workflows:
 
-- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC. .NET managed objects use `FIND_MANAGED_INSTANCES` with node name filtering, auto-discover MethodTable, and runtime field offset resolution via Denken (scripts survive both game restarts and game updates).
+- **CE Lua AA Scripts** — Right-click any property in Live Walker to generate Auto Assembler scripts. Native properties use `FIND_NODE + direct offset`. GDScript members use `FIND_NODE + GET_MEMBER_ADDR` mailbox IPC. .NET managed objects use `FIND_MANAGED_INSTANCES` with node name filtering, auto-discover MethodTable, and runtime field offset resolution via Metode (scripts survive both game restarts and game updates).
 - **CE XML Export** — Pointer chain XML for importing into Cheat Engine tables
 - **CSX Structure Dissect** — Structure definition export for CE's dissect view
 - **AOBMaker Bridge** — Direct integration with AOBMaker for memory record creation
@@ -164,7 +164,7 @@ All modules use names from the anime *Frieren: Beyond Journey's End*:
 | **Eisen** | 艾冉 (Iron Warrior) | Proxy DLL forwarding |
 | **Himmel** | 欣梅爾 (Hero) | Hint cache persistence |
 | **Solitaer** | 索莉塔 (Concealment) | Logging system |
-| **Denken** | 鄧肯 (Analytical mage) | CLR hosting bridge |
+| **Metode** | 梅特黛 (All-capable analyst) | CLR hosting bridge |
 
 See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
 

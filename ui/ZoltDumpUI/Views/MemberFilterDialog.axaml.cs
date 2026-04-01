@@ -76,7 +76,7 @@ public partial class MemberFilterDialog : Window
         _targetFieldOffset = targetFieldOffset;
         _managedSiblings = managedSiblings;
 
-        // Show field name if Denken-resolved, otherwise raw offset
+        // Show field name if Metode-resolved, otherwise raw offset
         bool hasFieldName = !targetMember.StartsWith("+0x", StringComparison.OrdinalIgnoreCase);
         TargetLabel.Text = hasFieldName
             ? $"Target: {targetMember} (+0x{targetFieldOffset:X})"
@@ -91,7 +91,7 @@ public partial class MemberFilterDialog : Window
         FilterMemberCombo.Items.Add(new ComboBoxItem { Content = "(no filter)", Tag = "" });
         foreach (var f in managedSiblings)
         {
-            // Show field name if Denken-resolved, otherwise raw offset
+            // Show field name if Metode-resolved, otherwise raw offset
             bool namedField = !f.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase);
             string label = namedField
                 ? $"{f.Name} +0x{f.Offset:X} ({f.Type}, current={f.CurrentValue})"
@@ -134,7 +134,7 @@ public partial class MemberFilterDialog : Window
                     if (match is not null)
                     {
                         filterSize = match.Size;
-                        // Use field name if it's a Denken-resolved name (not raw offset)
+                        // Use field name if it's a Metode-resolved name (not raw offset)
                         if (!match.Name.StartsWith("+0x", StringComparison.OrdinalIgnoreCase))
                             filterFieldName = match.Name;
                     }

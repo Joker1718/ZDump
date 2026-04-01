@@ -1,6 +1,6 @@
 # Development Log — Zolt-Dump
 
-## Current Status: Phase 11 — Denken CLR Bridge (.NET Reflection)
+## Current Status: Phase 11 — Metode CLR Bridge (.NET Reflection)
 
 All DLL-side functionality is implemented and tested. UI is ~97% complete.
 13/13 test targets pass (5 editors + 8 games, Godot 3.5 → 4.5).
@@ -95,16 +95,16 @@ All DLL-side functionality is implemented and tested. UI is ~97% complete.
 - [x] **CE Lua multi-result scripts** — Creates CE memory records under group headers with filter criteria tags
 - [x] **Managed filter dialog** — UI dialog for selecting target/filter fields from managed sibling list
 
-### Phase 11: Denken CLR Bridge ✅
-- [x] **Denken** (頓肯) — CLR hosting bridge via hostfxr NULL handle strategy for self-contained .NET games
+### Phase 11: Metode CLR Bridge ✅ (renamed from Denken)
+- [x] **Metode** (梅特黛) — CLR hosting bridge via hostfxr NULL handle strategy for self-contained .NET games
 - [x] **ZoltReflector.dll** — .NET class library loaded into game's CoreCLR, enumerates types and field layouts via reflection
-- [x] **Field name resolution** — Ubel uses Denken to resolve real .NET field names (`_currentHp`, `<Side>k__BackingField`) instead of raw offsets (`+0x84`)
+- [x] **Field name resolution** — Ubel uses Metode to resolve real .NET field names (`_currentHp`, `<Side>k__BackingField`) instead of raw offsets (`+0x84`)
 - [x] **FieldDesc offset extraction** — CoreCLR FieldDesc low-27-bit offset + IntPtr.Size correction for reference types
 - [x] **CMD_RESOLVE_FIELD_OFFSET** — Mailbox command for CE Lua runtime field offset resolution by name
 - [x] **Update-resilient CE scripts** — Generated Lua resolves field offsets by name at runtime; scripts survive game updates that change field layouts
 - [x] **ProxyDeployService** — Auto-deploys/undeploys ZoltReflector.dll for .NET Godot games
-- [x] **Managed filter dialog** — Shows Denken-resolved field names with C# type support (enums, System.Int32, etc.)
-- [x] **L2 child ref offset** — BreadcrumbItem stores MemberOffset for Denken-resolved navigation (e.g. `_player` at 0x58)
+- [x] **Managed filter dialog** — Shows Metode-resolved field names with C# type support (enums, System.Int32, etc.)
+- [x] **L2 child ref offset** — BreadcrumbItem stores MemberOffset for Metode-resolved navigation (e.g. `_player` at 0x58)
 - [x] Tested on Slay the Spire 2 (Godot 4.5.1, .NET 9 self-contained)
 
 ---

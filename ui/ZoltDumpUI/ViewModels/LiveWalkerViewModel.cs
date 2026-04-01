@@ -449,8 +449,8 @@ public partial class LiveWalkerViewModel : ViewModelBase
                     }
 
                     // Enrich criteria with .NET reflection info for update-resilient scripts.
-                    // field.ClassName is the .NET type (e.g. "MegaCrit...Creature") from Denken.
-                    // memberName is the field name (e.g. "_currentHp") if Denken-resolved.
+                    // field.ClassName is the .NET type (e.g. "MegaCrit...Creature") from Metode.
+                    // memberName is the field name (e.g. "_currentHp") if Metode-resolved.
                     if (!string.IsNullOrEmpty(field.ClassName) && field.ClassName != "(managed)")
                     {
                         criteria.DotNetTypeName = field.ClassName;
@@ -726,7 +726,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             if (f.Offset < 0) hasScriptMembers = true;
             // Managed fields have non-negative offsets — either raw "+0x84" names
-            // (heuristic scan) or Denken-resolved names like "_currentHp".
+            // (heuristic scan) or Metode-resolved names like "_currentHp".
             if (f.Offset >= 0) hasManagedFields = true;
         }
 
@@ -781,7 +781,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         {
             // Godot-style names
             "INT" or "FLOAT" or "REAL" or "BOOL" => 4,
-            // C# type names from Denken reflection
+            // C# type names from Metode reflection
             "SYSTEM.INT32" or "SYSTEM.UINT32" or "SYSTEM.SINGLE" => 4,
             "SYSTEM.INT64" or "SYSTEM.UINT64" or "SYSTEM.DOUBLE" => 8,
             "SYSTEM.INT16" or "SYSTEM.UINT16" => 2,
@@ -938,7 +938,7 @@ public partial class LiveWalkerViewModel : ViewModelBase
         var current = Breadcrumbs[^1];
         if (current.ClassName != "ManagedObject") return -1;
 
-        // Use stored MemberOffset if available (Denken-resolved field names like "_player")
+        // Use stored MemberOffset if available (Metode-resolved field names like "_player")
         if (current.MemberOffset >= 8)
             return current.MemberOffset;
 

@@ -28,7 +28,7 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 | **Fern.cpp** | 費倫 | Frieren's apprentice | Named Pipe server: JSON IPC dispatch | Communicator, messenger — bridges worlds |
 | **Himmel.cpp** | 欣梅爾 | Hero, remembered | Hint cache: per-game AOB results | Remembered wisdom — the hero's lasting legacy |
 | **Heiter.cpp** | 海塔 | Priest, healer | GameThread dispatch: MinHook queuing | Healing/restoring context — thread-safe dispatch |
-| **Denken.cpp** | 鄧肯 | Analytical mage | CLR hosting bridge: .NET reflection via ZoltReflector | Analytical magic — dissects managed type layouts |
+| **Metode.cpp** | 梅特黛 | All-capable analyst | CLR hosting bridge: .NET reflection via ZoltReflector | Analytical dissection — resolves managed type layouts |
 | **Qual.cpp** | 庫瓦爾 | Seven Sages demon | Mailbox: CE Lua shared memory | Dark communication channel — demon's whisper |
 | **Eisen.cpp** | 艾冉 | Iron warrior, defender | Proxy DLL: version.dll forwarding | Armored defense — iron shield proxy |
 | **Macht.cpp** | 馬赫特 | Seven Sages (power) | CE Plugin: Type 5 interface | Raw power interface — direct force |
@@ -36,33 +36,26 @@ All module/namespace/class names in Zolt-Dump use terms from the anime "Frieren:
 
 ---
 
-## Error Handling (Reserved — Not Yet Implemented)
+## Runtime Diagnostics (Genau — Implemented)
 
 | Term | Character | Usage | Status |
 |---|---|---|---|
-| **Mimic** | 寶箱怪 (chest mimic) | Error types, trap results, exception wrappers | Reserved for future use |
+| **Genau** | 葛納烏 (Genau — combat examiner) | Runtime diagnostics, assertion guards | Implemented |
 
-Currently, error handling is distributed across modules (try-catch, SEH, return `{0,0}`). Mimic namespace will be introduced when centralized error propagation is needed.
+Genau provides runtime assertion macros and diagnostic infrastructure for the DLL modules.
 
 ```cpp
-// Mimic — 寶箱怪 — Error handling and trap detection (reserved design)
-namespace Mimic {
-    enum class TrapType {
-        NullSlot,          // Empty object slot (the chest is empty)
-        InvalidValidator,  // ObjectID validation failed (fake treasure)
-        BadPointer,        // Unreadable memory address (trap triggered)
-        TypeMismatch,      // Variant type != expected (wrong key)
-        PipeDisconnect,    // IPC connection lost (chest slammed shut)
-        ScanFailed,        // AOB pattern not found (hidden trap)
-        VersionUnknown,    // Godot version unrecognized (unknown dungeon)
-    };
-
-    struct TrapResult {
-        bool sprung;         // Did the trap trigger?
-        TrapType type;       // What kind of trap
-        std::string message; // Human-readable description
+// Genau — 葛納烏 (篩選考官 — Combat Examiner)
+// Runtime assertion guards and diagnostic probes
+namespace Genau {
+    enum class Severity {
+        Info,       // Diagnostic observation (passing note)
+        Warning,    // Suspicious but non-fatal (examiner's raised eyebrow)
+        Fatal,      // Invariant violated, abort operation (failed the exam)
     };
 }
+// Usage: ZOLT_ASSERT(ptr != nullptr, "ObjectDB slot null");
+//        ZOLT_CHECK(count > 0, "empty ClassDB");
 ```
 
 ---
@@ -102,8 +95,8 @@ Zolt::                      // Root namespace
   Himmel::                  // Hint cache
   Heiter::                  // Game thread
   Qual::                    // Mailbox
-  Denken::                  // CLR hosting bridge
-  Mimic::                   // Error handling (reserved)
+  Metode::                  // CLR hosting bridge (renamed from Denken)
+  Genau::                   // Runtime diagnostics / assertions
   DynOff::                  // Dynamic offsets (in Grimoire.h)
 ```
 
@@ -125,11 +118,12 @@ These can be used for future features or internal naming:
 
 | Term | Character | Suggested Use |
 |---|---|---|
+| **Mimic** (寶箱怪) | Chest mimic, trap | Error wrapping, trap detection (formerly reserved for error handling) |
 | **Linie** (リーニエ) | Demon, replication | Object cloning, deep copy |
 | **Draht** (ドラート) | Demon, binding | Memory watch bindings |
 | **Lugner** (リュグナー) | Demon, deception | Anti-detection, stealth |
 | **Aura** (アウラ) | Demon, domination | Process control, injection |
-| ~~**Denken**~~ | ~~Mage, analytical~~ | ~~Now in use — see DLL Module Naming~~ |
+| **Denken** (頓肯) | Mage, analytical | Deep analysis, type inference (formerly CLR bridge, now Metode) |
 | **Wirbel** (ヴィアベル) | Mage, tactical | Strategy/optimization |
 | **Richter** (リヒター) | Mage, earthquake | Memory region scanning |
 | **Lawine** (ラヴィーネ) | Mage, ice | Memory freeze/snapshot |

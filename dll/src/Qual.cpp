@@ -18,7 +18,7 @@
 #include "Zoltraak.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
-#include "Denken.h"
+#include "Metode.h"
 
 #include <Windows.h>
 #include <atomic>
@@ -1488,7 +1488,7 @@ static void SetDone(int32_t resultCode) {
     g_zoltMailbox.cmd = CMD_IDLE;
 }
 
-// CMD_RESOLVE_FIELD_OFFSET — Resolve .NET field name → offset via Denken reflection
+// CMD_RESOLVE_FIELD_OFFSET — Resolve .NET field name → offset via Metode reflection
 // Input:
 //   className  = fully qualified .NET type name (e.g. "MegaCrit.Sts2.Core.Entities.Creatures.Creature")
 //   memberName = field name (e.g. "_currentHp" or "<Side>k__BackingField")
@@ -1509,14 +1509,14 @@ static void HandleResolveFieldOffset() {
         return;
     }
 
-    if (!Denken::IsReady()) {
-        SetError(-2, "Denken CLR bridge not active");
+    if (!Metode::IsReady()) {
+        SetError(-2, "Metode CLR bridge not active");
         return;
     }
 
     Solitaer::Info("PIPE", "Qual: RESOLVE_FIELD_OFFSET type='%s' field='%s'", typeName, fieldName);
 
-    auto layout = Denken::GetTypeLayout(typeName);
+    auto layout = Metode::GetTypeLayout(typeName);
     if (layout.fields.empty()) {
         SetError(-3, "Type not found or has no fields");
         return;

@@ -26,7 +26,7 @@ local CONFIG = {
 
     -- Fully qualified .NET type name for reflection-based offset resolution.
     -- When set, field names (fieldName) are resolved to offsets at runtime via
-    -- the Denken CLR bridge. This makes scripts survive game updates that change
+    -- the Metode CLR bridge. This makes scripts survive game updates that change
     -- field layouts but keep the same field names.
     -- Set to nil or "" to use hardcoded offsets only.
     DOTNET_TYPE = "MegaCrit.Sts2.Core.Entities.Creatures.Creature",
