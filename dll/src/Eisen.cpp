@@ -1,4 +1,4 @@
-// Eisen — 艾乍 (Iron Warrior — Proxy DLL Forwarding)
+// Eisen — 艾冉 (Iron Warrior — Proxy DLL Forwarding)
 // Common proxy infrastructure + target-specific forwarding.
 // Only compiled when ZOLT_PROXY_BUILD is defined.
 //

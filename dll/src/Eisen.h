@@ -1,6 +1,6 @@
 #pragma once
 
-// Eisen — 艾乍 (Iron Warrior — Proxy DLL Forwarding)
+// Eisen — 艾冉 (Iron Warrior — Proxy DLL Forwarding)
 // DLL forwarding layer for proxy DLL deployment.
 // Only compiled when ZOLT_PROXY_BUILD is defined.
 //

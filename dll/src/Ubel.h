@@ -1,6 +1,6 @@
 #pragma once
 
-// Ubel — 優貝爾 (Assassin Specialist — Variant/Property Reader)
+// Ubel — 尤蓓爾 (Assassin Specialist — Variant/Property Reader)
 // Reads Godot Variant values and walks object instance properties.
 // Extracts field values from live object memory.
 
@@ -52,7 +52,7 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName);
 
 // Proactively scan ObjectDB for scripted nodes and probe ScriptInstance offset.
 // Called during init to discover the offset early, before any walk_instance call.
-// Ubel — 優貝爾 (Assassin Specialist) — Early script probe for GDScript member access
+// Ubel — 尤蓓爾 (Assassin Specialist) — Early script probe for GDScript member access
 void ProbeScriptInstanceEarly();
 
 // Result for ScriptInstance member address lookup

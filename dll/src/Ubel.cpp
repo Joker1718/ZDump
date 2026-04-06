@@ -1,4 +1,4 @@
-// Ubel — 優貝爾 (Assassin Specialist — Variant/Property Reader)
+// Ubel — 尤蓓爾 (Assassin Specialist — Variant/Property Reader)
 // Reads Godot Variant values and walks object instance properties.
 // Extracts field metadata from ClassDB and reads Variant values from memory.
 //
@@ -473,7 +473,7 @@ VariantValue ReadVariant(uint64_t addr) {
 
 // ============================================================
 // Container reading — Array / Dictionary / PackedArray
-// Ubel — 優貝爾 (Assassin Specialist) — Drills into container internals
+// Ubel — 尤蓓爾 (Assassin Specialist) — Drills into container internals
 // ============================================================
 
 // Godot Array memory layout:
@@ -2948,7 +2948,7 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
 // ============================================================
 // ProbeScriptInstanceEarly — Scan ObjectDB at init time to find
 // the ScriptInstance offset before any walk_instance call.
-// Ubel — 優貝爾 — Early script probe for GDScript member access
+// Ubel — 尤蓓爾 — Early script probe for GDScript member access
 // ============================================================
 void ProbeScriptInstanceEarly() {
     if (DynOff::bScriptInstanceProbed.load()) return; // Already found
@@ -3184,7 +3184,7 @@ std::unordered_map<int, std::string> GetMemberNames(uint64_t gdscriptPtr) {
 // ============================================================
 // FindContainerOwnerByAddress — Reverse-lookup for addresses inside
 // Array/Dictionary containers owned by GDScript members.
-// Ubel — 優貝爾 (Assassin Specialist) — Deep container owner search
+// Ubel — 尤蓓爾 (Assassin Specialist) — Deep container owner search
 // ============================================================
 ContainerOwnerMatch FindContainerOwnerByAddress(uint64_t addr) {
     ContainerOwnerMatch result;
@@ -3319,7 +3319,7 @@ ContainerOwnerMatch FindContainerOwnerByAddress(uint64_t addr) {
 // Unlike FindContainerOwnerByAddress (Phase 5) which only checks GDScript
 // members, this scans the C++ Object body directly for pointer-sized values
 // that could be DictionaryPrivate* or ArrayPrivate* holding the target.
-// Ubel — 優貝爾 (Assassin Specialist) — Native property body scan
+// Ubel — 尤蓓爾 (Assassin Specialist) — Native property body scan
 // ============================================================
 ContainerOwnerMatch FindNativeContainerByAddress(uint64_t addr) {
     ContainerOwnerMatch result;

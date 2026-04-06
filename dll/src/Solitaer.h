@@ -1,6 +1,6 @@
 #pragma once
 
-// Solitaer — 索莉緹爾 (Mana Concealment — Logger)
+// Solitaer — 索莉塔 (Mana Concealment — Logger)
 // 5-category per-process logging system for Zolt-Dump.
 // Categories: Init, Scan, Offsets, Pipe, Walk
 // Logs to %LOCALAPPDATA%\ZoltDump\Logs\{ProcessName}\

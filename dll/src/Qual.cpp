@@ -1,4 +1,4 @@
-// Qual — 全 (Wholeness — Mailbox)
+// Qual — 庫瓦爾 (七賢老 — Mailbox)
 // Shared memory mailbox for CE Lua scripts.
 //
 // Polling thread checks the mailbox every ~10ms.

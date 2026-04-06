@@ -64,10 +64,10 @@ This document maps every UE5CEDumper feature to its Godot equivalent implementat
 | UE5CEDumper File | Zolt-Dump File | Frieren Name | Port Difficulty |
 |---|---|---|---|
 | Memory.cpp | Zoltraak.cpp | 栔爾朵列 | **Direct port** — identical functionality |
-| Logger.cpp | Solitaer.cpp | 索莉緹爾 | **Direct port** — same design |
+| Logger.cpp | Solitaer.cpp | 索莉塔 | **Direct port** — same design |
 | ObjectArray.cpp | Ausetiese.cpp | 服從之秤 | **Adapt** — sparse array vs chunked |
-| FNamePool.cpp | Flamme.cpp | 芙拉梅 | **Rewrite** — hash table vs indexed pool |
-| UStructWalker.cpp | Ubel.cpp | 優貝爾 | **Major rewrite** — Variant vs FProperty |
+| FNamePool.cpp | Flamme.cpp | 弗蘭梅 | **Rewrite** — hash table vs indexed pool |
+| UStructWalker.cpp | Ubel.cpp | 尤蓓爾 | **Major rewrite** — Variant vs FProperty |
 | OffsetFinder.cpp | Frieren.cpp | 芙莉蓮 | **Rewrite** — new AOB patterns |
 | (walk_world) | Serie.cpp | 賽莉耶 | **Rewrite** — tree model vs level model |
 | (ClassDB) | Diagoldze.cpp | 黃金化 | **New** — Godot-specific |
@@ -75,8 +75,8 @@ This document maps every UE5CEDumper feature to its Godot equivalent implementat
 | PipeServer.cpp | Fern.cpp | 費倫 | **Adapt** — same protocol, new commands |
 | HintCache.cpp | Himmel.cpp | 欣梅爾 | **Direct port** — same concept |
 | GameThreadDispatch.cpp | Heiter.cpp | 海塔 | **Direct port** — same MinHook approach |
-| Mailbox.cpp | Qual.cpp | 全 | **Direct port** — same CE Lua bridge |
-| ProxyVersion.cpp | Eisen.cpp | 艾乍 | **Direct port** — identical mechanism |
+| Mailbox.cpp | Qual.cpp | 庫瓦爾 | **Direct port** — same CE Lua bridge |
+| ProxyVersion.cpp | Eisen.cpp | 艾冉 | **Direct port** — identical mechanism |
 | CEPlugin.cpp | Macht.cpp | 馬赫特 | **Direct port** — same Type 5 interface |
 | Constants.h | Grimoire.h | 魔導書 | **Adapt** — Godot constants |
 | dllmain.cpp | dllmain.cpp | - | **Adapt** — same pattern |

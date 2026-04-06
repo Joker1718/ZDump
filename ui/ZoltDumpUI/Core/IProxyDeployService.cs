@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 namespace ZoltDumpUI.Core;
 
 /// <summary>
-/// Eisen — 艾乍 (Iron Warrior)
+/// Eisen — 艾冉 (Iron Warrior)
 /// Proxy DLL deployment service for Godot games.
 /// </summary>
 public interface IProxyDeployService

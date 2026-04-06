@@ -17,12 +17,12 @@ namespace Zolt::Stark {
     int AutoStart();
 }
 
-// Solitaer — 索莉緹爾 — Logger
+// Solitaer — 索莉塔 — Logger
 namespace Zolt::Solitaer {
     bool Init();
 }
 
-// Qual — 全 — Mailbox
+// Qual — 庫瓦爾 — Mailbox
 namespace Zolt::Qual {
     void StartPolling();
 }
@@ -76,7 +76,7 @@ static DWORD WINAPI AutoStartThreadProc(LPVOID /*param*/) {
     }
 
 #ifdef ZOLT_PROXY_BUILD
-    // Eisen — 艾乍 — Proxy mode: skip known non-game helper processes
+    // Eisen — 艾冉 — Proxy mode: skip known non-game helper processes
     // (e.g., crashpad_handler.exe loads winmm.dll from the same directory)
     if (IsBlockedProcess()) {
         return 0;

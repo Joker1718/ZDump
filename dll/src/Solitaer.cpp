@@ -1,4 +1,4 @@
-// Solitaer — 索莉緹爾 (Mana Concealment — Logger)
+// Solitaer — 索莉塔 (Mana Concealment — Logger)
 // 5-category per-process logging system for Zolt-Dump.
 // Ported from UE5CEDumper Logger.cpp with adaptations for Godot targets.
 //
