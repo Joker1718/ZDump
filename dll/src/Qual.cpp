@@ -19,6 +19,7 @@
 #include "Solitaer.h"
 #include "Grimoire.h"
 #include "Metode.h"
+#include "Himmel.h"
 
 #include <Windows.h>
 #include <atomic>
@@ -1516,7 +1517,7 @@ static void HandleResolveFieldOffset() {
 
     Solitaer::Info("PIPE", "Qual: RESOLVE_FIELD_OFFSET type='%s' field='%s'", typeName, fieldName);
 
-    auto layout = Metode::GetTypeLayout(typeName);
+    auto layout = Himmel::GetTypeLayoutCached(typeName);
     if (layout.fields.empty()) {
         SetError(-3, "Type not found or has no fields");
         return;

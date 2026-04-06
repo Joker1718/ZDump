@@ -9,6 +9,7 @@
 #define LOG_CAT "HINT"
 #include "Himmel.h"
 #include "Frieren.h"
+#include "Metode.h"
 #include "Zoltraak.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <ctime>
 #include <vector>
 
@@ -390,6 +392,85 @@ CacheStats GetStats() {
     }
 
     return stats;
+}
+
+// ============================================================
+// Runtime CLR TypeLayout cache (session-scoped, in-memory only)
+// Avoids repeated Metode JSON round-trips for the same type.
+// ============================================================
+static std::mutex s_clrCacheMutex;
+static std::unordered_map<std::string, Zolt::Metode::TypeLayout> s_typeLayoutCache;
+static std::unordered_map<uint64_t, std::string> s_mtToTypeName;
+static bool s_mtCacheBuilt = false;
+
+const Zolt::Metode::TypeLayout* LookupTypeLayout(const std::string& typeName) {
+    std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+    auto it = s_typeLayoutCache.find(typeName);
+    if (it != s_typeLayoutCache.end()) return &it->second;
+    return nullptr;
+}
+
+void StoreTypeLayout(const std::string& typeName, const Zolt::Metode::TypeLayout& layout) {
+    std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+    s_typeLayoutCache[typeName] = layout;
+}
+
+Zolt::Metode::TypeLayout GetTypeLayoutCached(const std::string& typeName) {
+    // Fast path: check cache
+    {
+        std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+        auto it = s_typeLayoutCache.find(typeName);
+        if (it != s_typeLayoutCache.end()) {
+            LOG_INFO("CLR cache HIT: '%s' (%zu fields)", typeName.c_str(), it->second.fields.size());
+            return it->second;
+        }
+    }
+
+    // Slow path: call Metode (outside lock to avoid blocking other cache reads)
+    if (!Zolt::Metode::IsReady()) return {};
+
+    auto layout = Zolt::Metode::GetTypeLayout(typeName);
+
+    // Cache even empty results to avoid re-querying failed types
+    {
+        std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+        s_typeLayoutCache[typeName] = layout;
+    }
+
+    if (!layout.fields.empty()) {
+        LOG_INFO("CLR cache MISS → stored: '%s' (%zu fields)", typeName.c_str(), layout.fields.size());
+    }
+
+    return layout;
+}
+
+const std::string& LookupMTTypeName(uint64_t methodTable) {
+    static const std::string s_empty;
+    std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+    auto it = s_mtToTypeName.find(methodTable);
+    return (it != s_mtToTypeName.end()) ? it->second : s_empty;
+}
+
+void EnsureMTCache() {
+    std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+    if (s_mtCacheBuilt) return;
+    if (!Zolt::Metode::IsReady()) return;
+
+    auto types = Zolt::Metode::EnumerateTypes();
+    for (auto& ts : types) {
+        if (ts.methodTablePtr != 0)
+            s_mtToTypeName[ts.methodTablePtr] = ts.fullName;
+    }
+    s_mtCacheBuilt = true;
+    LOG_INFO("CLR MT cache built: %zu types", s_mtToTypeName.size());
+}
+
+void ClearCLRCache() {
+    std::lock_guard<std::mutex> lock(s_clrCacheMutex);
+    s_typeLayoutCache.clear();
+    s_mtToTypeName.clear();
+    s_mtCacheBuilt = false;
+    LOG_INFO("CLR runtime caches cleared");
 }
 
 } // namespace Zolt::Himmel
