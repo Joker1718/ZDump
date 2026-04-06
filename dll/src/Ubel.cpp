@@ -16,6 +16,7 @@
 #include "Solitaer.h"
 #include "Grimoire.h"
 #include "Metode.h"
+#include "Himmel.h"
 
 #include <cstdio>
 #include <cmath>
@@ -2020,24 +2021,10 @@ static void ProbeVariantStride(uint64_t membersPtr, uint32_t count, bool force =
 // When Metode (CLR bridge) is active, uses reflection for real field names/types.
 // Otherwise falls back to heuristic offset-based scanning.
 
-// MethodTable → TypeName cache (populated lazily from Metode::EnumerateTypes)
-static std::unordered_map<uint64_t, std::string> s_mtToTypeName;
-static bool s_mtCacheBuilt = false;
-static std::mutex s_mtCacheMutex;
-
+// MethodTable → TypeName resolution via Himmel cache
 static std::string ResolveManagedTypeName(uint64_t methodTable) {
-    std::lock_guard<std::mutex> lock(s_mtCacheMutex);
-    if (!s_mtCacheBuilt && Zolt::Metode::IsReady()) {
-        auto types = Zolt::Metode::EnumerateTypes();
-        for (auto& ts : types) {
-            if (ts.methodTablePtr != 0)
-                s_mtToTypeName[ts.methodTablePtr] = ts.fullName;
-        }
-        s_mtCacheBuilt = true;
-        Solitaer::Info("WALK", "Metode MT cache built: %zu types", s_mtToTypeName.size());
-    }
-    auto it = s_mtToTypeName.find(methodTable);
-    return (it != s_mtToTypeName.end()) ? it->second : std::string();
+    Zolt::Himmel::EnsureMTCache();
+    return Zolt::Himmel::LookupMTTypeName(methodTable);
 }
 
 // Map C# type name to Variant::Type for display
@@ -2115,7 +2102,7 @@ static void ReadCSharpManagedFields(uint64_t objAddr,
     // ============================================================
     const std::string& typeName = ResolveManagedTypeName(methodTable);
     if (!typeName.empty()) {
-        auto layout = Zolt::Metode::GetTypeLayout(typeName);
+        auto layout = Zolt::Himmel::GetTypeLayoutCached(typeName);
         if (!layout.fields.empty()) {
             Solitaer::Info("WALK", "ReadCSharpManagedFields: Metode resolved '%s' — %zu fields",
                 typeName.c_str(), layout.fields.size());
@@ -2563,7 +2550,7 @@ void WalkInstance(uint64_t objAddr,
                 // Try Metode reflection first for real field names
                 const std::string& mtTypeName = ResolveManagedTypeName(mt);
                 if (!mtTypeName.empty()) {
-                    auto layout = Zolt::Metode::GetTypeLayout(mtTypeName);
+                    auto layout = Zolt::Himmel::GetTypeLayoutCached(mtTypeName);
                     if (!layout.fields.empty()) {
                         Solitaer::Info("WALK", "WalkInstance: Metode resolved '%s' — %zu fields",
                             mtTypeName.c_str(), layout.fields.size());

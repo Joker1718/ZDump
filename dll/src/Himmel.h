@@ -8,9 +8,13 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 // Forward declare to avoid pulling Frieren.h
 namespace Zolt::Frieren { struct EnginePointers; }
+
+// Forward declare Metode types for TypeLayout cache
+namespace Zolt::Metode { struct TypeLayout; struct TypeSummary; }
 
 namespace Zolt::Himmel {
 
@@ -67,5 +71,34 @@ bool ClearEntry(const char* peHash);
 
 // Get current session cache statistics.
 CacheStats GetStats();
+
+// ============================================================
+// Runtime CLR TypeLayout cache (session-scoped, in-memory only)
+// Caches Metode::GetTypeLayout results to avoid repeated JSON
+// round-trips to the managed ZoltReflector bridge.
+// ============================================================
+
+// Look up a cached TypeLayout by fully qualified type name.
+// Returns pointer to cached layout, or nullptr on miss.
+const Zolt::Metode::TypeLayout* LookupTypeLayout(const std::string& typeName);
+
+// Store a TypeLayout in the cache.
+void StoreTypeLayout(const std::string& typeName, const Zolt::Metode::TypeLayout& layout);
+
+// Get TypeLayout with automatic cache: returns cached result or
+// calls Metode::GetTypeLayout, caches, and returns.
+// Returns empty TypeLayout (fields.empty()) if Metode is not ready or type not found.
+Zolt::Metode::TypeLayout GetTypeLayoutCached(const std::string& typeName);
+
+// Look up a cached MethodTable → TypeName mapping.
+// Returns empty string on miss.
+const std::string& LookupMTTypeName(uint64_t methodTable);
+
+// Build/rebuild the MethodTable → TypeName cache from Metode::EnumerateTypes.
+// Called once lazily; subsequent calls are no-ops.
+void EnsureMTCache();
+
+// Clear all runtime CLR caches (TypeLayout + MT map).
+void ClearCLRCache();
 
 } // namespace Zolt::Himmel
