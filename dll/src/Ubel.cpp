@@ -2730,7 +2730,7 @@ void WalkInstance(uint64_t objAddr,
     }
 
     // Step 2: Get property list from ClassDB (includes inherited properties)
-    auto properties = Diagoldze::GetPropertyList(className.c_str());
+    const auto& properties = Himmel::GetPropertyListCached(className.c_str());
     if (properties.empty()) {
         Solitaer::Debug("WALK", "WalkInstance: no ClassDB properties for class '%s', trying GDScript members",
             className.c_str());
@@ -2911,8 +2911,8 @@ VariantValue GetFieldValue(uint64_t objAddr, const char* propertyName) {
         return {};
     }
 
-    auto properties = Diagoldze::GetPropertyList(className.c_str());
-    for (auto& prop : properties) {
+    const auto& properties = Himmel::GetPropertyListCached(className.c_str());
+    for (const auto& prop : properties) {
         if (prop.name == propertyName) {
             if (prop.offset >= 0) {
                 return ReadNativeValue(objAddr + prop.offset, prop.type, prop.nativeSize, prop.bitShift, prop.bitMask);

@@ -16,6 +16,9 @@ namespace Zolt::Frieren { struct EnginePointers; }
 // Forward declare Metode types for TypeLayout cache
 namespace Zolt::Metode { struct TypeLayout; struct TypeSummary; }
 
+// Forward declare Diagoldze types for PropertyList cache
+namespace Zolt::Diagoldze { struct PropertyInfo; }
+
 namespace Zolt::Himmel {
 
 // Per-target hint: pattern ID to try first (empty = no hint).
@@ -100,5 +103,18 @@ void EnsureMTCache();
 
 // Clear all runtime CLR caches (TypeLayout + MT map).
 void ClearCLRCache();
+
+// ============================================================
+// Runtime Godot PropertyList cache (session-scoped, in-memory only)
+// Caches Diagoldze::GetPropertyList results. Class property lists
+// are determined by the ClassDB registry and never change at runtime.
+// ============================================================
+
+// Get PropertyList with automatic cache: returns cached result or
+// calls Diagoldze::GetPropertyList, caches, and returns.
+const std::vector<Zolt::Diagoldze::PropertyInfo>& GetPropertyListCached(const char* className);
+
+// Clear Godot property list cache.
+void ClearPropertyListCache();
 
 } // namespace Zolt::Himmel
