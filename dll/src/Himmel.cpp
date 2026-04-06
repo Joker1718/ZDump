@@ -10,6 +10,7 @@
 #include "Himmel.h"
 #include "Frieren.h"
 #include "Metode.h"
+#include "Diagoldze.h"
 #include "Zoltraak.h"
 #include "Solitaer.h"
 #include "Grimoire.h"
@@ -471,6 +472,45 @@ void ClearCLRCache() {
     s_mtToTypeName.clear();
     s_mtCacheBuilt = false;
     LOG_INFO("CLR runtime caches cleared");
+}
+
+// ============================================================
+// Runtime Godot PropertyList cache (session-scoped, in-memory only)
+// Class property lists are fixed once ClassDB is initialized.
+// ============================================================
+static std::mutex s_propCacheMutex;
+static std::unordered_map<std::string, std::vector<Zolt::Diagoldze::PropertyInfo>> s_propertyListCache;
+static const std::vector<Zolt::Diagoldze::PropertyInfo> s_emptyPropList;
+
+const std::vector<Zolt::Diagoldze::PropertyInfo>& GetPropertyListCached(const char* className) {
+    if (!className || !className[0]) return s_emptyPropList;
+
+    std::string key(className);
+
+    // Fast path: check cache
+    {
+        std::lock_guard<std::mutex> lock(s_propCacheMutex);
+        auto it = s_propertyListCache.find(key);
+        if (it != s_propertyListCache.end()) return it->second;
+    }
+
+    // Slow path: call Diagoldze (outside lock)
+    auto props = Zolt::Diagoldze::GetPropertyList(className);
+
+    // Store result (even if empty, to avoid re-querying)
+    std::lock_guard<std::mutex> lock(s_propCacheMutex);
+    auto [it, inserted] = s_propertyListCache.emplace(std::move(key), std::move(props));
+    if (inserted) {
+        LOG_INFO("PropertyList cache MISS → stored: '%s' (%zu props)",
+            className, it->second.size());
+    }
+    return it->second;
+}
+
+void ClearPropertyListCache() {
+    std::lock_guard<std::mutex> lock(s_propCacheMutex);
+    s_propertyListCache.clear();
+    LOG_INFO("PropertyList cache cleared");
 }
 
 } // namespace Zolt::Himmel
