@@ -43,7 +43,7 @@ public static class Grimoire
     public const string AobMakerPipeName = @"\\.\pipe\AOBMaker";
 
     // ============================================================
-    // Logging — Solitaer (索莉緹爾) trace concealment
+    // Logging — Solitaer (索莉塔) trace concealment
     // ============================================================
 
     /// <summary>Log directory name under %LOCALAPPDATA%</summary>
@@ -71,7 +71,7 @@ public static class Grimoire
     public const string CeXmlClipboardFormat = "text/xml";
 
     // ============================================================
-    // Proxy DLL — Eisen (艾乍) armored defense
+    // Proxy DLL — Eisen (艾冉) armored defense
     // ============================================================
 
     /// <summary>Main DLL filename</summary>

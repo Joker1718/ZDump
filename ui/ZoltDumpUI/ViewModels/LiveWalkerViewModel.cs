@@ -11,7 +11,7 @@ using ZoltDumpUI.Views;
 namespace ZoltDumpUI.ViewModels;
 
 /// <summary>
-/// Ubel — 優貝爾 (Precise Extraction Specialist)
+/// Ubel — 尤蓓爾 (Precise Extraction Specialist)
 /// Live instance property drilldown with breadcrumb navigation.
 /// </summary>
 public partial class LiveWalkerViewModel : ViewModelBase

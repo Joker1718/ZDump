@@ -146,18 +146,18 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 | Core operations | **Zoltraak** (栔爾朵列) | Attack magic | Memory scanning, AOB, SEH reads |
 | Resource management | **Ausetiese** (服從之秤) | Aura's scales | Object enumeration, DB scanning |
 | Constants & statics | **Diagoldze** (黃金化) | Mahat's gold | ClassDB, immutable registry |
-| Obfuscation & security | **Solitaer** (索莉緹爾) | Mana concealment | Logging, trace hiding |
+| Obfuscation & security | **Solitaer** (索莉塔) | Mana concealment | Logging, trace hiding |
 | Documentation & libs | **Grimoire** (魔導書) | Grimoire | Constants, magic strings |
 | Diagnostics | **Genau** (葛納烏) | Combat examiner | Runtime assertions, diagnostic guards |
-| String resolution | **Flamme** (芙拉梅) | Great mage master | StringName resolver |
+| String resolution | **Flamme** (弗蘭梅) | Great mage master | StringName resolver |
 | Scene tree | **Serie** (賽莉耶) | Living history mage | Node hierarchy walker |
-| Property reader | **Ubel** (優貝爾) | Assassin specialist | Variant/property extraction |
+| Property reader | **Ubel** (尤蓓爾) | Assassin specialist | Variant/property extraction |
 | Offset finder | **Frieren** (芙莉蓮) | Protagonist | AOB sigs, version detection |
 | Export API | **Stark** (修塔爾克) | Brave warrior | C ABI, reliable interface |
 | Pipe server | **Fern** (費倫) | Apprentice | IPC, communication |
 | Hint cache | **Himmel** (欣梅爾) | Hero | Remembered patterns |
 | Game thread | **Heiter** (海塔) | Priest | Thread dispatch, context |
-| Proxy DLL | **Eisen** (艾乍) | Iron warrior | Armored forwarding |
+| Proxy DLL | **Eisen** (艾冉) | Iron warrior | Armored forwarding |
 | CLR bridge | **Metode** (梅特黛) | All-capable analyst | .NET reflection via ZoltReflector |
 
 -----
@@ -174,4 +174,3 @@ Target: Support Godot 4.x (4.0 ~ 4.7+), find global structures (ObjectDB / Class
 | [docs/ue-to-godot-mapping.md](docs/ue-to-godot-mapping.md) | UE5CEDumper → Zolt-Dump feature mapping reference |
 | [docs/naming-convention.md](docs/naming-convention.md) | Frieren naming guide with examples |
 | [docs/dev-log.md](docs/dev-log.md) | Implementation status, challenges, next steps |
-| [docs/technical-notes.md](docs/technical-notes.md) | Godot version differences, offset detection |

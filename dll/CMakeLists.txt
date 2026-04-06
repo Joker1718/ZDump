@@ -174,7 +174,7 @@ set_target_properties(ZoltDumper PROPERTIES
 # ============================================================
 # Proxy DLL target — builds as version.dll or winmm.dll for
 # direct game-folder injection (DLL hijacking).
-# Eisen — 艾乍 — The iron warrior's armored defense
+# Eisen — 艾冉 — The iron warrior's armored defense
 #
 # PROXY_TARGET selects which system DLL to impersonate:
 #   "version" (default) — version.dll (17 exports)

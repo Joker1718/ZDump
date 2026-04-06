@@ -178,7 +178,6 @@ See [docs/naming-convention.md](docs/naming-convention.md) for the full guide.
 | [docs/export-formats.md](docs/export-formats.md) | CE XML, CSX, SDK Header export rules |
 | [docs/godot-internals.md](docs/godot-internals.md) | Godot memory layout: ObjectDB, ClassDB, Variant, Node |
 | [docs/naming-convention.md](docs/naming-convention.md) | Frieren naming guide with examples |
-| [docs/technical-notes.md](docs/technical-notes.md) | Godot version differences, offset detection |
 | [docs/dev-log.md](docs/dev-log.md) | Implementation status, challenges, next steps |
 
 ## Built with Claude Code

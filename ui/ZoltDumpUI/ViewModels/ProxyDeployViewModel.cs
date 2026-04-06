@@ -6,7 +6,7 @@ using ZoltDumpUI.Core;
 namespace ZoltDumpUI.ViewModels;
 
 /// <summary>
-/// Eisen — 艾乍 (Iron Warrior)
+/// Eisen — 艾冉 (Iron Warrior)
 /// Proxy DLL deployment management.
 /// </summary>
 public partial class ProxyDeployViewModel : ViewModelBase

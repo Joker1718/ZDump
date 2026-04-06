@@ -1,6 +1,6 @@
 #pragma once
 
-// Qual — 全 (Wholeness — Mailbox)
+// Qual — 庫瓦爾 (七賢老 — Mailbox)
 // Shared memory mailbox for CE Lua script communication.
 // CE Lua uses readQword/writeQword (ReadProcessMemory/WriteProcessMemory)
 // to communicate with the DLL without needing CreateRemoteThread.

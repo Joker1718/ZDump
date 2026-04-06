@@ -5,7 +5,7 @@ using ZoltDumpUI.Core;
 namespace ZoltDumpUI.Services;
 
 /// <summary>
-/// Eisen — 艾乍 (Iron Warrior)
+/// Eisen — 艾冉 (Iron Warrior)
 /// Proxy DLL deployment for Godot games via Steam detection.
 /// Detects Steam libraries, finds Godot games (.pck files), and
 /// manages winmm.dll proxy deployment/undeployment.

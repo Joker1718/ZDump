@@ -149,7 +149,7 @@ int Zolt_AutoStart() {
     }
 
     // Probe ScriptInstance offset early by scanning ObjectDB for scripted nodes
-    // Ubel — 優貝爾 — Early script probe for GDScript member access
+    // Ubel — 尤蓓爾 — Early script probe for GDScript member access
     if (s_objectDBAddr && s_classDBAddr) {
         LOG_TIMED("INIT", "Ubel::ProbeScriptInstanceEarly");
         Zolt::Ubel::ProbeScriptInstanceEarly();
@@ -285,7 +285,7 @@ int Zolt_AutoStart() {
     Zolt::Solitaer::Summary("==========================================================");
 
     // Notify mailbox that DLL is ready for CE Lua commands
-    // Qual — 全 — Transitions from STATUS_INIT to STATUS_IDLE
+    // Qual — 庫瓦爾 — Transitions from STATUS_INIT to STATUS_IDLE
     Zolt::Qual::NotifyReady();
 
     return success ? 0 : 1;
@@ -296,7 +296,7 @@ void Zolt_Shutdown() {
     Zolt::Metode::Shutdown();   // Metode — 梅特黛 — Release CLR bridge
     Zolt::Heiter::Shutdown();   // Before Fern — unblock any sync waiters first
     Zolt::Fern::Stop();
-    Zolt::Qual::StopPolling();  // Qual — 全 — Stop mailbox polling
+    Zolt::Qual::StopPolling();  // Qual — 庫瓦爾 — Stop mailbox polling
     Zolt::Solitaer::Shutdown();
     s_initialized = false;
 }

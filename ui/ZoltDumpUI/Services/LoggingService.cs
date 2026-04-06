@@ -5,7 +5,7 @@ using ZoltDumpUI.Core;
 namespace ZoltDumpUI.Services;
 
 /// <summary>
-/// Solitaer — 索莉緹爾 (Mana Concealment)
+/// Solitaer — 索莉塔 (Mana Concealment)
 /// Category-based file logging with process mirroring.
 /// </summary>
 public sealed class LoggingService : ILoggingService, IDisposable

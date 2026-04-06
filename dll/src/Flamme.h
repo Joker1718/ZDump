@@ -1,6 +1,6 @@
 #pragma once
 
-// Flamme — 芙拉梅 (Great Mage Master — StringName Resolver)
+// Flamme — 弗蘭梅 (Great Mage Master — StringName Resolver)
 // Resolves Godot StringName pointers to readable UTF-8 strings.
 // StringName is Godot's interned string type used everywhere.
 
