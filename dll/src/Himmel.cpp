@@ -1,3 +1,12 @@
+/*
+ * Zolt-Dump - Real-time Godot Engine memory dumper.
+ * Copyright (C) 2026  bbfox0703
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
 // Himmel — 欣梅爾 (Hero — HintCache)
 // Persists AOB pattern match results keyed by PE hash.
 // Ported from UE5CEDumper HintCache.cpp with adaptations for Godot targets.
