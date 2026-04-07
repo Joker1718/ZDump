@@ -14,7 +14,7 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)](https://dotnet.microsoft.com/)
 [![Avalonia](https://img.shields.io/badge/Avalonia-UI-8B5CF6)](https://avaloniaui.net/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
 
 ## Features
@@ -186,4 +186,4 @@ This project is developed with the assistance of [Claude Code](https://claude.ai
 
 ---
 
-**License**: [MIT](LICENSE) © 2026 bbfox0703
+**License**: [GPL v3](LICENSE) © 2026 bbfox0703
