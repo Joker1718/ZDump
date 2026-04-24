@@ -46,7 +46,7 @@ public partial class PathMatchDialog : Window
         if (objectMembers.Count > 0)
         {
             MatchPathBox.Text = $"{objectMembers[0]}.";
-            MatchPathBox.Watermark = $"e.g. {objectMembers[0]}.my_id";
+            MatchPathBox.PlaceholderText = $"e.g. {objectMembers[0]}.my_id";
         }
 
         GenerateButton.Click += OnGenerate;

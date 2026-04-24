@@ -38,7 +38,7 @@
                     <Button Content="Load" DockPanel.Dock="Right" Margin="4,0,0,0"
                             Command="{Binding LoadAllCommand}"
                             IsVisible="{Binding !IsLoading}" />
-                    <AutoCompleteBox Watermark="Search..." FilterMode="Contains"
+                    <AutoCompleteBox PlaceholderText="Search..." FilterMode="Contains"
                                     Text="{Binding FilterText}" />
                 </DockPanel>
                 <ComboBox ItemsSource="{Binding ClassSuggestions}"
