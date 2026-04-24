@@ -26,7 +26,7 @@
         <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
             <StackPanel Spacing="4">
                 <TextBlock Text="Class filter (optional)" Foreground="#4EC9B0" FontWeight="SemiBold" />
-                <TextBox x:Name="ClassNameBox" Watermark="e.g. Button (leave empty for any class)" />
+                <TextBox x:Name="ClassNameBox" PlaceholderText="e.g. Button (leave empty for any class)" />
             </StackPanel>
         </Border>
 
@@ -34,9 +34,9 @@
         <Border Background="#2D2D30" CornerRadius="4" Padding="12,8">
             <StackPanel Spacing="6">
                 <TextBlock Text="Match property path" Foreground="#569CD6" FontWeight="SemiBold" />
-                <TextBox x:Name="MatchPathBox" Watermark="e.g. item.my_id (dot-separated)" />
+                <TextBox x:Name="MatchPathBox" PlaceholderText="e.g. item.my_id (dot-separated)" />
                 <TextBlock Text="Expected value" Foreground="#569CD6" FontWeight="SemiBold" Margin="0,4,0,0" />
-                <TextBox x:Name="MatchValueBox" Watermark="e.g. item_tree" />
+                <TextBox x:Name="MatchValueBox" PlaceholderText="e.g. item_tree" />
             </StackPanel>
         </Border>
 

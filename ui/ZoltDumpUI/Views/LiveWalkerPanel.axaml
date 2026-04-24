@@ -37,7 +37,7 @@
             <DockPanel>
                 <Button Content="Go" DockPanel.Dock="Right" Command="{Binding GoToAddressCommand}"
                         Margin="4,0,0,0" />
-                <TextBox x:Name="AddressBox" Text="{Binding AddressInput}" Watermark="Enter address..."
+                <TextBox x:Name="AddressBox" Text="{Binding AddressInput}" PlaceholderText="Enter address..."
                          FontFamily="Consolas" />
             </DockPanel>
         </Border>
@@ -90,7 +90,7 @@
 
         <!-- Search -->
         <Border DockPanel.Dock="Top" Padding="4,2" Background="#252526">
-            <TextBox x:Name="SearchBox" Text="{Binding SearchQuery}" Watermark="Search fields... (Enter/F3 = next)"
+            <TextBox x:Name="SearchBox" Text="{Binding SearchQuery}" PlaceholderText="Search fields... (Enter/F3 = next)"
                      FontSize="12" />
         </Border>
 

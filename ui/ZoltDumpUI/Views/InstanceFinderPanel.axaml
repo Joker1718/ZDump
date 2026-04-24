@@ -26,12 +26,12 @@
                             Command="{Binding FindInstancesCommand}" />
                     <CheckBox Content="Exact" DockPanel.Dock="Right" IsChecked="{Binding ExactMatch}"
                               Foreground="#D4D4D4" VerticalAlignment="Center" Margin="4,0" />
-                    <TextBox x:Name="ClassNameBox" Text="{Binding SearchClassName}" Watermark="Name or class..." />
+                    <TextBox x:Name="ClassNameBox" Text="{Binding SearchClassName}" PlaceholderText="Name or class..." />
                 </DockPanel>
                 <DockPanel>
                     <Button Content="Lookup" DockPanel.Dock="Right" Margin="4,0,0,0"
                             Command="{Binding FindByAddressCommand}" />
-                    <TextBox x:Name="AddressBox" Text="{Binding AddressSearch}" Watermark="Address lookup..."
+                    <TextBox x:Name="AddressBox" Text="{Binding AddressSearch}" PlaceholderText="Address lookup..."
                              FontFamily="Consolas" />
                 </DockPanel>
                 <TextBlock Text="{Binding StatusText}" Foreground="#569CD6" FontSize="11"

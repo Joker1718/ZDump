@@ -40,7 +40,7 @@
                         <ComboBoxItem Content="&gt;= (GE)" Tag="5" />
                         <ComboBoxItem Content="&lt;= (LE)" Tag="6" />
                     </ComboBox>
-                    <TextBox x:Name="TargetValueBox" Width="140" Watermark="Value..."
+                    <TextBox x:Name="TargetValueBox" Width="140" PlaceholderText="Value..."
                              Text="0" />
                 </StackPanel>
             </StackPanel>
@@ -61,7 +61,7 @@
                         <ComboBoxItem Content="&gt;= (GE)" Tag="5" />
                         <ComboBoxItem Content="&lt;= (LE)" Tag="6" />
                     </ComboBox>
-                    <TextBox x:Name="FilterValueBox" Width="140" Watermark="Value..."
+                    <TextBox x:Name="FilterValueBox" Width="140" PlaceholderText="Value..."
                              Text="0" />
                 </StackPanel>
             </StackPanel>

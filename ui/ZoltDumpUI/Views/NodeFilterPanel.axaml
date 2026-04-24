@@ -30,11 +30,11 @@
         <!-- Filters -->
         <Border DockPanel.Dock="Top" Padding="4" Background="#252526">
             <StackPanel Spacing="4">
-                <AutoCompleteBox Watermark="Filter by super..."
+                <AutoCompleteBox PlaceholderText="Filter by super..."
                                  ItemsSource="{Binding SuperSuggestions}"
                                  Text="{Binding SuperFilter}"
                                  FilterMode="Contains" />
-                <TextBox Text="{Binding FilterText}" Watermark="Filter by name..." />
+                <TextBox Text="{Binding FilterText}" PlaceholderText="Filter by name..." />
             </StackPanel>
         </Border>
 
