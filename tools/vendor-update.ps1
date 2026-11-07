@@ -1,4 +1,4 @@
-<#
+﻿<#
   Zolt-Dump - Real-time Godot Engine memory dumper.
   Copyright (C) 2026  bbfox0703
 

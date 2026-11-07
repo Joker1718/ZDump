@@ -1,4 +1,4 @@
-<#
+﻿<#
   Zolt-Dump - Real-time Godot Engine memory dumper.
   Copyright (C) 2026  bbfox0703
 
@@ -210,9 +210,9 @@ if (-not $vswhere) {
 
 Write-Info "vswhere: $vswhere"
 
-$vsPath = & $vswhere -latest -property installationPath
+$vsPath = & $vswhere -latest -products * -property installationPath
 if (-not $vsPath) {
-    $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 }
 if (-not $vsPath) {
     Write-Fail "No Visual Studio installation found (need C++ Desktop workload)"

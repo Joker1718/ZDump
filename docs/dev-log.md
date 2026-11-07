@@ -1,9 +1,10 @@
 # Development Log — Zolt-Dump
 
-## Current Status: Phase 11 — Metode CLR Bridge (.NET Reflection)
+## Current Status: Phase 12 — Godot 4.7 + .NET 8 self-contained (AscensionSandbox)
 
 All DLL-side functionality is implemented and tested. UI is ~97% complete.
-13/13 test targets pass (5 editors + 8 games, Godot 3.5 → 4.5).
+13/13 test targets pass (5 editors + 8 games, Godot 3.5 → 4.5); AscensionSandbox
+(4.7, .NET 8) added as 14th target — statically verified, runtime test pending.
 215 unit tests passing. .NET field name resolution working on Slay the Spire 2.
 
 ---
@@ -107,6 +108,50 @@ All DLL-side functionality is implemented and tested. UI is ~97% complete.
 - [x] **L2 child ref offset** — BreadcrumbItem stores MemberOffset for Metode-resolved navigation (e.g. `_player` at 0x58)
 - [x] Tested on Slay the Spire 2 (Godot 4.5.1, .NET 9 self-contained)
 
+### Phase 12: Godot 4.7 + .NET 8 self-contained (AscensionSandbox) ✅ (static) / ⏳ (runtime)
+
+Target: `AscensionSandbox.exe` — Godot v4.7.stable.mono.official, .NET 8
+self-contained (coreclr/hostfxr in `data_SandboxCultivation_windows_x86_64/`),
+117 MB, exports stripped (3 names, no Godot symbols).
+
+- [x] **Static AOB verification** — all 31 GodotSig patterns scanned against the
+      shipped exe (offline, no runtime):
+  - ObjectDB: `OBJDB_AOB2` exactly 1 hit → `.bss 0x146946DA8`; cross-confirmed by
+    an `OBJDB_AOB3` hit on the same code region resolving to the same variable.
+    `OBJDB_AOB1` (tuned on 4.4.1) has 0 hits on 4.7 — expected, AOB2 covers it.
+  - ClassDB: `CLASSDB_AOB2` 2 hits → same `.bss 0x14693CDA0` (two code sites
+    referencing one static HashMap). `CLASSDB_AOB1/3` produce only .rdata false
+    positives → rejected by MultiMatch layout validation.
+  - SceneTree/Engine: generic singleton-getter patterns hit (27/549/1295 raw);
+    MultiMatch + vtable validation picks, same situation as passing 4.x targets.
+  - Writable-section gate (`TryPattern` RipDirect) satisfied: both hard hits
+    resolve into .bss.
+- [x] **Variant::Type enum unchanged in 4.7-stable** — OBJECT=24, DICTIONARY=27,
+      VARIANT_MAX=39; verified against godotengine/godot tag `4.7-stable`
+      `core/variant/variant.h`. Zolt's hardcoded 4.x constants remain correct.
+      **Trap**: the "Nil/bool/int/..." string blob order in the binary is
+      `Variant::get_type_name` switch-case emission order, NOT enum order — do
+      not "fix" type constants from string order.
+- [x] **Version detection** — exe contains "Godot Engine v4.7.stable.mono.official".
+      `VERSION_RDATA2` ("4.x.y.stable", 3 components) has 0 hits on the
+      2-component "4.7.stable" — dead pattern on 4.7 but harmless:
+      `DetectVersionFromRdata` Try-1a covers it, and `ParseVersion` handles
+      "4.7.stable" (patch stays 0 when the 3rd component is non-numeric).
+- [x] **Metode on .NET 8 self-contained** — same strategy as STS2 (.NET 9):
+      hostfxr NULL-handle (active context) primary; `FindRuntimeConfig` finds
+      `data_*/SandboxCultivation.runtimeconfig.json` as fallback. Init runs after
+      ObjectDB/ClassDB scan → hostfxr already loaded by the apphost.
+- [x] **ZoltReflector TFM** — targets net8.0: loads into .NET 8 (this game) and
+      rolls forward into .NET 9 (STS2). No multi-target needed.
+- [x] **ProxyDeployService.IsDotNetGame** — covers `data_*/GodotSharp.dll` and
+      `data_*/coreclr.dll` layouts → AscensionSandbox detected, ZoltReflector
+      deploy/undeploy works from the UI.
+- [x] **test_all_versions.ps1** — AscensionSandbox added as game target
+      (`--headless`); script paths made checkout-relative (was hardcoded
+      D:\Github\Zolt-Dump); .NET targets now auto-deploy/undeploy
+      `dist\proxy\ZoltReflector.dll` alongside winmm.dll.
+- [ ] Runtime test (user compiles; agent does not build).
+
 ---
 
 ## Test Matrix (Build #77)
@@ -126,6 +171,7 @@ All DLL-side functionality is implemented and tested. UI is ~97% complete.
 | Upload Labs (4.5.1rc2) | ✅ aob | ✅ aob | ✅ bss_scan | ✅ aob | 4.5.1.rc2 |
 | Holo X Break (4.2) | ✅ aob | ✅ found | ✅ bss_scan | ✅ aob_relaxed | 4.2.stable |
 | Dome Keeper (4.2.2) | ✅ aob | ✅ found | ✅ bss_scan | ✅ aob | 4.2.2.custom |
+| AscensionSandbox (4.7) | ⏳ pending build | ⏳ pending | ⏳ pending | ⏳ pending | 4.7.stable.mono |
 
 ---
 

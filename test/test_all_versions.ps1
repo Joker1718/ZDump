@@ -1,4 +1,4 @@
-<#
+﻿<#
   Zolt-Dump - Real-time Godot Engine memory dumper.
   Copyright (C) 2026  bbfox0703
 
@@ -21,9 +21,11 @@ param(
     [string]$Only = "all"
 )
 
-$testDir    = "D:\Github\Zolt-Dump\test\godot"
+$testDir    = Join-Path $PSScriptRoot "godot"
 $logRoot    = "$env:LOCALAPPDATA\ZoltDump\Logs"
-$proxyPath  = "D:\Github\Zolt-Dump\dist\proxy\winmm.dll"
+$repoRoot   = Split-Path $PSScriptRoot -Parent
+$proxyPath  = Join-Path $repoRoot "dist\proxy\winmm.dll"
+$reflectorPath = Join-Path $repoRoot "dist\proxy\ZoltReflector.dll"
 
 if (-not (Test-Path $proxyPath)) {
     Write-Host "ERROR: Proxy DLL not found at $proxyPath. Build first!" -ForegroundColor Red
@@ -49,15 +51,29 @@ $games = @(
     @{ Name="One Potion Please (4.3)";   Exe="H:\SteamLibrary\steamapps\common\One Potion Please\OnePotionPlease.exe";       Args=$null; LogDir="OnePotionPlease";           ProxyDir="H:\SteamLibrary\steamapps\common\One Potion Please" },
     @{ Name="Virtual Cottage";           Exe="H:\SteamLibrary\steamapps\common\Virtual Cottage\Virtual Cottage_WINDOWS.exe"; Args=$null; LogDir="Virtual Cottage_WINDOWS";   ProxyDir="H:\SteamLibrary\steamapps\common\Virtual Cottage" },
     @{ Name="Upload Labs";               Exe="H:\SteamLibrary\steamapps\common\Upload Labs\Upload Labs.exe";                 Args=$null; LogDir="Upload Labs";               ProxyDir="H:\SteamLibrary\steamapps\common\Upload Labs" },
-    @{ Name="Holo X Break";              Exe="H:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";               Args=$null; LogDir="Holo X Break";              ProxyDir="H:\SteamLibrary\steamapps\common\Holo X Break" },
-    @{ Name="Dome Keeper";               Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" },
-    @{ Name="Slay the Spire 2";         Exe="H:\SteamLibrary\steamapps\common\Slay the Spire 2\SlayTheSpire2.exe";         Args=$null; LogDir="SlayTheSpire2";             ProxyDir="H:\SteamLibrary\steamapps\common\Slay the Spire 2" }
+    @{ Name="Holo X Break (4.2)";              Exe="H:\SteamLibrary\steamapps\common\Holo X Break\Holo X Break.exe";              Args=$null; LogDir="Holo X Break";              ProxyDir="H:\SteamLibrary\steamapps\common\Holo X Break" },
+    @{ Name="Dome Keeper (4.2.2)";              Exe="H:\SteamLibrary\steamapps\common\Dome Keeper\domekeeper.exe";                  Args=$null; LogDir="domekeeper";                ProxyDir="H:\SteamLibrary\steamapps\common\Dome Keeper" },
+    @{ Name="Slay the Spire 2 (4.5.1 .NET9)";  Exe="H:\SteamLibrary\steamapps\common\Slay the Spire 2\SlayTheSpire2.exe";          Args=$null; LogDir="SlayTheSpire2";             ProxyDir="H:\SteamLibrary\steamapps\common\Slay the Spire 2" },
+    # Godot 4.7 + .NET 8 self-contained (local build, stripped exports — AOB-only detection)
+    @{ Name="AscensionSandbox (4.7 .NET8)";    Exe="C:\Users\Administrator\Documents\Tasks1\workspace10\AscensionSandbox\AscensionSandbox.exe"; Args="--headless"; LogDir="AscensionSandbox"; ProxyDir="C:\Users\Administrator\Documents\Tasks1\workspace10\AscensionSandbox" }
 )
 
 # Select which targets to test
 $targets = @()
 if ($Only -eq "all" -or $Only -eq "editors") { $targets += $editors }
 if ($Only -eq "all" -or $Only -eq "games")   { $targets += $games }
+
+# .NET game detection (mirrors ProxyDeployService.IsDotNetGame):
+# GodotSharp.dll / coreclr.dll in game dir or data_* subdirs
+function Test-DotNetGameDir([string]$dir) {
+    if (Test-Path (Join-Path $dir "GodotSharp.dll")) { return $true }
+    $dataDirs = Get-ChildItem $dir -Directory -Filter "data_*" -ErrorAction SilentlyContinue
+    foreach ($d in $dataDirs) {
+        if (Test-Path (Join-Path $d.FullName "GodotSharp.dll")) { return $true }
+        if (Test-Path (Join-Path $d.FullName "coreclr.dll")) { return $true }
+    }
+    return $false
+}
 
 $results = @()
 
@@ -71,6 +87,15 @@ foreach ($t in $targets) {
     # Deploy proxy to the target's directory
     $proxyDest = Join-Path $t.ProxyDir "winmm.dll"
     Copy-Item $proxyPath $proxyDest -Force
+
+    # Deploy ZoltReflector.dll for .NET targets (Metode CLR bridge loads it
+    # from the injected DLL's directory = game dir)
+    $reflectorDest = $null
+    if ((Test-DotNetGameDir $t.ProxyDir) -and (Test-Path $reflectorPath)) {
+        $reflectorDest = Join-Path $t.ProxyDir "ZoltReflector.dll"
+        Copy-Item $reflectorPath $reflectorDest -Force
+        Write-Host "  Deployed ZoltReflector.dll (.NET target)"
+    }
 
     # Clear previous logs
     # Log dir name might not match exactly — search for it
@@ -109,6 +134,9 @@ foreach ($t in $targets) {
 
     # Remove proxy from game directory (clean up immediately)
     Remove-Item $proxyDest -Force -ErrorAction SilentlyContinue
+    if ($reflectorDest -and (Test-Path $reflectorDest)) {
+        Remove-Item $reflectorDest -Force -ErrorAction SilentlyContinue
+    }
 
     # Find the log directory (might have different capitalization or suffix)
     $logDir = $null

@@ -45,9 +45,12 @@ Named after **Zoltraak** (ゾルトラーク) — Frieren's signature attack mag
 | 4.4.x         | ✅       | ✅      | ✅        | ✅            |
 | 4.5.x         | ✅       | ✅      | ✅        | ✅            |
 | 4.6.x         | ✅       | ✅ (AHashMap) | ✅   | ✅            |
+| 4.7 (AscensionSandbox) | ✅ aob* | ✅ aob* | ⏳ runtime | ⏳ runtime |
 | 3.5+ (GCC)    | ✅       | ✅      | ✅        | 41/52 values  |
 
-Tested with official editors (4.0–4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1rc2), Holo X Break (4.2), Dome Keeper (4.2.2), Slay the Spire 2 (4.5.1, .NET/C#).
+Tested with official editors (4.0–4.6.1) and real games including Brotato (3.7dev), Magic Archery (4.2.2), One Potion Please (4.3), Upload Labs (4.5.1rc2), Holo X Break (4.2), Dome Keeper (4.2.2), Slay the Spire 2 (4.5.1, .NET/C#), AscensionSandbox (4.7, .NET 8 self-contained).
+
+\* 4.7 verified statically: AOB signatures scanned against the shipped `AscensionSandbox.exe` (stripped exports) — `OBJDB_AOB2`/`CLASSDB_AOB2` resolve to unique `.bss` globals; Variant enum values (OBJECT=24, DICTIONARY=27, max=39) confirmed against the 4.7-stable engine source. Runtime pass pending.
 
 ## Architecture
 

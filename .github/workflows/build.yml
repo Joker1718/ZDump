@@ -1,0 +1,67 @@
+name: Zolt-Dump Build
+
+# Manual deployment workflow — trigger from the Actions tab ("Run workflow").
+# Builds the C++ DLL + winmm proxy + ZoltReflector + Avalonia UI on a
+# GitHub Windows runner (no local MSVC needed).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Build mode"
+        required: true
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Publish
+          - Debug
+      run_tests:
+        description: "Run xUnit tests after building"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Fetch vendor dependencies (minhook, nlohmann)
+        shell: pwsh
+        run: ./tools/vendor-update.ps1
+
+      - name: Build (DLL + ProxyDLL + UI)
+        shell: pwsh
+        run: ./build.ps1 -Mode ${{ inputs.mode }}
+
+      - name: Run unit tests
+        if: ${{ inputs.run_tests }}
+        shell: pwsh
+        run: dotnet test ui/ZoltDumpUI.Tests/ZoltDumpUI.Tests.csproj -c Release --nologo
+
+      - name: Collect scanner logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            **/*.log
+            ui/ZoltDumpUI.Tests/TestResults/**
+          if-no-files-found: ignore
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZoltDump-${{ inputs.mode }}
+          path: |
+            dist/**
+          if-no-files-found: error
